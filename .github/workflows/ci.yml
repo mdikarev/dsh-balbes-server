@@ -27,14 +27,19 @@ jobs:
       - name: Link core mirror into workspace
         run: node scripts/link-core.mjs
 
+      # Build runs before Typecheck: the SPA typechecks against
+      # dsh-balbes-contracts whose types point at ./lib/* (gitignored, produced
+      # only by the Build step). pnpm -r builds in topological order, so
+      # contracts' lib/ exists before the admin SPA typecheck runs — on a fresh
+      # checkout the first CI push would otherwise fail TS2307.
+      - name: Build packages
+        run: pnpm -r --if-present run build
+
       - name: Typecheck
         run: pnpm -r --if-present run typecheck
 
       - name: Unit tests (no LLM)
         run: pnpm -r --if-present run test
-
-      - name: Build packages
-        run: pnpm -r --if-present run build
 
       - name: Sync balbes profile + host bundle into DSH_HOME
         run: |
