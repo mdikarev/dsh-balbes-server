@@ -476,7 +476,8 @@ ProtectControlGroups=true
 WantedBy=multi-user.target
 EOF
     run_priv systemctl daemon-reload
-    run_priv systemctl enable --now "$SERVICE_NAME.service"
+    run_priv systemctl enable "$SERVICE_NAME.service"
+    run_priv systemctl restart "$SERVICE_NAME.service"
     info "systemd unit $SERVICE_NAME enabled and started."
 }
 
@@ -507,7 +508,8 @@ Installation complete. Admin UI: http://$ip:$BALBES_PORT
 Smoke without a browser (JWT):
   TOKEN=\$(curl -fsS -X POST http://127.0.0.1:$BALBES_PORT/api/auth/login \\
     -H 'content-type: application/json' \\
-    -d '{"login":"<LOGIN>","password":"<PASSWORD>"}')
+    -d '{"login":"<LOGIN>","password":"<PASSWORD>"}' | \\
+    node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).token")
   curl -fsS -X POST http://127.0.0.1:$BALBES_PORT/api/prompt \\
     -H "authorization: Bearer \$TOKEN" \\
     -d '{"prompt":"Напиши ok"}'
