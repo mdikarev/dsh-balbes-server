@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
 #
-# One-command installer for the dsh "balbes" profile (Stage 1).
+# One-command installer for the dsh "balbes" profile (Stage 2: server + admin).
 #
-# Entry point pinned by docs/runbooks/stage1-vps.md:
+# Entry point pinned by docs/runbooks/stage2-vps.md:
 #
 #   curl -fsSL https://raw.githubusercontent.com/mdikarev/dsh-balbes-server/main/scripts/install.sh | bash
 #
 # Provisions the environment (Node >= 22 via NodeSource, pnpm, git), installs
 # the global @deepseek-ai/dsh CLI (never patched or edited — dsh is a
-# dependency, not a fork), syncs profiles/balbes from the repository into
-# $DSH_HOME/profiles, stores the DeepSeek API key in
-# $DSH_HOME/.credentials.yaml, verifies the profile composes with
-# `dsh --profile balbes --dump-config`, and prints the manual smoke command.
-# Safe to re-run: every step is an idempotent update.
+# dependency, not a fork), builds the workspace packages (dsh-balbes-host,
+# dsh-balbes-contracts, the admin SPA), syncs profiles/balbes from the
+# repository into $DSH_HOME/profiles, copies the built host into the profile,
+# deploys the built admin UI, stores the DeepSeek API key in
+# $DSH_HOME/.credentials.yaml, generates the admin account
+# ($DSH_HOME/admin-auth.json, printed once), writes the dsh-balbes systemd
+# unit (enabled + restarted on every run, so an update takes effect at once),
+# health-checks the service, and prints the summary with the admin UI address
+# and the manual smoke commands. Safe to re-run: every step is an idempotent
+# update.
 #
 # Honored environment:
 #   DEEPSEEK_API_KEY     key; when unset the script prompts on /dev/tty
@@ -494,7 +499,7 @@ health_check() {
 
 print_admin_summary() {
     local ip
-    ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
     ip="${ip:-<IP>}"
     cat <<EOF
 
