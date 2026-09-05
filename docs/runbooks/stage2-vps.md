@@ -108,7 +108,9 @@ curl -fsSL https://raw.githubusercontent.com/mdikarev/dsh-balbes-server/main/scr
     только `Admin login (unchanged): <login>` и подсказка про сброс пароля.
 11. **systemd.** Пишет юнит `/etc/systemd/system/dsh-balbes.service`
     (описание в разделе «Проверка демона») и выполняет
-    `systemctl daemon-reload` + `systemctl enable --now dsh-balbes`.
+    `systemctl daemon-reload` + `systemctl enable` + `systemctl restart`.
+    Рестарт происходит на **каждом** запуске установщика: после обновления
+    демон сразу поднимается на новом коде, ручной рестарт не нужен.
 12. **Health и финал.** `POST http://127.0.0.1:<порт>/api/health` должен
     вернуть `{"ok":true,...}`; иначе установка считается неудачной
     (диагностика — в «Устранении неполадок»). Затем печатается итоговая
@@ -202,15 +204,14 @@ curl -fsS -X POST http://127.0.0.1:8080/api/prompt \
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mdikarev/dsh-balbes-server/main/scripts/install.sh | bash
-sudo systemctl restart dsh-balbes
 curl -fsS -X POST http://127.0.0.1:8080/api/health   # {"ok":true,...}
 ```
 
-Обратите внимание: `systemctl enable --now` (шаг 11 установщика) запускает
-юнит, но **не перезапускает уже работающий** — после обновления демон
-продолжает крутить старый код, пока вы не перезапустите его вручную командой
-выше. Установщик это переживает корректно (health-проверка проходит и на
-старом процессе), поэтому рестарт — часть процедуры обновления.
+Установщик **перезапускает сервис на каждом запуске** (`systemctl restart`
+в шаге 11), поэтому после обновления демон сразу работает на новом коде —
+ручной `systemctl restart dsh-balbes` не нужен. Перезапускайте юнит вручную
+только если меняли что-то руками (конфигурацию юнита, файлы окружения и т.п.),
+см. «Устранение неполадок».
 
 ## Сброс пароля
 
@@ -300,8 +301,8 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8080/api/auth/
 #    health и login при этом открыты (см. п. 2 и 3)
 ```
 
-6. **Обновление.** Повторный `install.sh` (команда из «Обновления») +
-   `sudo systemctl restart dsh-balbes`: логин и пароль не меняются
+6. **Обновление.** Повторный `install.sh` (команда из «Обновления»):
+   установщик сам перезапускает сервис; логин и пароль не меняются
    (`Admin login (unchanged): ...`), данные сессий целы.
 7. **Сброс пароля.** `bash ~/dsh-balbes-server/scripts/install.sh
    --reset-admin-password` → новый пароль в логе; вход по старому → 401, по
@@ -374,23 +375,26 @@ sudo ufw allow 8081/tcp
 
 ### Битый или удалённый `admin-auth.json`
 
-Файл `$DSH_HOME/admin-auth.json` — не валидный JSON или отсутствует. При
-старте в логах юнита: `balbes-auth: cannot read ... admin-auth.json; auth
-unavailable until the file appears`; вход в админку отвечает ошибкой (500),
-т.к. файл не читается.
+Файл `$DSH_HOME/admin-auth.json` — не валидный JSON, отсутствует или имеет
+неверную форму (например, вручную отредактирован без `jwtSecret`). При старте
+в логах юнита — предупреждение `balbes-auth: admin auth file ... unusable
+(missing, unreadable, or invalid shape); auth unavailable until the file is
+valid`; защищённые маршруты (`/api/prompt`, `/api/auth/me`) отвечают 401, вход
+по паролю — 401 (сервер «закрывается», но не падает: каждая попытка входа
+перечитывает файл и пишет в лог причину).
 
 Восстановление — пересоздать файл установщиком (он сгенерирует новый логин и
 пароль и напечатает их один раз):
 
 ```bash
-sudo systemctl stop dsh-balbes
-rm "$HOME/.dsh/admin-auth.json"
 curl -fsSL https://raw.githubusercontent.com/mdikarev/dsh-balbes-server/main/scripts/install.sh | bash
 ```
 
 Свежие логин/пароль — в логе (блок «Admin credentials generated»). Старые
 логин/пароль при этом перестают работать (файл целиком пересоздан, `jwtSecret`
-новый — и старые JWT тоже недействительны).
+новый — и старые JWT тоже недействительны). Файл перечитывается на каждом
+входе, поэтому после восстановления отдельный рестарт не обязателен —
+установщик всё равно перезапускает сервис (шаг 11).
 
 ### Нет ключа модели
 
