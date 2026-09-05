@@ -32,7 +32,10 @@ describe("core", () => {
   it("JWT: tampered token is rejected", () => {
     const secret = "0123456789abcdef0123456789abcdef";
     const { token } = issueToken(secret, "admin");
-    const tampered = token.slice(0, -1) + (token.endsWith("a") ? "b" : "a");
+    // Flip a middle signature character: the last character of an unpadded
+    // base64url value only carries padding bits, so mutating it would leave
+    // the decoded signature unchanged for ~6% of random secrets.
+    const tampered = token.slice(0, 10) + (token[10] === "a" ? "b" : "a") + token.slice(11);
     expect(verifyToken(secret, tampered)).toBeNull();
   });
 
