@@ -12,7 +12,14 @@ function candidates() {
   if (process.env.HOME) list.push(join(process.env.HOME, ".dsh", "profiles", "node_modules", "@deepseek-ai"));
   try {
     const g = execFileSync("npm", ["root", "-g"], { encoding: "utf8" }).trim();
+    // Nested layout (npm's classic global layout): the mirror lives under the
+    // dsh package's own node_modules.
     list.push(join(g, "@deepseek-ai", "dsh", "node_modules", "@deepseek-ai"));
+    // Hoisted layout: npm placed the @deepseek-ai/* packages next to dsh
+    // itself, directly under the global @deepseek-ai scope. The nested probe
+    // above then misses, so this fallback keeps fresh VPS/CI installs working
+    // before any profile boot has created the $DSH_HOME/profiles mirror.
+    list.push(join(g, "@deepseek-ai"));
   } catch { /* npm root is unavailable, try the remaining candidates */ }
   return list;
 }
@@ -48,7 +55,15 @@ function link(name) {
   }
 }
 
+// Only directory entries are linked. A scope dir may hold stray files
+// (e.g. .DS_Store) or — in the hoisted layout — the dsh package itself; a
+// package is linked as a whole directory and never recursed into.
 for (const name of readdirSync(src)) {
+  let isDir = false;
+  try {
+    isDir = lstatSync(join(src, name)).isDirectory();
+  } catch { /* dangling entry; nothing to link */ }
+  if (!isDir) continue;
   link(name);
 }
 console.log(`link-core: linked @deepseek-ai from ${src}`);
