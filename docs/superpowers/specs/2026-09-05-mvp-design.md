@@ -381,22 +381,78 @@ UI», замена headless постоянным host-слоем и превра
 10. Реестр контрактов заполнен; типы `dsh-balbes-contracts` импортируются
     host'ом и SPA.
 
-### 9.5 Открытые вопросы / спайки (на старте планирования)
+### 9.5 Спайки (закрыты в дизайн-сессии; точная проводка механизмов — уровень плана)
 
-1. ~~Паттерн «app-слой держит процесс»: как host не выходит (в отличие от
-   `appExit` headless)~~ — **закрыт**, решение в 9.1 «Время жизни процесса».
-2. install.sh при наличии `node_modules` в профиле: замена каталога целиком
-   (этап 1) vs добавление симлинков своих пакетов (сверка с `link:`-паттерном
-   web-профиля).
-3. Сборка host TS и линковка наших пакетов на VPS (симлинки в `node_modules`
-   профиля vs `pnpm link`).
-4. Корневая оркестрация репо (typecheck/lint/test) — нужен ли root workspace.
-5. JWT: собственная HMAC-подпись на `node:crypto` (рекомендовано) vs
-   библиотека.
-6. Параметры scrypt и атомарная запись `admin-auth.json`.
-7. Воспроизводимость шва ядра в тестах (сигнатуры вычитаны из
-   `dsh-headless/lib/index.js`).
-8. Полировка systemd-юнита (минимальные hardening-флаги).
+1. ~~Паттерн «app-слой держит процесс»~~ — **закрыт**: решение в 9.1 «Время
+   жизни процесса».
+2. ~~Линковка пакетов в профиль~~ — **закрыт**: install.sh собирает host из
+   клона репо и копирует собранный пакет **реальным каталогом** в
+   `$DSH_HOME/profiles/balbes/node_modules/dsh-balbes-host`; импорты
+   `@deepseek-ai/*` резолвятся подъёмом к зеркалу
+   `$DSH_HOME/profiles/node_modules` (проверено на этапе 1). Паттерн
+   web-профиля (`link:` + pnpm + абсолютные пути, target несёт собственный
+   `node_modules`) — dev-механика, для установщика не используется.
+3. ~~Сборка на VPS~~ — **закрыт**: host — `pnpm install && pnpm build` (tsc);
+   SPA — `pnpm install && vite build` → `$DSH_HOME/balbes/ui`
+   (`BALBES_UI_DIST`); билд выполняется до рестарта сервиса — при падении
+   install.sh выходит с ошибкой, работающий сервис не трогается; CI повторяет
+   ту же рецептуру (зелёный CI ≈ install.sh соберётся).
+4. ~~Корневая оркестрация~~ — **закрыт**: root `package.json` +
+   `pnpm-workspace.yaml` (`packages: ["packages/*"]`), per-package `scripts`
+   + корневые convenience-команды (`pnpm -r --if-present typecheck/test/lint/
+   build`); `profiles/*` в workspace **не входят** (деплой-манифесты);
+   `@deepseek-ai/*` не тянутся из registry (версии битые) — резолвятся
+   bootstrap-линковкой зеркала dsh в корневой `node_modules` (скрипт
+   `scripts/link-core`; проводка — в плане).
+5. ~~JWT: библиотека vs своя~~ — **закрыт**: собственная HMAC HS256 на
+   `node:crypto`: фиксированный header `{alg:"HS256","typ":"JWT"}`; payload
+   `{sub,iat,exp}`; base64url; верификация — пересчёт подписи +
+   `timingSafeEqual` + проверка `exp`. Ноль зависимостей.
+6. ~~scrypt и атомарная запись~~ — **закрыт**: N=2^17, r=8, p=1, keylen=32,
+   соль 16 Б, `maxmem` поднят (≈128 МиБ по формуле N·r·128); формат значения
+   `scrypt$N$r$p$salt$hash`; запись атомарно: tmp-файл (режим 600) → fsync →
+   rename; битый файл при чтении → auth отвечает ошибкой конфигурации.
+7. ~~Воспроизводимость шва в тестах~~ — **закрыт**: REAL-композиция
+   (тестовый `cordis.yml` через Loader, base + host); LLM мокается **как
+   HTTP-эндпоинт**: in-process stub (`node:http`) с canned chat-completion;
+   конфиг-строка `llm-deepseek` в тестовом патче указывает endpoint на stub
+   (ключ-заглушка), `agent-default-model` → provider `deepseek` + модель.
+   Путь агента реальный до провайдерской границы (по коду: дефолтная модель —
+   настройки `agent-default-model`, адаптер ходит по HTTP).
+8. ~~systemd-hardening~~ — **закрыт**, шаблон юнита:
+
+```ini
+[Unit]
+Description=dsh-balbes server (agent host + admin API)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=<владелец>
+WorkingDirectory=<HOME>
+Environment=DSH_HOME=<HOME>/.dsh
+Environment=BALBES_PORT=8080
+Environment=BALBES_UI_DIST=<HOME>/.dsh/balbes/ui
+ExecStart=/usr/local/bin/dsh --profile balbes
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=<HOME>/.dsh <HOME>
+RestrictSUIDSGID=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+   Без `ProtectHome=read-only` и `SystemCallFilter` (ломают тулы агента и
+   worker-рантайм — защита, ломающая функцию, не берётся).
 
 ## Связанные артефакты
 
