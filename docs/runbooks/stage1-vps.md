@@ -23,7 +23,8 @@ https://github.com/mdikarev/dsh-balbes-server, ветка `main`.
 - Пользователь с правами `sudo` — для установки системного Node и глобального dsh.
 - `curl` — для скачивания установщика (если нет: `sudo apt-get install -y curl`).
 - Доступ в интернет: `raw.githubusercontent.com`, npm registry и API DeepSeek.
-- Свободный порт **не нужен**: профиль headless и веб-морду не поднимает.
+- Свободный порт **не нужен**: профиль не поднимает ни headless-часть как
+  сервис, ни веб-морду.
 
 ## Установка одной командой
 
@@ -34,11 +35,17 @@ https://github.com/mdikarev/dsh-balbes-server, ветка `main`.
 curl -fsSL https://raw.githubusercontent.com/mdikarev/dsh-balbes-server/main/scripts/install.sh | bash
 ```
 
-В ходе выполнения скрипт интерактивно запросит DeepSeek API key. Чтобы не вводить
-ключ вручную, можно задать переменную окружения заранее:
+В ходе выполнения скрипт интерактивно запросит DeepSeek API key. Запрос читается
+напрямую с терминала (`/dev/tty`), поэтому он работает даже при запуске через
+конвейер `curl ... | bash` (stdin скрипта в этом случае — конвейер, а не
+терминал). Пустой ввод пропускает установку ключа.
+
+Чтобы не вводить ключ вручную, экспортируйте переменную окружения заранее (без
+`export` её увидит только curl, а не bash, исполняющий скрипт):
 
 ```bash
-DEEPSEEK_API_KEY=sk-... curl -fsSL https://raw.githubusercontent.com/mdikarev/dsh-balbes-server/main/scripts/install.sh | bash
+export DEEPSEEK_API_KEY=sk-ваш-ключ
+curl -fsSL https://raw.githubusercontent.com/mdikarev/dsh-balbes-server/main/scripts/install.sh | bash
 ```
 
 Скрипт идемпотентен: повторный запуск безопасен и работает как обновление
@@ -46,9 +53,9 @@ DEEPSEEK_API_KEY=sk-... curl -fsSL https://raw.githubusercontent.com/mdikarev/ds
 
 ## Что делает установщик (по шагам)
 
-1. **Окружение.** Если `node --version` ниже 22 — ставит Node 22 LTS из NodeSource
-   и сам Node через `apt`; если нет pnpm — ставит его глобально через npm;
-   если нет git — ставит `git` через `apt`.
+1. **Окружение.** Если `node --version` ниже 22 — подключает репозиторий
+   NodeSource и ставит Node 22 LTS через `apt`; если нет pnpm — ставит его
+   глобально через npm; если нет git — ставит `git` через `apt`.
 2. **dsh.** Если команда `dsh` отсутствует — ставит глобально:
    `sudo npm i -g @deepseek-ai/dsh`.
 3. **Репозиторий.** Клонирует https://github.com/mdikarev/dsh-balbes-server в
@@ -58,10 +65,11 @@ DEEPSEEK_API_KEY=sk-... curl -fsSL https://raw.githubusercontent.com/mdikarev/ds
    `$DSH_HOME/profiles/balbes`. Профиль в репо — источник правды, поэтому
    перезапись при синхронизации актуальна.
 5. **Ключ.** Если `DEEPSEEK_API_KEY` не задан в окружении — запрашивает ключ
-   интерактивно и записывает его в `$DSH_HOME/.credentials.yaml` (при создании
-   файл получает права `600`). Если файл уже существует с другими записями —
-   чужие секции не перезаписываются: скрипт предупреждает и показывает формат
-   для ручной правки.
+   интерактивно, читая его с терминала (`/dev/tty`), и записывает в
+   `$DSH_HOME/.credentials.yaml` (при создании файл получает права `600`).
+   Если файл уже существует с другими записями — чужие секции не
+   перезаписываются: скрипт предупреждает и показывает формат для ручной
+   правки.
 6. **Проверка композиции.** Запускает `dsh --profile balbes --dump-config`;
    падение считается ошибкой установки.
 7. **Финал.** Печатает команду smoke-проверки (см. следующий раздел).
@@ -98,7 +106,7 @@ dsh --profile balbes "Напиши 'ok' и больше ничего"
 
 ```bash
 git -C "$HOME/dsh-balbes-server" pull --ff-only
-cp -R "$HOME/dsh-balbes-server/profiles/balbes" "$HOME/.dsh/profiles/balbes"
+cp -R "$HOME/dsh-balbes-server/profiles/balbes" "${DSH_HOME:-$HOME/.dsh}/profiles/balbes"
 ```
 
 Новая версия самого dsh ставится глобально:
@@ -141,8 +149,8 @@ npm registry публикует устаревшие сломанные верс
 только владельцу:
 
 ```bash
-ls -l "$HOME/.dsh/.credentials.yaml"   # ожидается -rw-------
-chmod 600 "$HOME/.dsh/.credentials.yaml"
+ls -l "${DSH_HOME:-$HOME/.dsh}/.credentials.yaml"   # ожидается -rw-------
+chmod 600 "${DSH_HOME:-$HOME/.dsh}/.credentials.yaml"
 ```
 
 Ключ хранится в секции `refs` под именем `DEEPSEEK_API_KEY`. При создании файла
@@ -165,8 +173,8 @@ refs:
 профиль синхронизирован в каталог данных:
 
 ```bash
-ls -la "$HOME/.dsh/profiles"               # в списке должен быть каталог balbes
-ls "$HOME/.dsh/profiles/balbes/package.json"
+ls -la "${DSH_HOME:-$HOME/.dsh}/profiles"          # в списке — каталог balbes
+ls "${DSH_HOME:-$HOME/.dsh}/profiles/balbes/package.json"
 ```
 
 По умолчанию `$DSH_HOME` — это `~/.dsh`; если задавался другой `DSH_HOME`,
