@@ -39,6 +39,7 @@ describe("App", () => {
     fireEvent.click(button);
     await waitFor(() => expect(screen.getByTestId("answer").textContent).toBe("ok"));
     const answer = screen.getByTestId("answer");
-    expect(button.compareDocumentPosition(answer)).toBeGreaterThan(0);
+    // the answer pre must precede the button in DOM order, i.e. be rendered above it
+    expect(button.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_PRECEDING).not.toBe(0);
   });
 });
