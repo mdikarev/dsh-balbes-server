@@ -31,4 +31,3 @@ jobs:
 
       - name: Validate profile manifest is JSON
         run: node -e "JSON.parse(require('fs').readFileSync('profiles/balbes/package.json','utf8'))"
-```
