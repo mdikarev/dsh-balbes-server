@@ -5,7 +5,7 @@ on:
   pull_request:
 
 jobs:
-  validate-profile:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,16 +15,44 @@ jobs:
         with:
           node-version: 22
 
+      - name: Enable corepack pnpm
+        run: corepack enable && corepack prepare pnpm@10.0.0 --activate
+
       - name: Install dsh CLI
         run: npm i -g @deepseek-ai/dsh
 
-      - name: Sync balbes profile into DSH_HOME
+      - name: Install workspace deps
+        run: pnpm install
+
+      - name: Link core mirror into workspace
+        run: node scripts/link-core.mjs
+
+      - name: Typecheck
+        run: pnpm -r --if-present run typecheck
+
+      - name: Unit tests (no LLM)
+        run: pnpm -r --if-present run test
+
+      - name: Build packages
+        run: pnpm -r --if-present run build
+
+      - name: Sync balbes profile + host bundle into DSH_HOME
         run: |
           mkdir -p "$HOME/.dsh/profiles"
           cp -R profiles/balbes "$HOME/.dsh/profiles/balbes"
+          mkdir -p "$HOME/.dsh/profiles/balbes/node_modules"
+          cp -R packages/bundles/dsh-balbes-host "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-host"
+          rm -f "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-host/tsconfig.json"
+          rm -rf "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-host/tests" \
+                 "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-host/src" \
+                 "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-host/lib/types"
 
       - name: Validate profile composition (no LLM)
         run: dsh --profile balbes --dump-config >/dev/null
+
+      - name: Assert no headless / web app in profile
+        run: |
+          ! dsh --profile balbes --dump-config | grep -q "dsh-headless\|dsh-web-app"
 
       - name: Validate installer syntax
         run: bash -n scripts/install.sh
