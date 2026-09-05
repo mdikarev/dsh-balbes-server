@@ -2,3 +2,36 @@
 ## doc-canon
 For design and development, treat `docs/canon/` as the context source of truth. **Scout first — it is mandatory when the index is available:** run `doc-canon scout "<topic>"` and use its generated working-set manifest (ranked paths, contract roles, snippet stubs, verdict hint); scout seeds the code pack automatically when a code index exists, docs-only otherwise. If scout fails closed, build the missing index and retry; only if building fails, fall back to `doc-canon search` / `docs/canon/INDEX.md` and note every read outside a pack (`doc_miss` / `code_miss`). Expand when unsure before deep reads—without inventing structure. `docs/canon/future_plans/` holds directional initiatives for future system shape, not development tasks or checklists. For new or changed behavior, follow **canon-first**: update living canon via `canon-write` (do not edit `docs/canon/**` yourself) → optional project-local spec/plan if large → after substantial canon changes wait for user go-ahead → application code → close with `canon-audit`. Exceptions: pure bugfix with intended behavior unchanged, `code_stale`, non-behavioral edits. On docs↔code divergence, do not silently pick a side; use canon skills / `DISCREPANCIES.md`. During code analysis in a covered language, try `doc-canon code-index search` first; on empty/thin results, read source as evidence and note the miss (`code_miss`).
 <!-- doc-canon:end -->
+
+## Development conventions (agents)
+
+Short rule set; full detail lives in `CONTRIBUTING.md`.
+
+**Rigid boundaries**
+
+- dsh is a dependency, not a fork: never edit installed `@deepseek-ai/*` and never bypass
+  the dsh core — compose via profile bundles (`dsh.profile.bundles`), `cordis.patch.yml`
+  layers, and own bundles/plugins over the standard dsh seams.
+- Never edit `docs/canon/**` directly (canon-first workflow above); never commit
+  credentials, keys, `.env`, or local dsh state.
+
+**Plugins (dsh/Cordis)**
+
+- Function plugins named-export `name` / `inject` / `Config` / `apply`, with no default
+  export; service packages default-export a `Service` subclass; never mix the two (the
+  Loader drops the namespace). `Config` carries a `@deepseek-ai/schemastery` schema.
+- Dependencies are declared through `inject`; `ctx.<name>` only for injected services;
+  optional services read via strict `ctx.get(name)`.
+- Registrations are effects: contribute through `ctx.effect()` / `ctx.on()`, every
+  registration disposes and is HMR-safe. Waterfall listeners must call `next()`.
+
+**TypeScript & tests**
+
+- Strict TS, ESM only, `.ts` in package-local relative imports; tests live under
+  `tests/` (vitest). Product-visible plugins require a REAL-composition test that boots
+  a test `cordis.yml` through the Loader/app; mock only external or nondeterministic
+  boundaries (LLM provider, network, clock).
+
+**Verification:** run the checks relevant to the change (`pnpm typecheck`, `pnpm lint`,
+`pnpm test` …) and report only commands actually executed.
+
