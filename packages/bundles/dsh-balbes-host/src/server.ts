@@ -10,21 +10,31 @@ export const Config = z.object({
 export const inject: string[] = [];
 
 const MAX_BODY_BYTES = 1024 * 1024;
+const BODY_TOO_LARGE = "body-too-large";
 
 function readBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
-    req.on("data", (chunk: Buffer) => {
+    const onData = (chunk: Buffer): void => {
       size += chunk.length;
       if (size > MAX_BODY_BYTES) {
-        reject(new Error("body too large"));
-        req.destroy();
+        // Reject with a marker and stop reading. The request is NOT destroyed
+        // here: destroying the socket would reset the connection and swallow
+        // the 400 the client is owed — dispatch tears the connection down
+        // only after the response has flushed (closeAfterFlush).
+        const error = new Error("body too large") as Error & { code?: string };
+        error.code = BODY_TOO_LARGE;
+        req.removeListener("data", onData);
+        req.removeListener("end", onEnd);
+        req.removeListener("error", onError);
+        req.pause();
+        reject(error);
         return;
       }
       chunks.push(chunk);
-    });
-    req.on("end", () => {
+    };
+    const onEnd = (): void => {
       const raw = Buffer.concat(chunks).toString("utf8");
       if (raw.trim() === "") {
         resolve({});
@@ -35,20 +45,43 @@ function readBody(req: IncomingMessage): Promise<unknown> {
       } catch {
         reject(new Error("invalid json body"));
       }
-    });
-    req.on("error", reject);
+    };
+    const onError = (error: Error): void => {
+      reject(error);
+    };
+    req.on("data", onData);
+    req.on("end", onEnd);
+    req.on("error", onError);
   });
 }
 
 function send(res: ServerResponse, status: number, body: unknown, type = "application/json"): void {
-  if (Buffer.isBuffer(body)) {
-    res.writeHead(status, { "content-type": type, "content-length": body.length });
-    res.end(body);
-    return;
+  // The client may already be gone (aborted connection): writing into a
+  // destroyed response throws or emits stream errors, so never attempt it and
+  // contain whatever still surfaces below.
+  if (res.destroyed || res.writableEnded) return;
+  try {
+    if (Buffer.isBuffer(body)) {
+      res.writeHead(status, { "content-type": type, "content-length": body.length });
+      res.end(body);
+      return;
+    }
+    const payload = typeof body === "string" ? body : JSON.stringify(body);
+    res.writeHead(status, { "content-type": type, "content-length": Buffer.byteLength(payload) });
+    res.end(payload);
+  } catch {
+    // Connection dropped mid-write; the per-request "error" listener (see
+    // listener) keeps the stream error contained.
   }
-  const payload = typeof body === "string" ? body : JSON.stringify(body);
-  res.writeHead(status, { "content-type": type, "content-length": Buffer.byteLength(payload) });
-  res.end(payload);
+}
+
+/** Close a request whose body was only partially read once the response flushed. */
+function closeAfterFlush(req: IncomingMessage, res: ServerResponse): void {
+  const close = (): void => {
+    if (!req.destroyed) req.destroy();
+  };
+  res.once("finish", close);
+  res.once("close", close);
 }
 
 export function apply(ctx: {
@@ -72,6 +105,9 @@ export function apply(ctx: {
   ctx.provide("balbesHttp", http);
 
   const dispatch = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    // new URL throws for malformed request targets (garbage from the wire);
+    // the listener catch turns that into a 500 — the process must never die
+    // on it.
     const url = new URL(req.url ?? "/", "http://localhost");
     const method = req.method ?? "GET";
     if (url.pathname.startsWith("/api/")) {
@@ -97,15 +133,16 @@ export function apply(ctx: {
       let body: unknown;
       try {
         body = await readBody(req);
-      } catch {
+      } catch (error) {
         send(res, 400, { error: { code: "bad-request", message: "invalid or oversized json body" } });
+        if ((error as { code?: string }).code === BODY_TOO_LARGE) closeAfterFlush(req, res);
         return;
       }
       try {
         await seat.handler(req, res, body);
       } catch (error) {
         ctx.logger.warn(`balbes-server: handler error: ${error instanceof Error ? error.message : String(error)}`);
-        if (!res.headersSent) send(res, 500, { error: { code: "internal", message: "internal error" } });
+        if (!res.headersSent && !res.destroyed) send(res, 500, { error: { code: "internal", message: "internal error" } });
       }
       return;
     }
@@ -121,7 +158,23 @@ export function apply(ctx: {
   };
 
   const listener = (req: IncomingMessage, res: ServerResponse): void => {
-    void dispatch(req, res);
+    // Stream errors on aborted connections must never become unhandled
+    // 'error' emissions that take the whole process down.
+    req.on("error", () => { /* client aborted mid-request; nothing to send */ });
+    res.on("error", () => { /* client aborted mid-response; nothing left to send */ });
+    // dispatch() is fully async: every rejection is caught here so a
+    // malformed request or an unexpected handler/static failure yields a 500
+    // (when nothing was written yet) instead of an unhandled rejection.
+    void dispatch(req, res).catch((error) => {
+      ctx.logger.warn(`balbes-server: request failed: ${error instanceof Error ? error.message : String(error)}`);
+      if (!res.headersSent && !res.destroyed) {
+        try {
+          send(res, 500, { error: { code: "internal", message: "internal error" } });
+        } catch {
+          /* client is gone: nothing left to send */
+        }
+      }
+    });
   };
 
   server = createServer(listener);
