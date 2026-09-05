@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { BalbesHttp } from "./types.js";
-import { issueToken, verifyPassword, verifyToken, type AdminAuth } from "./core.js";
+import { issueToken, parseAdminAuth, verifyPassword, verifyToken, type AdminAuth } from "./core.js";
 
 export const name = "balbes-auth";
 export const inject = ["balbesHttp"];
@@ -17,31 +17,52 @@ export interface AuthGuard {
   issue(login: string): string;
   verify(token: string): { login: string } | null;
   checkLogin(login: string, password: string): Promise<boolean>;
-  /** Warm the cached credentials synchronously at startup; false when the file is unreadable. */
+  /** Warm the cached credentials synchronously at startup; false when the file is unreadable or shape-invalid. */
   loadSync(): boolean;
 }
 
 const FAIL_LIMIT = 5;
 const FAIL_WINDOW_MS = 30 * 60 * 1000;
 
-export function createGuard(opts: { adminAuthFile: string; loginTtlSeconds?: number }): AuthGuard {
+export function createGuard(opts: {
+  adminAuthFile: string;
+  loginTtlSeconds?: number;
+  logger?: { warn(m: string): void };
+}): AuthGuard {
   let cached: AdminAuth | null = null;
-  const fails = new Map<string, number[]>();
+  const logger = opts.logger;
 
   function parse(raw: string): AdminAuth {
-    return JSON.parse(raw) as AdminAuth;
+    // The same shape contract as core.loadAdminAuth: a hand-edited file that
+    // lacks e.g. jwtSecret fails here with a clear error instead of poisoning
+    // the cache and crashing every later bearer verification.
+    return parseAdminAuth(raw, opts.adminAuthFile);
   }
 
-  async function load(): Promise<AdminAuth> {
-    // Re-read from disk on every login so a file that appears after startup
-    // (or is rotated) is picked up; loadSync() covers the startup fast path.
-    const auth = parse(await readFile(opts.adminAuthFile, "utf8"));
-    cached = auth;
-    return auth;
+  /** Re-read from disk; fail closed (null) on any read/parse failure. */
+  async function load(): Promise<AdminAuth | null> {
+    let raw: string;
+    try {
+      raw = await readFile(opts.adminAuthFile, "utf8");
+    } catch (error) {
+      cached = null;
+      logger?.warn(`balbes-auth: cannot read ${opts.adminAuthFile}: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+    try {
+      cached = parse(raw);
+      return cached;
+    } catch (error) {
+      cached = null;
+      logger?.warn(`balbes-auth: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
   }
 
   return {
     loadSync() {
+      // Startup fast path: a file that appears (or is rotated/fixed) later is
+      // picked up by checkLogin's lazy re-read; loadSync never throws.
       try {
         cached = parse(readFileSync(opts.adminAuthFile, "utf8"));
         return true;
@@ -57,12 +78,18 @@ export function createGuard(opts: { adminAuthFile: string; loginTtlSeconds?: num
     },
     verify(token) {
       if (cached === null) return null;
-      const payload = verifyToken(cached.jwtSecret, token);
-      return payload === null ? null : { login: payload.login };
+      try {
+        const payload = verifyToken(cached.jwtSecret, token);
+        return payload === null ? null : { login: payload.login };
+      } catch {
+        return null; // fail closed: a corrupt cache must never crash a bearer request
+      }
     },
     async checkLogin(login, password) {
+      // Lazy reload means a file fixed by hand (or regenerated) is picked up
+      // without a restart; a broken file fails closed (false), never throws.
       const auth = await load();
-      if (login !== auth.login) return false;
+      if (auth === null || login !== auth.login) return false;
       return verifyPassword(password, auth.passwordHash);
     }
   };
@@ -76,9 +103,9 @@ export function apply(ctx: {
   const dshHome = config.dshHome ?? process.env.DSH_HOME ?? join(process.env.HOME ?? ".", ".dsh");
   const adminAuthFile = config.adminAuthFile ?? join(dshHome, "admin-auth.json");
   const loginTtlSeconds = config.loginTtlSeconds ?? 86400;
-  const guard = createGuard({ adminAuthFile, loginTtlSeconds });
+  const guard = createGuard({ adminAuthFile, loginTtlSeconds, logger: ctx.logger });
   if (!guard.loadSync()) {
-    ctx.logger.warn(`balbes-auth: cannot read ${adminAuthFile}; auth unavailable until the file appears`);
+    ctx.logger.warn(`balbes-auth: admin auth file ${adminAuthFile} unusable (missing, unreadable, or invalid shape); auth unavailable until the file is valid`);
   }
   ctx.provide("balbesAuth", guard);
   const http = ctx.get("balbesHttp");
@@ -101,6 +128,11 @@ export function apply(ctx: {
     if (blocked(ip)) {
       res.writeHead(429, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: { code: "rate-limited", message: "too many attempts" } }));
+      return;
+    }
+    if (typeof body !== "object" || body === null || Array.isArray(body)) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { code: "bad-request", message: "request body must be a JSON object" } }));
       return;
     }
     const b = body as { login?: unknown; password?: unknown };

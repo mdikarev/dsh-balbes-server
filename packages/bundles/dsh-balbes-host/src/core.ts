@@ -122,6 +122,33 @@ export async function writeAdminAuth(dshHome: string, auth: AdminAuth): Promise<
   await rename(tmp, file);
 }
 
+/**
+ * Parse and shape-check a raw admin-auth file. Shared by loadAdminAuth and the
+ * auth guard so a hand-edited file (e.g. missing jwtSecret) always fails with
+ * a clear error instead of later crashing on a bearer request; plain JSON
+ * values (null, arrays) fail the same way.
+ */
+export function parseAdminAuth(raw: string, file: string): AdminAuth {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`admin auth file ${file} is not valid JSON`);
+  }
+  const record = parsed as { login?: unknown; passwordHash?: unknown; jwtSecret?: unknown };
+  if (
+    parsed === null ||
+    typeof parsed !== "object" ||
+    Array.isArray(parsed) ||
+    typeof record.login !== "string" ||
+    typeof record.passwordHash !== "string" ||
+    typeof record.jwtSecret !== "string"
+  ) {
+    throw new Error(`admin auth file ${file} misses required fields`);
+  }
+  return parsed as AdminAuth;
+}
+
 export async function loadAdminAuth(dshHome: string): Promise<AdminAuth> {
   const file = defaultAdminAuthFile(dshHome);
   let raw: string;
@@ -130,14 +157,5 @@ export async function loadAdminAuth(dshHome: string): Promise<AdminAuth> {
   } catch (error) {
     throw new Error(`admin auth file ${file} unreadable: ${error instanceof Error ? error.message : String(error)}`);
   }
-  let parsed: AdminAuth;
-  try {
-    parsed = JSON.parse(raw) as AdminAuth;
-  } catch {
-    throw new Error(`admin auth file ${file} is not valid JSON`);
-  }
-  if (typeof parsed.login !== "string" || typeof parsed.passwordHash !== "string" || typeof parsed.jwtSecret !== "string") {
-    throw new Error(`admin auth file ${file} misses required fields`);
-  }
-  return parsed;
+  return parseAdminAuth(raw, file);
 }

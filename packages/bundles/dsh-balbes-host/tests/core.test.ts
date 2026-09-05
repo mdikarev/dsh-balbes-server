@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -58,6 +58,20 @@ describe("core", () => {
       expect(loaded.passwordHash).toBe(auth.passwordHash);
       const stat = await readFile(defaultAdminAuthFile(dir));
       expect(stat.length).toBeGreaterThan(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("admin-auth file: plain JSON values (null/arrays) are rejected with a clear error", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "balbes-shape-"));
+    try {
+      await writeFile(defaultAdminAuthFile(dir), "null", "utf8");
+      await expect(loadAdminAuth(dir)).rejects.toThrow("misses required fields");
+      await writeFile(defaultAdminAuthFile(dir), "[1]", "utf8");
+      await expect(loadAdminAuth(dir)).rejects.toThrow("misses required fields");
+      await writeFile(defaultAdminAuthFile(dir), "{not json", "utf8");
+      await expect(loadAdminAuth(dir)).rejects.toThrow("is not valid JSON");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

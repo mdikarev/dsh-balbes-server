@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAdminAuth, writeAdminAuth, verifyPassword, loadAdminAuth, issueToken } from "../src/core.js";
@@ -59,6 +59,44 @@ describe("auth guard", () => {
       await writeAdminAuth(dir, creds);
       await expect(guard.checkLogin(creds.login, creds.plaintextPassword)).resolves.toBe(true);
       expect(guard.verify(guard.issue(creds.login))?.login).toBe(creds.login);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("shape-invalid file (missing jwtSecret): loadSync/verify/checkLogin fail closed, never crash", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "balbes-auths-"));
+    try {
+      const file = join(dir, "admin-auth.json");
+      // A hand-edited file without jwtSecret: verify() on the old code would
+      // feed an undefined secret into HMAC and throw on every bearer request.
+      await writeFile(file, JSON.stringify({ login: "admin", passwordHash: "x" }), "utf8");
+      const guard = createGuard({ adminAuthFile: file });
+      expect(guard.loadSync()).toBe(false); // the bad file is never cached
+      expect(guard.verify("any-token")).toBeNull();
+      await expect(guard.checkLogin("admin", "x")).resolves.toBe(false); // fails closed
+      expect(guard.verify("any-token")).toBeNull();
+
+      // Fixing the file on disk is picked up by the lazy reload — no restart.
+      const creds = await createAdminAuth();
+      await writeAdminAuth(dir, creds);
+      expect(guard.loadSync()).toBe(true);
+      await expect(guard.checkLogin(creds.login, creds.plaintextPassword)).resolves.toBe(true);
+      expect(guard.verify(guard.issue(creds.login))?.login).toBe(creds.login);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("non-object JSON values in the auth file also fail closed (no TypeError)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "balbes-authnul-"));
+    try {
+      const file = join(dir, "admin-auth.json");
+      await writeFile(file, "null", "utf8");
+      const guard = createGuard({ adminAuthFile: file });
+      expect(guard.loadSync()).toBe(false);
+      expect(guard.verify("any")).toBeNull();
+      await expect(guard.checkLogin("admin", "pw")).resolves.toBe(false);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
