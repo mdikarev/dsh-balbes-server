@@ -33,6 +33,18 @@ REPO_DIR="${DSH_BALBES_REPO_DIR:-$HOME/dsh-balbes-server}"
 DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
 CREDENTIALS_FILE="$DSH_HOME/.credentials.yaml"
 PROFILE_NAME="balbes"
+ADMIN_AUTH_FILE="$DSH_HOME/admin-auth.json"
+UI_DIR="$DSH_HOME/balbes/ui"
+SERVICE_NAME="dsh-balbes"
+BALBES_PORT="${BALBES_PORT:-8080}"
+RESET_ADMIN_PASSWORD=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --reset-admin-password) RESET_ADMIN_PASSWORD=1 ;;
+        *) die "unknown option: $1 (supported: --reset-admin-password)" ;;
+    esac
+    shift
+done
 NODE_MAJOR_MIN=22
 NODESOURCE_SETUP_URL="https://deb.nodesource.com/setup_${NODE_MAJOR_MIN}.x"
 
@@ -358,31 +370,176 @@ verify_composition() {
     info "Profile '$PROFILE_NAME' composes OK."
 }
 
-print_smoke_instruction() {
-    cat <<'EOF'
+# build_workspace — собрать наши пакеты из репо (root pnpm workspace).
+# Сборка идёт ДО рестарта сервиса: при падении install.sh выходит с ошибкой,
+# работающий сервис не трогается.
+build_workspace() {
+    info "Building workspace packages (host, contracts, admin SPA)..."
+    ( cd "$REPO_DIR" && pnpm install --frozen-lockfile=false && pnpm -r --if-present run build ) || die "workspace build failed"
+    info "Workspace build OK."
+}
+
+# copy_host_into_profile — собранный host реальным каталогом в node_modules
+# профиля (резолв @deepseek-ai подъёмом к зеркалу $DSH_HOME/profiles/node_modules).
+copy_host_into_profile() {
+    local profile_dir="$DSH_HOME/profiles/$PROFILE_NAME"
+    local dst="$profile_dir/node_modules/dsh-balbes-host"
+    mkdir -p "$profile_dir/node_modules"
+    rm -rf "$dst"
+    cp -R "$REPO_DIR/packages/bundles/dsh-balbes-host" "$dst"
+    rm -f "$dst/tsconfig.json"
+    rm -rf "$dst/tests" "$dst/src" "$dst/lib/types"
+    chmod -R u+rwX,go-w "$dst"
+    info "Host bundle copied into $dst"
+}
+
+# deploy_ui — собрать dist SPA в $DSH_HOME/balbes/ui (без старых файлов).
+deploy_ui() {
+    local src="$REPO_DIR/packages/frontend/dsh-balbes-admin/dist"
+    local dst="$UI_DIR"
+    if [[ ! -f "$src/index.html" ]]; then
+        die "SPA dist missing at $src — workspace build did not produce it"
+    fi
+    mkdir -p "$(dirname "$dst")"
+    rm -rf "$dst"
+    cp -R "$src" "$dst"
+    info "Admin UI deployed to $dst"
+}
+
+# admin_credentials_ensure — создать admin-auth.json один раз (600) и
+# напечатать логин/пароль. Повторный запуск = печать логина + подсказка.
+admin_credentials_ensure() {
+    local core_module="$DSH_HOME/profiles/$PROFILE_NAME/node_modules/dsh-balbes-host/lib/core.js"
+    [[ -f "$core_module" ]] || die "host core not built at $core_module — build step failed"
+    local out login created password
+    out="$(DSH_HOME="$DSH_HOME" node "$REPO_DIR/scripts/admin-creds.mjs" ensure --core "$core_module" --home "$DSH_HOME")" || die "admin credentials step failed"
+    login="$(printf '%s' "$out" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).login")"
+    created="$(printf '%s' "$out" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).created")"
+    if [[ "$created" == "true" ]]; then
+        password="$(printf '%s' "$out" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).password")"
+        chmod 600 "$ADMIN_AUTH_FILE"
+        info "Admin credentials generated (stored hashed, printed once):"
+        info "  login:    $login"
+        info "  password: $password"
+    else
+        info "Admin login (unchanged): $login"
+        info "Admin password is stored hashed only; reset it with: bash scripts/install.sh --reset-admin-password"
+    fi
+}
+
+# admin_password_reset — новый пароль; логин/jwtSecret не меняются.
+admin_password_reset() {
+    local core_module="$DSH_HOME/profiles/$PROFILE_NAME/node_modules/dsh-balbes-host/lib/core.js"
+    [[ -f "$ADMIN_AUTH_FILE" ]] || die "no admin auth file at $ADMIN_AUTH_FILE"
+    [[ -f "$core_module" ]] || die "host core not built at $core_module — run the installer once first"
+    local out login password
+    out="$(DSH_HOME="$DSH_HOME" node "$REPO_DIR/scripts/admin-creds.mjs" reset --core "$core_module" --home "$DSH_HOME")" || die "password reset failed"
+    login="$(printf '%s' "$out" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).login")"
+    password="$(printf '%s' "$out" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).password")"
+    info "Password reset for login: $login"
+    info "  new password (printed once): $password"
+}
+
+# write_systemd_unit — шаблон юнита (спека 9.5.8); пути владельца подставляются.
+write_systemd_unit() {
+    local unit="/etc/systemd/system/$SERVICE_NAME.service"
+    local dsh_bin home
+    dsh_bin="$(command -v dsh)" || die "dsh not found"
+    home="$HOME"
+    run_priv tee "$unit" >/dev/null <<EOF
+[Unit]
+Description=dsh-balbes server (agent host + admin API)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$(id -un)
+WorkingDirectory=$home
+Environment=DSH_HOME=$DSH_HOME
+Environment=BALBES_PORT=$BALBES_PORT
+Environment=BALBES_UI_DIST=$UI_DIR
+ExecStart=$dsh_bin --profile $PROFILE_NAME
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=$DSH_HOME $home
+RestrictSUIDSGID=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    run_priv systemctl daemon-reload
+    run_priv systemctl enable --now "$SERVICE_NAME.service"
+    info "systemd unit $SERVICE_NAME enabled and started."
+}
+
+# health_check — сервис отвечает POST /api/health (R-API-1: всё POST).
+health_check() {
+    local ok
+    ok="$(curl -fsS -X POST "http://127.0.0.1:$BALBES_PORT/api/health" 2>/dev/null || true)"
+    if [[ "$ok" != *'"ok":true'* ]]; then
+        warn "health check failed — see: systemctl status $SERVICE_NAME; journalctl -u $SERVICE_NAME -n 50"
+        return 1
+    fi
+    info "Health OK: POST http://127.0.0.1:$BALBES_PORT/api/health"
+}
+
+print_admin_summary() {
+    local ip
+    ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    ip="${ip:-<IP>}"
+    cat <<EOF
 
 =====================================================================
-Installation complete. Run the smoke check:
+Installation complete. Admin UI: http://$ip:$BALBES_PORT
 
-  dsh --profile balbes "Напиши 'ok' и больше ничего"
+  Login:    (printed above / see the install log)
+  Password: (printed once on first install; reset via:
+             bash scripts/install.sh --reset-admin-password)
+
+Smoke without a browser (JWT):
+  TOKEN=\$(curl -fsS -X POST http://127.0.0.1:$BALBES_PORT/api/auth/login \\
+    -H 'content-type: application/json' \\
+    -d '{"login":"<LOGIN>","password":"<PASSWORD>"}')
+  curl -fsS -X POST http://127.0.0.1:$BALBES_PORT/api/prompt \\
+    -H "authorization: Bearer \$TOKEN" \\
+    -d '{"prompt":"Напиши ok"}'
 =====================================================================
 EOF
 }
 
 main() {
-    info "== dsh '$PROFILE_NAME' profile installer (Stage 1) =="
+    info "== dsh '$PROFILE_NAME' installer (Stage 2: server + admin) =="
     info "repo: $REPO_URL -> $REPO_DIR"
     info "dsh home: $DSH_HOME"
     if [[ "$(id -u)" -eq 0 ]]; then
-        warn "running as root: privileged steps skip sudo; npm -g installs go to the root prefix"
+        warn "running as root: privileged steps skip sudo"
     fi
     ensure_tooling
     ensure_dsh
     ensure_repo
+    if [[ "$RESET_ADMIN_PASSWORD" -eq 1 ]]; then
+        admin_password_reset
+        health_check || true
+        exit 0
+    fi
+    build_workspace
     sync_profile
+    copy_host_into_profile
+    deploy_ui
     configure_api_key
     verify_composition
-    print_smoke_instruction
+    admin_credentials_ensure
+    write_systemd_unit
+    health_check || die "service did not pass health check"
+    print_admin_summary
 }
 
 # Run main when executed directly — as a file (`bash install.sh`) or via
