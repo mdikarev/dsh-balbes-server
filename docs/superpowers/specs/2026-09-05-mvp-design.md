@@ -287,10 +287,11 @@ UI», замена headless постоянным host-слоем и превра
   SPA, это не API). Метод-правило снимает REST-споры и одинаково ложится на
   будущие каналы.
 - **Контракты:** пакет `dsh-balbes-contracts` (чистые TS-типы
-  `XxxRequest`/`XxxResponse`/`ApiError`, импортируются host'ом и SPA) + реестр
-  контрактов в доке по шаблону (method POST, path, auth, request, response,
-  errors, notes). В canon контракты попадут через `canon-write` после
-  стабилизации.
+  `XxxRequest`/`XxxResponse`/`ApiErrorBody`, импортируются SPA как
+  типизированный клиент; host держит структурные формы, соответствие форм
+  host-API типам проверяется REAL-тестом и typecheck) + реестр контрактов в
+  доке по шаблону (method POST, path, auth, request, response, errors, notes).
+  В canon контракты попадут через `canon-write` после стабилизации.
 - **Авторизация:** JWT HS256, `jwtSecret` в `$DSH_HOME/admin-auth.json` (600);
   пароль — только scrypt-хэш, открытый пароль не хранится; печать пароля один
   раз при генерации; сброс — `install.sh --reset-admin-password`. TTL 24 ч;
@@ -378,8 +379,8 @@ UI», замена headless постоянным host-слоем и превра
 8. Секреты не в git: `admin-auth.json` и `.credentials.yaml` в `$DSH_HOME`
    (600).
 9. CI зелёный (см. 9.2.8).
-10. Реестр контрактов заполнен; типы `dsh-balbes-contracts` импортируются
-    host'ом и SPA.
+10. Реестр контрактов заполнен; типы `dsh-balbes-contracts` используются
+    SPA-клиентом; формы host-API соответствуют типам (REAL-тест + typecheck).
 
 ### 9.5 Спайки (закрыты в дизайн-сессии; точная проводка механизмов — уровень плана)
 
