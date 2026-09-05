@@ -385,6 +385,9 @@ main() {
     print_smoke_instruction
 }
 
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+# Run main when executed directly — as a file (`bash install.sh`) or via
+# stdin (`curl ... | bash`, where BASH_SOURCE[0] is unset) — but not when
+# sourced (tests load functions with `source install.sh`).
+if [[ "${BASH_SOURCE[0]:-}" == "$0" || -z "${BASH_SOURCE[0]:-}" ]]; then
     main "$@"
 fi
