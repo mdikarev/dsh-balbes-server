@@ -1,15 +1,23 @@
 # Discrepancies
 
 ## How to use
-<!-- Explain how discrepancies are recorded and resolved. -->
+
+Здесь фиксируются расхождения между canon (`docs/canon/`) и кодом/доками вне
+canon. Запись заводится при обнаружении расхождения; резолюция — через
+`canon-audit`: либо canon правится (docs_stale), либо код приводится к canon
+(code_stale), либо решение откладывается (pending). Ни одна сторона не
+выбирается молча.
 
 ## Open
-<!-- Keep unresolved discrepancy entries here. -->
+
+На данный момент открытых расхождений нет.
 
 ## Resolved
-<!-- Move resolved discrepancy entries here. -->
+
+Пока нет.
 
 ## Template for new entries
+
 <!--
   ### D-001: <short title>
 - **status:** open | resolved

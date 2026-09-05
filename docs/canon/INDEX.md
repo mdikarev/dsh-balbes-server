@@ -1,12 +1,25 @@
 # Canon Index
 
 ## How to use this canon
-<!-- Explain how agents should navigate and apply the canon. -->
+
+Canon в `docs/canon/` — источник истины для проектирования и разработки в этом
+репозитории. При работе над темой сначала выполняется
+`doc-canon scout "<topic>"` (обязателен, когда индекс собран) и используется
+выданный рабочий набор; canon редактируется только через скиллы canon-*
+(`canon-write` и др.), не вручную. За пределами canon действуют рамки
+CONTRIBUTING.md и правила AGENTS.md/CLAUDE.md.
 
 ## Reading order
-<!-- List the recommended reading sequence. -->
+
+1. OVERVIEW.md — зачем проект, scope, сигналы успеха.
+2. ARCHITECTURE.md — слои, компоненты, потоки, границы.
+3. GLOSSARY.md — термины (профиль, бандл, патч, host, headless и др.).
+4. CANON_CONTRACT.md — структура canon и шаблоны секций.
+5. DISCREPANCIES.md — открытые/закрытые расхождения.
+6. future_plans/INDEX.md — направленные инициативы будущего (не задачи).
 
 ## Sections
+
 | id | path | role | required |
 | --- | --- | --- | --- |
 | index | INDEX.md | index | true |
@@ -18,4 +31,6 @@
 | future-plans-index | future_plans/INDEX.md | section | true |
 
 ## Discrepancies
-<!-- Point to DISCREPANCIES.md and briefly explain its workflow. -->
+
+Расхождения canon ↔ код/доки фиксируются в DISCREPANCIES.md и резолвятся через
+`canon-audit`. Сейчас открытых расхождений нет.

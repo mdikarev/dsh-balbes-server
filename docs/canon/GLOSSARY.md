@@ -1,13 +1,76 @@
 # Glossary
 
 ## How to use
-<!-- Explain how canonical terms should be applied. -->
+
+Термины canon используются единообразно во всех секциях canon, в спеке, планах,
+runbook и коде. Если термин из этого списка встречается в проекте — он означает
+именно то, что зафиксировано здесь.
 
 ## Terms
-<!-- Add each canonical term as an H3 heading. -->
+
+### dsh
+DeepSeek Harness — лоадер профилей и платформа расширений. Профиль =
+`dsh.profile.bundles` + свой слой патчей; функции dsh — Cordis-компоненты
+(бандлы/плагины). В этом проекте dsh — зависимость, не форк.
+
+### Профиль (profile)
+Каталог `$DSH_HOME/profiles/<name>` (в репозитории — `profiles/<name>/`) с
+манифестом `package.json` (`dsh.profile.bundles` — список бандлов,
+`patchReload: startup | live`), слоем патчей `cordis.patch.yml` и
+`pnpm-workspace.yaml`. Один профиль = одна поверхность dsh.
+
+### Бандл (bundle)
+npm-пакет с декларацией `dsh.bundle.patch` (указывает на свой
+`cordis.patch.yml`); поставляет патч-слой композиции. Бандл из списка `bundles`
+обязан иметь такую декларацию, иначе старт падает громко. Примеры:
+`@deepseek-ai/dsh-base`, `@deepseek-ai/dsh-headless`.
+
+### Плагин (plugin)
+Обычный Cordis-плагин без `dsh.bundle.patch`: сервис, api-роут, тул, ui-плагин.
+Подключается записями `insert: {id, name}` в патч профиля.
+
+### Патч (patch) / `cordis.patch.yml`
+Слой композиции: YAML-массив записей — переопределение конфига по `id`
+(заменяет конфиг целиком, deep-merge нет), отключение (`disabled: true`) и
+`insert` новых записей под уникальными `id`. Пустой или только-комментарный
+файл роняет старт — отключение слоя пишется как `[]`.
+
+### Host
+Транспортный слой внутри процесса dsh (HTTP/WS-роуты, раздача статики), а не
+«сервер на каждую интеграцию». В этом проекте штатная морда dsh
+(`dsh-web-app`) не используется; будущий собственный host — плагин над
+dsh-base в том же процессе.
+
+### Headless
+`@deepseek-ai/dsh-headless` — one-shot драйвер: одна задача из CLI → финальный
+ответ в stdout → exit. Инструмент smoke-проверки, не сервер и не демон; в
+профиле `balbes` — временный app-слой.
+
+### `$DSH_HOME`
+Каталог данных dsh (по умолчанию `~/.dsh`): `profiles/`, `.credentials.yaml`,
+сессии, настройки. Уважается установщиком и runbook'ом.
+
+### Mirror установки (`$DSH_HOME/profiles/node_modules`)
+Симлинки-зеркало на каталог установки dsh, через которое резолвятся базовые
+бандлы профиля. Поэтому базовые бандлы не кладутся в `dependencies` профиля и
+не ставятся через pnpm (registry содержит сломанные устаревшие версии).
+
+### Smoke
+Ручная проверка работоспособности ядра: `dsh --profile balbes "<задача>"` —
+агент с тулами выполняет задачу и возвращает ответ (exit 0). Установщик LLM
+автоматически не запускает.
 
 ## Naming conventions
-<!-- Record project-wide naming rules. -->
+
+- Пакеты надстройки: `dsh-balbes-<роль>` (kebab-case); неймспейс
+  `@deepseek-ai` не занимается.
+- Файлы: kebab-case; функции/переменные camelCase; классы/типы PascalCase;
+  константы UPPER_SNAKE; булевы — `is*/has*/should*`. Код и комментарии — на
+  английском.
+- Один профиль на поверхность; имя профиля — `<name>` в
+  `$DSH_HOME/profiles/<name>` и в `profiles/<name>/` репозитория.
 
 ## Related canon
-<!-- Point to related canon sections. -->
+
+- OVERVIEW.md, ARCHITECTURE.md — контекст использования терминов.
+- CANON_CONTRACT.md — структура canon.

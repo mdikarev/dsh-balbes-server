@@ -1,24 +1,73 @@
 # Overview
 
 ## Purpose
-<!-- State why the project exists. -->
+
+`dsh-balbes-server` — серверная дистрибуция DeepSeek Harness на фундаменте dsh:
+собственная сборка движка dsh (без форка) для работы на VPS в single-user
+режиме, без штатной веб-морды dsh и со своей админкой в перспективе. Цель —
+разворачиваемый агентский сервер, который затем обрастает админкой,
+долговременной памятью и самообучением (аддитивные компоненты над dsh).
 
 ## Problem & context
-<!-- Describe the problem and relevant context. -->
+
+dsh — это лоадер профилей: профиль = список бандлов (`dsh.profile.bundles`) +
+свой слой патчей (`cordis.patch.yml`). Любая функция dsh — Cordis-компонент,
+который можно отключить, переопределить или добавить патчем; даже штатная
+веб-морда (`dsh-web-app` + `dsh-client-ui-*`) и MCP-клиент — бандлы, а не ядро.
+Поэтому «свой сервер» не требует форка: он собирается из готовых бандлов dsh
+поверх `dsh-base` через собственный профиль, без правки установленных
+`@deepseek-ai/*`.
+
+Долгосрочный вектор — самообучаемый агент с долговременной памятью (внешний
+референс направления — продукт Hermes Agent). Память, самообучение, админка и
+дополнительные каналы — будущие этапы; зафиксирован и выполнен Этап 1
+(разворачиваемое ядро dsh-base на сервере).
 
 ## Primary users / agents
-<!-- Identify the people and agents this project serves. -->
+
+- Один владелец сервера (single-user): устанавливает профиль `balbes` на VPS
+  одной командой, выполняет smoke-задачи через headless-CLI.
+- Агенты-разработчики, работающие в этом репозитории: следуют canon
+  (`docs/canon/`), рамкам CONTRIBUTING и правилам AGENTS.md.
 
 ## Scope
 
 ### In scope
-<!-- List included responsibilities. -->
+
+- Профиль dsh `balbes` = `@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-headless`
+  (headless — временный app-слой для smoke; штатная веб-морда не включается).
+- Одно-командная установка на VPS с Ubuntu (`scripts/install.sh`,
+  `curl | bash`): Node ≥ 22, pnpm, git, глобальный dsh, клон репозитория,
+  синхронизация профиля в `$DSH_HOME/profiles/balbes`, приём ключа DeepSeek в
+  `$DSH_HOME/.credentials.yaml`, проверка композиции.
+- Runbook развёртывания (`docs/runbooks/stage1-vps.md`).
+- Минимальный CI (GitHub Actions): валидация композиции профиля без LLM.
+- Ручная smoke-проверка headless-CLI на сервере.
 
 ### Out of scope
-<!-- List explicit exclusions. -->
+
+- Админка (host/HTTP-API/UI-плагины), sdk-профиль как фундамент.
+- Каналы (telegram, A2A) — только архитектурное решение «один процесс dsh»
+  (модель B1), без реализации.
+- Долговременная память (Qdrant), самообучение.
+- Мультиюзерность, аккаунты, роли.
+- Замена драйвера агентского цикла; граф-конфиг поведения.
+- Полноценный CI с LLM-вызовами (в CI нет ключей).
 
 ## Success signals
-<!-- Describe observable signs of success. -->
+
+- Профиль `balbes` разворачивается на VPS по runbook'у одной командой
+  (проверено на Ubuntu 24.04, dsh 0.1.2-rc.1).
+- Smoke-задача `dsh --profile balbes "<задача>"` реально выполняется агентом
+  с тулами и возвращает ответ (exit 0).
+- Штатная веб-морда dsh не запускается (в профиле только base+headless;
+  headless — one-shot, ничего не слушает и не оставляет процессов).
+- CI зелёный (валидация композиции без LLM).
+- Секреты не хранятся в репозитории: ключ живёт в `$DSH_HOME/.credentials.yaml`
+  (chmod 600) на сервере.
 
 ## Related canon
-<!-- Point to related canon sections. -->
+
+- ARCHITECTURE.md — слои, компоненты, потоки, границы.
+- GLOSSARY.md — термины (профиль, бандл, патч, host, headless и др.).
+- CANON_CONTRACT.md — структура canon и шаблоны секций.
