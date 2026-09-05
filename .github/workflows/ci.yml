@@ -1,0 +1,34 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate-profile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dsh CLI
+        run: npm i -g @deepseek-ai/dsh
+
+      - name: Sync balbes profile into DSH_HOME
+        run: |
+          mkdir -p "$HOME/.dsh/profiles"
+          cp -R profiles/balbes "$HOME/.dsh/profiles/balbes"
+
+      - name: Validate profile composition (no LLM)
+        run: dsh --profile balbes --dump-config >/dev/null
+
+      - name: Validate installer syntax
+        run: bash -n scripts/install.sh
+
+      - name: Validate profile manifest is JSON
+        run: node -e "JSON.parse(require('fs').readFileSync('profiles/balbes/package.json','utf8'))"
+```
