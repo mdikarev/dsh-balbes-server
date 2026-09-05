@@ -6,7 +6,7 @@
     "profile": {
       "bundles": [
         "@deepseek-ai/dsh-base",
-        "@deepseek-ai/dsh-headless"
+        "dsh-balbes-host"
       ],
       "patchReload": "startup"
     }

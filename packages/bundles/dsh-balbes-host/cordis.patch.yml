@@ -27,7 +27,7 @@
     - id: balbes-static
       name: 'dsh-balbes-host/static'
       config:
-        uiDistDir: !!js process.env.BALBES_UI_DIST
+        uiDistDir: !!js "process.env.BALBES_UI_DIST"
 
     - id: balbes-auth
       name: 'dsh-balbes-host/auth'
