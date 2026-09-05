@@ -24,6 +24,11 @@ export function apply(ctx: {
   });
 
   http.post("/api/prompt", "bearer", async (_req, res, body) => {
+    if (typeof body !== "object" || body === null || Array.isArray(body)) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { code: "bad-request", message: "request body must be a JSON object" } }));
+      return;
+    }
     const b = body as { prompt?: unknown };
     if (typeof b.prompt !== "string" || b.prompt.trim() === "") {
       res.writeHead(400, { "content-type": "application/json" });

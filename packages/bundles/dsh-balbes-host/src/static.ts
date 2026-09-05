@@ -43,9 +43,14 @@ export function apply(ctx: {
     let data: Buffer;
     try {
       data = await readFile(file);
-    } catch {
+    } catch (error) {
+      // Fall back to index.html (SPA) only when the path is genuinely missing
+      // or undecidable; any other read error (EACCES etc.) must surface as a
+      // miss (404) rather than be masked by a 200 index.html.
+      const code = (error as NodeJS.ErrnoException).code;
+      const missing = code === "ENOENT" || code === "EISDIR" || code === "ENOTDIR";
+      if (!missing) return null;
       if (pathname === "/") return null;
-      // SPA fallback: serve index.html (with its text/html MIME) for unknown paths.
       file = join(distRoot, "index.html");
       try {
         data = await readFile(file);

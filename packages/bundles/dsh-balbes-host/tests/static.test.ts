@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach } from "vitest";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { apply as applyStatic } from "../src/static.js";
@@ -78,6 +78,19 @@ describe("static", () => {
     const r = await serve("/missing.js");
     expect(r?.status).toBe(200);
     expect(r?.type).toBe("text/html; charset=utf-8");
+    expect((r?.body as Buffer).toString()).toContain("spa");
+  });
+
+  it("unreadable (EACCES) assets yield a miss, not a 200 index.html fallback", async () => {
+    const dir = await makeUi({ "index.html": "<h1>spa</h1>", "blocked.js": "console.log(1)" });
+    await chmod(join(dir, "blocked.js"), 0o000);
+    const { serve } = bootUi(dir);
+    // A permission error must surface as a miss (the dispatcher answers 404)
+    // instead of being masked by the SPA fallback.
+    expect(await serve("/blocked.js")).toBeNull();
+    // A genuinely missing asset still gets the SPA fallback.
+    const r = await serve("/missing.js");
+    expect(r?.status).toBe(200);
     expect((r?.body as Buffer).toString()).toContain("spa");
   });
 });
