@@ -40,15 +40,16 @@ export function apply(ctx: {
     if (target !== distRoot && !target.startsWith(distRoot + sep)) {
       return { status: 403, body: "forbidden", type: "text/plain" };
     }
-    const file = pathname === "/" ? join(distRoot, "index.html") : target;
+    let file = pathname === "/" ? join(distRoot, "index.html") : target;
     let data: Buffer;
     try {
       data = await readFile(file);
     } catch {
       if (pathname === "/") return null;
-      // SPA fallback: serve index.html for unknown paths.
+      // SPA fallback: serve index.html (with its text/html MIME) for unknown paths.
+      file = join(distRoot, "index.html");
       try {
-        data = await readFile(join(distRoot, "index.html"));
+        data = await readFile(file);
       } catch {
         return null;
       }

@@ -1,4 +1,5 @@
 import z from "@deepseek-ai/schemastery";
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { BalbesHttp } from "./types.js";
@@ -16,6 +17,8 @@ export interface AuthGuard {
   issue(login: string): string;
   verify(token: string): { login: string } | null;
   checkLogin(login: string, password: string): Promise<boolean>;
+  /** Warm the cached credentials synchronously at startup; false when the file is unreadable. */
+  loadSync(): boolean;
 }
 
 const FAIL_LIMIT = 5;
@@ -25,14 +28,28 @@ export function createGuard(opts: { adminAuthFile: string; loginTtlSeconds?: num
   let cached: AdminAuth | null = null;
   const fails = new Map<string, number[]>();
 
+  function parse(raw: string): AdminAuth {
+    return JSON.parse(raw) as AdminAuth;
+  }
+
   async function load(): Promise<AdminAuth> {
-    if (cached !== null) return cached;
-    const raw = await readFile(opts.adminAuthFile, "utf8");
-    cached = JSON.parse(raw) as AdminAuth;
-    return cached;
+    // Re-read from disk on every login so a file that appears after startup
+    // (or is rotated) is picked up; loadSync() covers the startup fast path.
+    const auth = parse(await readFile(opts.adminAuthFile, "utf8"));
+    cached = auth;
+    return auth;
   }
 
   return {
+    loadSync() {
+      try {
+        cached = parse(readFileSync(opts.adminAuthFile, "utf8"));
+        return true;
+      } catch {
+        cached = null;
+        return false;
+      }
+    },
     issue(login) {
       const auth = cached;
       if (auth === null) throw new Error("auth: admin file not loaded");
@@ -60,6 +77,9 @@ export function apply(ctx: {
   const dshHome = ctx.config.dshHome ?? process.env.DSH_HOME ?? join(process.env.HOME ?? ".", ".dsh");
   const adminAuthFile = ctx.config.adminAuthFile ?? join(dshHome, "admin-auth.json");
   const guard = createGuard({ adminAuthFile, loginTtlSeconds: ctx.config.loginTtlSeconds ?? 86400 });
+  if (!guard.loadSync()) {
+    ctx.logger.warn(`balbes-auth: cannot read ${adminAuthFile}; auth unavailable until the file appears`);
+  }
   ctx.provide("balbesAuth", guard);
   const http = ctx.get("balbesHttp");
   const ipFails = new Map<string, number[]>();
