@@ -1,1 +1,5 @@
 .doc-canon/
+node_modules/
+.pnpm-store/
+dist/
+lib/
