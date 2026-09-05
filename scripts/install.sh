@@ -375,7 +375,7 @@ verify_composition() {
 # работающий сервис не трогается.
 build_workspace() {
     info "Building workspace packages (host, contracts, admin SPA)..."
-    ( cd "$REPO_DIR" && pnpm install --frozen-lockfile=false && pnpm -r --if-present run build ) || die "workspace build failed"
+    ( cd "$REPO_DIR" && pnpm install --frozen-lockfile=false && node scripts/link-core.mjs && pnpm -r --if-present run build ) || die "workspace build failed"
     info "Workspace build OK."
 }
 
