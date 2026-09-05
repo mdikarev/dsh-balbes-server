@@ -34,6 +34,7 @@
 - Create: `scripts/link-core.mjs`
 - Create: `packages/contracts/package.json`
 - Create: `packages/contracts/tsconfig.json`
+- Create: `packages/contracts/tsconfig.build.json`
 - Create: `packages/bundles/dsh-balbes-host/package.json` (манифест-заготовка)
 - Create: `packages/frontend/dsh-balbes-admin/package.json` (манифест-заготовка)
 
@@ -139,10 +140,15 @@ console.log(`link-core: @deepseek-ai связан из ${src}`);
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": { "types": "./lib/index.d.ts", "default": "./lib/index.js" },
+    "./package.json": "./package.json"
+  },
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run"
   },
   "devDependencies": {
@@ -151,13 +157,23 @@ console.log(`link-core: @deepseek-ai связан из ${src}`);
   }
 }
 ```
-(`main`/`types` на исходники: контракты — чистые типы, потребляются на этапе компиляции; для stage-2 сборка не нужна.)
+(контракты — компилируемый пакет: `lib/` c `index.js` + `index.d.ts`; потребляются host/SPA на этапе компиляции, рантайм-зависимостей нет. Preflight R-1.)
 
-`packages/contracts/tsconfig.json`:
+`packages/contracts/tsconfig.json` (typecheck src+tests, без эмита):
 ```json
 {
   "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "noEmit": true },
   "include": ["src", "tests"]
+}
+```
+
+`packages/contracts/tsconfig.build.json` (сборка src → lib):
+```json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "outDir": "lib", "rootDir": "src", "declaration": true },
+  "include": ["src"]
 }
 ```
 
@@ -212,6 +228,7 @@ console.log(`link-core: @deepseek-ai связан из ${src}`);
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "dsh-balbes-contracts": "workspace:*",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.0",
@@ -326,10 +343,10 @@ describe("contracts", () => {
 });
 ```
 
-- [ ] **Step 3: Прогнать typecheck и тесты**
+- [ ] **Step 3: Собрать, прогнать typecheck и тесты**
 
-Run: `pnpm --filter dsh-balbes-contracts typecheck && pnpm --filter dsh-balbes-contracts test`
-Expected: PASS (2 теста), typecheck без ошибок.
+Run: `pnpm --filter dsh-balbes-contracts build && pnpm --filter dsh-balbes-contracts typecheck && pnpm --filter dsh-balbes-contracts test`
+Expected: `lib/index.js` + `lib/index.d.ts` созданы; PASS (2 теста); typecheck без ошибок.
 
 - [ ] **Step 4: Коммит**
 
@@ -665,33 +682,39 @@ export interface BalbesHttp {
 
 `packages/bundles/dsh-balbes-host/src/startup.ts`:
 ```ts
-import { Command } from "commander";
-import { parseCmdline } from "@deepseek-ai/dsh-cmdline";
-
 /** Стабильное имя плагина. */
 export const name = "balbes-startup";
-/** Сервис, требуемый до разбора аргументов. */
+/** cmdlineArgs поставляет launcher (dsh); плагин стартует после него. */
 export const inject = ["cmdlineArgs"];
 
-function balbesCommand(): Command {
-  return new Command()
-    .name("dsh --profile balbes")
-    .description("balbes server: HTTP admin (auth + test prompt). No task arguments.")
-    .helpOption("-h, --help", "show help")
-    .allowExcessArguments(false)
-    .addHelpText("after", `
+const USAGE = `dsh --profile balbes — balbes server: HTTP admin (auth + test prompt).
+No task arguments are accepted.
+
 Examples:
   dsh --profile balbes           start the admin server (daemon)
-`);
-}
+`;
 
-export function apply(ctx: { provide(key: string, value: unknown): void }): void {
-  const program = balbesCommand();
-  program.action(() => {
-    // Никаких аргументов: balbes — сервер, не one-shot. Excess args уже
-    // отклонены allowExcessArguments(false); пустое действие достаточно.
-  });
-  parseCmdline(ctx as never, program);
+/**
+ * App-слой профиля: парсит CLI без внешних зависимостей (commander не
+ * резолвится из скопированного в профиль пакета — см. preflight R-2).
+ * Без аргументов ничего не делает: сервер держит процесс сам (спека 9.1).
+ */
+export function apply(ctx: {
+  get(key: string): unknown;
+  logger: { warn(m: string): void };
+}): void {
+  const cmdline = ctx.get("cmdlineArgs") as { args: string[] } | undefined;
+  const exit = ctx.get("appExit") as ((code: number) => void) | undefined;
+  const args = cmdline?.args ?? [];
+  if (args.includes("-h") || args.includes("--help")) {
+    process.stdout.write(USAGE);
+    exit?.(0);
+    return;
+  }
+  if (args.length > 0) {
+    process.stderr.write(`error: balbes takes no task arguments (got: ${args.join(" ")})\n\n${USAGE}`);
+    exit?.(1);
+  }
 }
 ```
 
@@ -1543,7 +1566,7 @@ git commit -m "add host api plugin with core prompt runner"
     - id: balbes-static
       name: 'dsh-balbes-host/static'
       config:
-        uiDistDir: !!js "process.env.BALBES_UI_DIST ?? null"
+        uiDistDir: !!js "process.env.BALBES_UI_DIST"
 
     - id: balbes-auth
       name: 'dsh-balbes-host/auth'
