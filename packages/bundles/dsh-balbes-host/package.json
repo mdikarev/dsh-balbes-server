@@ -1,0 +1,28 @@
+{
+  "name": "dsh-balbes-host",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/types/index.d.ts",
+  "exports": {
+    ".": { "types": "./lib/types/index.d.ts", "default": "./lib/index.js" },
+    "./startup": { "types": "./lib/types/startup.d.ts", "default": "./lib/startup.js" },
+    "./server": { "types": "./lib/types/server.d.ts", "default": "./lib/server.js" },
+    "./static": { "types": "./lib/types/static.d.ts", "default": "./lib/static.js" },
+    "./auth": { "types": "./lib/types/auth.d.ts", "default": "./lib/auth.js" },
+    "./api": { "types": "./lib/types/api.d.ts", "default": "./lib/api.js" },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
