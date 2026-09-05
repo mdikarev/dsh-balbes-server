@@ -179,8 +179,12 @@ append_key_to_credentials() {
     tmp="${file}.tmp.$$"
     (
         umask 077
-        awk -v n="$line_no" -v ind="$indent" -v val="$quoted" \
-            'NR == n { print; print ind "DEEPSEEK_API_KEY: " val; next } { print }' "$file" >"$tmp"
+        # The key line travels via the environment, NOT through awk -v: awk
+        # applies C-escape processing to -v values (\\ -> \, \" -> "), which
+        # would corrupt the already-YAML-escaped key the moment it contains a
+        # literal backslash or quote. ENVIRON carries the bytes verbatim.
+        LINE="${indent}DEEPSEEK_API_KEY: ${quoted}" awk -v n="$line_no" \
+            'NR == n { print; print ENVIRON["LINE"]; next } { print }' "$file" >"$tmp"
     )
     chmod 600 "$tmp"
     mv -f "$tmp" "$file"

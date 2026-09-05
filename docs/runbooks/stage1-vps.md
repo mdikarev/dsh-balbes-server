@@ -109,8 +109,15 @@ dsh --profile balbes "Напиши 'ok' и больше ничего"
 
 ```bash
 git -C "$HOME/dsh-balbes-server" pull --ff-only
+mkdir -p "${DSH_HOME:-$HOME/.dsh}/profiles"
+rm -rf "${DSH_HOME:-$HOME/.dsh}/profiles/balbes"
 cp -R "$HOME/dsh-balbes-server/profiles/balbes" "${DSH_HOME:-$HOME/.dsh}/profiles/balbes"
 ```
+
+Как и в установщике, синхронизация выполняется заменой каталога целиком:
+старый `profiles/balbes` удаляется перед копированием (иначе повторный
+`cp -R` вложил бы новый профиль в `profiles/balbes/balbes`, и обновление
+молча не сработало бы).
 
 Новая версия самого dsh ставится глобально:
 
