@@ -1,9 +1,14 @@
-import { createHmac, randomBytes, scrypt as scryptCb, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, scrypt as scryptCb, timingSafeEqual, type BinaryLike, type ScryptOptions } from "node:crypto";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { dirname, join } from "node:path";
 
-const scrypt = promisify(scryptCb);
+const scrypt = promisify(scryptCb) as (
+  password: BinaryLike,
+  salt: BinaryLike,
+  keylen: number,
+  options: ScryptOptions
+) => Promise<Buffer>;
 const SCRYPT_N = 131072; // 2^17
 const SCRYPT_R = 8;
 const SCRYPT_P = 1;
