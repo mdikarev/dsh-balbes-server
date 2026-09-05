@@ -1,0 +1,5 @@
+body { font-family: system-ui, sans-serif; margin: 2rem; }
+main { max-width: 42rem; }
+pre { white-space: pre-wrap; background: #f4f4f4; padding: 1rem; border-radius: 6px; }
+button { margin-top: 1rem; }
+p[role="alert"] { color: #b00020; }
