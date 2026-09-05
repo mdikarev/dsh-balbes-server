@@ -2,18 +2,23 @@ import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, mkdir, cp, writeFile, rm } from "node:fs/promises";
+import { existsSync, realpathSync } from "node:fs";
+import { createRequire } from "node:module";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startStubLlm } from "./helpers/stub-llm.mjs";
 import { createAdminAuth, writeAdminAuth } from "../src/core.js";
+import { runPrompt } from "../src/runner.js";
 
 const execFileP = promisify(execFile);
+const requireFromHere = createRequire(import.meta.url);
 const here = fileURLToPath(new URL(".", import.meta.url)); // tests/ dir
 const pkgRoot = join(here, ".."); // dsh-balbes-host package root
 const fixtureProfile = join(here, "fixtures", "balbes-test-profile");
 const CANNED_TEXT = "ok from stub";
+const PROBE_GLOBAL_KEY = "__balbesRunProbeCtx__";
 
 async function hasDsh(): Promise<boolean> {
   try {
@@ -209,6 +214,72 @@ describe.skipIf(!realEnabled)("REAL composition (dsh CLI + LLM stub)", () => {
         if (current.exitCode === null) current.kill("SIGKILL");
       }
       child = null;
+    }
+  }, 240_000);
+
+  it("in-process: each runPrompt disposes its agent (registry never accumulates)", async () => {
+    if (home === undefined || stub === undefined) throw new Error("beforeAll did not initialize home/stub");
+    // Boot dsh-base (no host rows needed: runPrompt consumes only core
+    // services) inside this vitest process through the same Loader boot the
+    // CLI performs, with one extra probe row that captures a plugin context
+    // able to resolve the core services (same mechanism as headless-runner).
+    const { boot, healProfilesModuleFallback, loadOverlayPatches } = await import("@deepseek-ai/dsh-app-boot");
+    const baseDir = dirname(requireFromHere.resolve("@deepseek-ai/dsh-base/package.json"));
+    const basePatches = loadOverlayPatches("dsh", join(baseDir, "cordis.patch.yml"));
+    if (!existsSync(join(home, "profiles", "node_modules", "@deepseek-ai"))) {
+      // dsh heals $DSH_HOME/profiles/node_modules from its own install at
+      // profile boot; mirror that here so the in-process include can resolve
+      // @deepseek-ai/* from the temp home. The anchor is the running dsh
+      // CLI's own package.json (workspace @deepseek-ai links resolve to it).
+      const dshPkgDir = dirname(realpathSync(requireFromHere.resolve("@deepseek-ai/dsh")));
+      await healProfilesModuleFallback({
+        installAnchor: join(dshPkgDir, "package.json"),
+        home
+      });
+    }
+    const minDir = join(home, "profiles", "balbes-test-min");
+    await mkdir(minDir, { recursive: true });
+    await writeFile(join(minDir, "cordis.yml"), "# in-process REAL test root\n[]\n");
+
+    const previousHome = process.env.DSH_HOME;
+    const previousKey = process.env.DEEPSEEK_API_KEY;
+    process.env.DSH_HOME = home;
+    process.env.DEEPSEEK_API_KEY = "test-key";
+    let bootCtx: { fiber: { dispose(): Promise<unknown> } } | undefined;
+    try {
+      bootCtx = await boot("dsh", join(minDir, "cordis.yml"), [
+        ...basePatches,
+        { insert: [{ id: "balbes-runprobe", name: join(here, "helpers", "runprobe.mjs") }] },
+        { id: "session-telemetry-otel", disabled: true }
+      ]);
+      const probeCtx = globalThis[PROBE_GLOBAL_KEY as keyof typeof globalThis] as { get(key: string): unknown } | undefined;
+      expect(probeCtx).toBeDefined();
+      const agents = probeCtx?.get("agents") as { list(): unknown[] } | undefined;
+      expect(agents).toBeDefined();
+
+      // Baseline: a freshly booted base tree registers no agents of its own.
+      expect(agents?.list()).toEqual([]);
+
+      const first = await runPrompt(probeCtx as { get(key: string): unknown }, "Reply with exactly: ok from stub");
+      expect(first.text).toBe(CANNED_TEXT);
+      // The agent that served the prompt must be gone after the run.
+      expect(agents?.list()).toEqual([]);
+
+      const callsBefore = stub.calls.length;
+      const second = await runPrompt(probeCtx as { get(key: string): unknown }, "Reply with exactly: ok from stub");
+      expect(second.text).toBe(CANNED_TEXT);
+      expect(stub.calls.length).toBeGreaterThan(callsBefore);
+      // Two sequential runs leave no accumulation in the registry.
+      expect(agents?.list()).toEqual([]);
+    } finally {
+      if (bootCtx !== undefined) {
+        await bootCtx.fiber.dispose().catch(() => undefined);
+      }
+      delete globalThis[PROBE_GLOBAL_KEY as keyof typeof globalThis];
+      if (previousHome === undefined) delete process.env.DSH_HOME;
+      else process.env.DSH_HOME = previousHome;
+      if (previousKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+      else process.env.DEEPSEEK_API_KEY = previousKey;
     }
   }, 240_000);
 });
