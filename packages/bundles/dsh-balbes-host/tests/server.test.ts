@@ -11,7 +11,6 @@ interface CtxLike {
   get(key: string): unknown;
   provide(key: string, value: unknown): void;
   on(event: string, listener: (...a: unknown[]) => void): void;
-  config: { host: string; port: number };
   logger: { warn(m: string): void };
 }
 
@@ -49,10 +48,9 @@ describe("server", () => {
       get: (k) => getImpl(k),
       provide: (_k, v) => { http = v as BalbesHttp; },
       on: (ev, fn) => { if (ev === "dispose") onDispose.push(fn as () => void); },
-      config: { host: "127.0.0.1", port },
       logger: { warn: () => undefined }
     };
-    applyServer(ctx); // the server starts listening inside apply on a free port
+    applyServer(ctx, { host: "127.0.0.1", port }); // the server starts listening inside apply on a free port
     disposers.push(() => { for (const fn of onDispose) fn(); });
     return {
       port,

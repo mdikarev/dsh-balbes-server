@@ -55,9 +55,8 @@ export function apply(ctx: {
   get(key: string): unknown;
   provide(key: string, value: BalbesHttp): void;
   on(event: string, listener: (...args: never[]) => void): void;
-  config: { host: string; port: number };
   logger: { warn(msg: string): void };
-}): void {
+}, config: { host: string; port: number }): void {
   const seats: HttpSeat[] = [];
   let staticServe: ((pathname: string) => Promise<StaticResult | null>) | null = null;
   let server: Server | null = null;
@@ -126,8 +125,8 @@ export function apply(ctx: {
   };
 
   server = createServer(listener);
-  server.listen(ctx.config.port, ctx.config.host);
-  ctx.logger.warn(`balbes-server: listening on ${ctx.config.host}:${ctx.config.port}`);
+  server.listen(config.port, config.host);
+  ctx.logger.warn(`balbes-server: listening on ${config.host}:${config.port}`);
 
   ctx.on("dispose", () => {
     server?.close();

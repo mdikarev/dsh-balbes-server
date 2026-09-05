@@ -1,0 +1,11 @@
+{
+  "name": "dsh-profile-balbes-test",
+  "private": true,
+  "dependencies": {},
+  "dsh": {
+    "profile": {
+      "bundles": ["@deepseek-ai/dsh-base", "dsh-balbes-host"],
+      "patchReload": "startup"
+    }
+  }
+}

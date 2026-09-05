@@ -17,11 +17,10 @@ function bootUi(distDir: string): { serve: Serve; warns: string[] } {
     }
   };
   const ctx = {
-    config: { uiDistDir: distDir },
     get: (key: string) => (key === "balbesHttp" ? http : undefined),
     logger: { warn: (m: string) => void warns.push(m) }
   };
-  applyStatic(ctx);
+  applyStatic(ctx, { uiDistDir: distDir });
   return { serve: serve as Serve, warns };
 }
 

@@ -69,14 +69,14 @@ export function createGuard(opts: { adminAuthFile: string; loginTtlSeconds?: num
 }
 
 export function apply(ctx: {
-  config: { adminAuthFile?: string; dshHome?: string; loginTtlSeconds?: number };
   provide(key: string, value: AuthGuard): void;
   get(key: string): BalbesHttp;
   logger: { warn(m: string): void };
-}): void {
-  const dshHome = ctx.config.dshHome ?? process.env.DSH_HOME ?? join(process.env.HOME ?? ".", ".dsh");
-  const adminAuthFile = ctx.config.adminAuthFile ?? join(dshHome, "admin-auth.json");
-  const guard = createGuard({ adminAuthFile, loginTtlSeconds: ctx.config.loginTtlSeconds ?? 86400 });
+}, config: { adminAuthFile?: string; dshHome?: string; loginTtlSeconds?: number }): void {
+  const dshHome = config.dshHome ?? process.env.DSH_HOME ?? join(process.env.HOME ?? ".", ".dsh");
+  const adminAuthFile = config.adminAuthFile ?? join(dshHome, "admin-auth.json");
+  const loginTtlSeconds = config.loginTtlSeconds ?? 86400;
+  const guard = createGuard({ adminAuthFile, loginTtlSeconds });
   if (!guard.loadSync()) {
     ctx.logger.warn(`balbes-auth: cannot read ${adminAuthFile}; auth unavailable until the file appears`);
   }
@@ -117,7 +117,7 @@ export function apply(ctx: {
       return;
     }
     const token = guard.issue(b.login);
-    const expiresAt = new Date(Date.now() + (ctx.config.loginTtlSeconds ?? 86400) * 1000).toISOString();
+    const expiresAt = new Date(Date.now() + loginTtlSeconds * 1000).toISOString();
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ token, expiresAt }));
   });

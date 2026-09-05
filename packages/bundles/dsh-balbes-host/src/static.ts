@@ -22,12 +22,11 @@ const MIME: Record<string, string> = {
 };
 
 export function apply(ctx: {
-  config: { uiDistDir?: string; dshHome?: string };
   get(key: string): BalbesHttp;
   logger: { warn(m: string): void };
-}): void {
-  const dshHome = ctx.config.dshHome ?? process.env.DSH_HOME ?? join(process.env.HOME ?? ".", ".dsh");
-  const distRoot = resolve(ctx.config.uiDistDir ?? join(dshHome, "balbes", "ui"));
+}, config: { uiDistDir?: string; dshHome?: string }): void {
+  const dshHome = config.dshHome ?? process.env.DSH_HOME ?? join(process.env.HOME ?? ".", ".dsh");
+  const distRoot = resolve(config.uiDistDir ?? join(dshHome, "balbes", "ui"));
   const http = ctx.get("balbesHttp");
 
   http.registerStatic(async (pathname) => {
