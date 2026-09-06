@@ -1,0 +1,150 @@
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { mkdtemp, mkdir, rm, writeFile, readFile, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  validateProjectName,
+  ensureHome,
+  listWorkspaces,
+  createProject,
+  deleteProject,
+  readRegistry,
+  writeRegistry,
+  homeDir,
+  projectsRoot,
+  registryFile,
+  WorkspaceError
+} from "../src/workspaces.js";
+
+let home: string;
+
+beforeEach(async () => {
+  home = await mkdtemp(join(tmpdir(), "ws-home-"));
+});
+afterEach(async () => {
+  await rm(home, { recursive: true, force: true });
+});
+
+describe("validateProjectName", () => {
+  it("accepts slugs and rejects unsafe names", () => {
+    for (const ok of ["alpha", "my-proj_1", "a.b", "a1", "A-2"]) {
+      expect(validateProjectName(ok), ok).toBe(true);
+    }
+    for (const bad of ["", ".", "..", ".alpha", "alpha.", "a..b", "a/b", "a b", "-x", "x-", "_x", "a".repeat(65)]) {
+      expect(validateProjectName(bad), `name=${bad}`).toBe(false);
+    }
+  });
+});
+
+describe("ensureHome", () => {
+  it("creates $DSH_HOME/agent idempotently", async () => {
+    const first = await ensureHome(home);
+    expect(first).toBe(homeDir(home));
+    const again = await ensureHome(home);
+    expect(again).toBe(homeDir(home));
+    const s = await stat(homeDir(home));
+    expect(s.isDirectory()).toBe(true);
+  });
+});
+
+describe("registry", () => {
+  it("readRegistry on a missing file returns an empty registry", async () => {
+    const reg = await readRegistry(home);
+    expect(reg).toEqual({ version: 1, projects: {} });
+  });
+
+  it("writeRegistry persists atomically and readRegistry parses it back", async () => {
+    await writeRegistry(home, { version: 1, projects: { alpha: { createdAt: "2026-09-06T00:00:00.000Z" } } });
+    const reg = await readRegistry(home);
+    expect(reg.projects.alpha?.createdAt).toBe("2026-09-06T00:00:00.000Z");
+    // atomic: no tmp leftovers
+    const entries = await readFile(registryFile(home), "utf8");
+    expect(entries).not.toContain(".tmp");
+  });
+
+  it("readRegistry fails loud on malformed content", async () => {
+    await writeFile(registryFile(home), "{ not json", "utf8");
+    await expect(readRegistry(home)).rejects.toThrow(WorkspaceError);
+    await expect(readRegistry(home)).rejects.toMatchObject({ code: "registry-invalid" });
+  });
+});
+
+describe("listWorkspaces", () => {
+  it("returns the home plus an empty project list on a fresh home", async () => {
+    const res = await listWorkspaces(home);
+    expect(res.home.path).toBe(homeDir(home));
+    expect(res.projects).toEqual([]);
+    // the home dir exists after the list (self-heal before answering)
+    await expect(stat(homeDir(home))).resolves.toBeTruthy();
+  });
+
+  it("returns hand-made directories and hides non-directories and dotfiles", async () => {
+    await mkdir(join(home, "projects"), { recursive: true });
+    await mkdir(join(home, "projects", "handmade"));
+    await mkdir(join(home, "projects", ".hidden"));
+    await writeFile(join(home, "projects", "file.txt"), "x");
+    const res = await listWorkspaces(home);
+    const names = res.projects.map((p) => p.name);
+    expect(names).toContain("handmade");
+    expect(names).not.toContain(".hidden");
+    expect(names).not.toContain("file.txt");
+  });
+
+  it("merges createdAt from the registry and leaves hand-made rows without it", async () => {
+    await createProject(home, "server-made");
+    await mkdir(join(home, "projects", "handmade"), { recursive: true });
+    const res = await listWorkspaces(home);
+    const byName = Object.fromEntries(res.projects.map((p) => [p.name, p]));
+    expect(byName["server-made"]?.createdAt).toBeTruthy();
+    expect(byName["handmade"]?.createdAt).toBeUndefined();
+  });
+
+  it("reconciles: prunes registry rows whose directory vanished", async () => {
+    const created = await createProject(home, "gone");
+    expect(created.name).toBe("gone");
+    await rm(created.path, { recursive: true, force: true });
+    const res = await listWorkspaces(home);
+    expect(res.projects.map((p) => p.name)).not.toContain("gone");
+    const reg = await readRegistry(home);
+    expect(reg.projects.gone).toBeUndefined();
+  });
+});
+
+describe("createProject", () => {
+  it("creates an empty directory and upserts a registry row", async () => {
+    const created = await createProject(home, "alpha");
+    expect(created.path).toBe(join(home, "projects", "alpha"));
+    expect(created.createdAt).toBeTruthy();
+    const s = await stat(created.path);
+    expect(s.isDirectory()).toBe(true);
+  });
+
+  it("rejects invalid names with invalid-name", async () => {
+    await expect(createProject(home, "a/b")).rejects.toMatchObject({ code: "invalid-name" });
+    await expect(createProject(home, "..")).rejects.toMatchObject({ code: "invalid-name" });
+  });
+
+  it("fails with name-exists when the directory already exists (incl. hand-made)", async () => {
+    await mkdir(join(home, "projects", "alpha"), { recursive: true });
+    await expect(createProject(home, "alpha")).rejects.toMatchObject({ code: "name-exists" });
+  });
+});
+
+describe("deleteProject", () => {
+  it("removes the directory and prunes the registry row", async () => {
+    await createProject(home, "alpha");
+    await deleteProject(home, "alpha");
+    await expect(stat(join(home, "projects", "alpha"))).rejects.toThrow();
+    const reg = await readRegistry(home);
+    expect(reg.projects.alpha).toBeUndefined();
+  });
+
+  it("fails with not-found when the directory is missing", async () => {
+    await expect(deleteProject(home, "alpha")).rejects.toMatchObject({ code: "not-found" });
+  });
+
+  it("refuses path-traversal names", async () => {
+    await expect(deleteProject(home, "..")).rejects.toMatchObject({ code: "invalid-name" });
+    await expect(deleteProject(home, "/etc")).rejects.toMatchObject({ code: "invalid-name" });
+  });
+});
