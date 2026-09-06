@@ -4,11 +4,14 @@ import Sidebar from "./components/Sidebar";
 import Topbar from "./components/Topbar";
 import Login from "./pages/Login";
 import TestPage from "./pages/TestPage";
+import WorkspacesPage from "./pages/WorkspacesPage";
 
 type View = "loading" | "login" | "main";
+type Page = "test" | "workspaces";
 
 export default function App({ api }: { api: AdminApi }) {
   const [view, setView] = useState<View>("loading");
+  const [page, setPage] = useState<Page>("test");
 
   useEffect(() => {
     let cancelled = false;
@@ -22,17 +25,23 @@ export default function App({ api }: { api: AdminApi }) {
 
   function handleLogout(): void {
     localStorage.removeItem(TOKEN_KEY);
+    setPage("test");
     setView("login");
   }
 
+  function handleLogin(): void {
+    setPage("test");
+    setView("main");
+  }
+
   if (view === "loading") return <div className="loading-screen">Loading…</div>;
-  if (view === "login") return <Login api={api} onLogin={() => setView("main")} />;
+  if (view === "login") return <Login api={api} onLogin={handleLogin} />;
   return (
     <div className="app-shell">
-      <Sidebar active="test" />
+      <Sidebar active={page} onNavigate={(id) => setPage(id as Page)} />
       <main className="content">
-        <Topbar onLogout={handleLogout} />
-        <TestPage api={api} />
+        <Topbar title={page === "test" ? "Тестовая страница" : "Проекты"} onLogout={handleLogout} />
+        {page === "test" ? <TestPage api={api} /> : <WorkspacesPage api={api} />}
       </main>
     </div>
   );

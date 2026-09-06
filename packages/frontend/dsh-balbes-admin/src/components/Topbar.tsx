@@ -1,16 +1,17 @@
 import { useHealth } from "../hooks/useHealth";
 
 interface TopbarProps {
+  title: string;
   onLogout: () => void;
 }
 
-/** Top bar of the shell: breadcrumb, live health chip and logout action. */
-export default function Topbar({ onLogout }: TopbarProps) {
+/** Top bar of the shell: breadcrumb with the page title, health chip, logout. */
+export default function Topbar({ title, onLogout }: TopbarProps) {
   const health = useHealth();
   return (
     <div className="topbar">
       <span className="crumb">
-        balbes / <b>Тестовая страница</b>
+        balbes / <b>{title}</b>
       </span>
       <span className="spacer" />
       <span className={`chip ${health === "ok" ? "ok" : "down"}`} role="status">

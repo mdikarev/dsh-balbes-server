@@ -55,4 +55,18 @@ describe("App", () => {
     expect(await screen.findByTestId("login-form")).toBeTruthy();
     expect(localStorage.getItem("balbes.authToken")).toBeNull();
   });
+
+  it("переходит на страницу воркспейсов по клику в сайдбаре", async () => {
+    // Only me() (App mount) and listWorkspaces() (page mount) fetch here:
+    // Topbar's useHealth deliberately polls on a 20s interval, not on mount.
+    vi.stubGlobal("fetch", mockFetchSequence(
+      { status: 200, body: { login: "balbes-x" } },
+      { status: 200, body: { home: { path: "/h/agent" }, projects: [] } }
+    ));
+    localStorage.setItem("balbes.authToken", "t");
+    render(<App api={createApiClient()} />);
+    fireEvent.click(await screen.findByText("Проекты"));
+    expect(await screen.findByTestId("workspaces-page")).toBeTruthy();
+    expect(screen.getByText("/h/agent")).toBeTruthy();
+  });
 });

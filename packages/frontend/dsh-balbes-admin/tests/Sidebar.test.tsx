@@ -1,10 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/react";
 import Sidebar from "../src/components/Sidebar";
 
 describe("Sidebar", () => {
   it("рендерит группы навигации и помечает «Тестовая страница» активной", () => {
-    render(<Sidebar active="test" />);
+    render(<Sidebar active="test" onNavigate={() => {}} />);
 
     // Group labels from the mockup.
     expect(screen.getByText("Работа")).toBeTruthy();
@@ -16,10 +16,17 @@ describe("Sidebar", () => {
     expect(activeItem.className).toContain("active");
 
     // Ghost items are present, grayed out and carry the «скоро» pill.
-    for (const label of ["Проекты", "Ключи", "Скиллы", "Агенты", "Команды", "Настройки"]) {
+    for (const label of ["Ключи", "Скиллы", "Агенты", "Команды", "Настройки"]) {
       const item = screen.getByText(label);
       expect(item.className).toContain("ghost");
     }
-    expect(screen.getAllByText("скоро")).toHaveLength(6);
+    expect(screen.getAllByText("скоро")).toHaveLength(5);
+  });
+
+  it("fires onNavigate for live items", () => {
+    const onNavigate = vi.fn();
+    render(<Sidebar active="test" onNavigate={onNavigate} />);
+    fireEvent.click(screen.getByText("Проекты"));
+    expect(onNavigate).toHaveBeenCalledWith("workspaces");
   });
 });
