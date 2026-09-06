@@ -55,3 +55,39 @@
 - errors: 400 (нет/пустой prompt), 401, 502 (reason.kind === "error")
 - notes: свежий агент на запрос (граница этапа 2), сессия персистится
   (`sessions.flush`); стриминг — следующий этап.
+
+### workspaces.list — список воркспейсов (дом + проекты)
+- method: POST
+- path: /api/workspaces/list
+- auth: bearer
+- request: `{}`
+- response: `{home: {path: string}, projects: [{name: string, path: string, createdAt?: string(ISO)}]}`
+- errors: 401, 500 (нечитаемый корень/реестр)
+- notes: каталог — источник правды: дом `$DSH_HOME/agent/` всегда в ответе,
+  проекты — скан `$DSH_HOME/projects/*` (только каталоги, без скрытых);
+  `createdAt` берётся из реестра-индекса `$DSH_HOME/projects.json`, если строка
+  есть; осиротевшие строки реестра вычищаются при list.
+
+### workspaces.create — создать проект (пустой каталог)
+- method: POST
+- path: /api/workspaces/create
+- auth: bearer
+- request: `{name: string}`
+- response: `{project: {name: string, path: string, createdAt: string(ISO)}}`
+- errors: 400 `invalid-name` (нарушение slug-правила), 409 `name-exists`
+  (каталог уже существует — включая созданный руками), 401, 500
+- notes: имя — строгий slug `[A-Za-z0-9._-]` ≤ 64 без `/`, `..`, пробелов и
+  ведущих/хвостовых точек; создаёт пустой каталог
+  `$DSH_HOME/projects/<имя>/` + upsert строки реестра (`createdAt: now`).
+
+### workspaces.delete — удалить проект (каталог + запись)
+- method: POST
+- path: /api/workspaces/delete
+- auth: bearer
+- request: `{name: string}`
+- response: `{}`
+- errors: 400 `invalid-name` (в т.ч. traversal-имена), 404 `not-found`
+  (каталога нет), 401, 500
+- notes: рекурсивно удаляет каталог проекта + prune строки реестра.
+  Подтверждение — на стороне UI. Дом удалить нельзя: имя — один сегмент пути,
+  проверка containment под `$DSH_HOME/projects/`.
