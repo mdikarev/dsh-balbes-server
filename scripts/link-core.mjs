@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, symlinkSync, unlinkSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, statSync, symlinkSync, unlinkSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
@@ -55,13 +55,16 @@ function link(name) {
   }
 }
 
-// Only directory entries are linked. A scope dir may hold stray files
-// (e.g. .DS_Store) or — in the hoisted layout — the dsh package itself; a
-// package is linked as a whole directory and never recursed into.
+// Only directory entries are linked (files like .DS_Store are skipped). The
+// mirror entries are themselves symlinks to the global dsh install, so the
+// test must FOLLOW symlinks (statSync): with lstatSync every entry would
+// read as a symlink, not a directory, and nothing would ever be linked on a
+// fresh checkout. A package is linked as a whole directory and never
+// recursed into.
 for (const name of readdirSync(src)) {
   let isDir = false;
   try {
-    isDir = lstatSync(join(src, name)).isDirectory();
+    isDir = statSync(join(src, name)).isDirectory();
   } catch { /* dangling entry; nothing to link */ }
   if (!isDir) continue;
   link(name);
