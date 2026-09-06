@@ -43,4 +43,30 @@ describe("api client", () => {
     expect(localStorage.getItem(TOKEN_KEY)).toBeNull();
     expect(spy).toHaveBeenCalled();
   });
+
+  it("listWorkspaces POSTs to /api/workspaces/list with the token", async () => {
+    localStorage.setItem(TOKEN_KEY, "tok-1");
+    const body = { home: { path: "/h/agent" }, projects: [{ name: "a", path: "/h/projects/a", createdAt: "2026-09-06T00:00:00.000Z" }] };
+    const fetchMock = mockFetchOnce(200, body);
+    vi.stubGlobal("fetch", fetchMock);
+    const api = createApiClient();
+    const res = await api.listWorkspaces();
+    expect(res.projects[0]?.name).toBe("a");
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/workspaces/list");
+    expect(init.method).toBe("POST");
+    expect(init.headers).toMatchObject({ authorization: "Bearer tok-1" });
+  });
+
+  it("createWorkspace and deleteWorkspace send the name", async () => {
+    localStorage.setItem(TOKEN_KEY, "tok-1");
+    const created = { project: { name: "a", path: "/h/projects/a", createdAt: "2026-09-06T00:00:00.000Z" } };
+    vi.stubGlobal("fetch", mockFetchOnce(200, created));
+    const api = createApiClient();
+    const res = await api.createWorkspace("a");
+    expect(res.project.name).toBe("a");
+
+    vi.stubGlobal("fetch", mockFetchOnce(200, {}));
+    await api.deleteWorkspace("a");
+  });
 });

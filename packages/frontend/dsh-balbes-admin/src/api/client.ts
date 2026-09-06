@@ -5,7 +5,12 @@ import type {
   MeResponse,
   PromptRequest,
   PromptResponse,
-  ApiErrorBody
+  ApiErrorBody,
+  WorkspaceListResponse,
+  WorkspaceCreateRequest,
+  WorkspaceCreateResponse,
+  WorkspaceDeleteRequest,
+  WorkspaceDeleteResponse
 } from "dsh-balbes-contracts";
 
 export const TOKEN_KEY = "balbes.authToken";
@@ -34,6 +39,9 @@ export interface AdminApi {
   login(login: string, password: string): Promise<LoginResponse>;
   me(): Promise<MeResponse>;
   prompt(text: string): Promise<PromptResponse>;
+  listWorkspaces(): Promise<WorkspaceListResponse>;
+  createWorkspace(name: string): Promise<WorkspaceCreateResponse>;
+  deleteWorkspace(name: string): Promise<WorkspaceDeleteResponse>;
   onUnauthorized(cb: () => void): void;
 }
 
@@ -61,6 +69,9 @@ export function createApiClient(): AdminApi {
     },
     me: () => guard(request<MeResponse>("/api/auth/me", {})),
     prompt: (text) => guard(request<PromptResponse>("/api/prompt", { prompt: text } satisfies PromptRequest)),
+    listWorkspaces: () => guard(request<WorkspaceListResponse>("/api/workspaces/list", {})),
+    createWorkspace: (name) => guard(request<WorkspaceCreateResponse>("/api/workspaces/create", { name } satisfies WorkspaceCreateRequest)),
+    deleteWorkspace: (name) => guard(request<WorkspaceDeleteResponse>("/api/workspaces/delete", { name } satisfies WorkspaceDeleteRequest)),
     onUnauthorized: (cb) => { listeners.add(cb); }
   };
 }
