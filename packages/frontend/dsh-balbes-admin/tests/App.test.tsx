@@ -42,4 +42,17 @@ describe("App", () => {
     // the answer pre must precede the button in DOM order, i.e. be rendered above it
     expect(button.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_PRECEDING).not.toBe(0);
   });
+
+  it("«Выйти» очищает токен и возвращает форму логина", async () => {
+    vi.stubGlobal("fetch", mockFetchSequence(
+      { status: 200, body: { login: "balbes-x" } }
+    ));
+    localStorage.setItem("balbes.authToken", "t");
+    render(<App api={createApiClient()} />);
+    // main view is shown after the initial me() succeeds
+    expect(await screen.findByTestId("prompt-button")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Выйти" }));
+    expect(await screen.findByTestId("login-form")).toBeTruthy();
+    expect(localStorage.getItem("balbes.authToken")).toBeNull();
+  });
 });

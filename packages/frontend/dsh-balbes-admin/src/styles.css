@@ -1,5 +1,164 @@
-body { font-family: system-ui, sans-serif; margin: 2rem; }
-main { max-width: 42rem; }
-pre { white-space: pre-wrap; background: #f4f4f4; padding: 1rem; border-radius: 6px; }
-button { margin-top: 1rem; }
-p[role="alert"] { color: #b00020; }
+/* balbes admin — design tokens & full stylesheet.
+   Mirrors mockups/admin-design-preview.html (colors, spacing, layout, texts). */
+
+:root {
+  --bg: #0e1116;
+  --surface: #161b22;
+  --surface-2: #1c2230;
+  --border: #262d3a;
+  --text: #e6edf3;
+  --text-dim: #8b98a5;
+  --accent: #4d8dff;
+  --accent-hi: #6ea4ff;
+  --ok: #3fb950;
+  --danger: #f85149;
+  --radius: 8px;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+button { font: inherit; }
+
+/* ── brand ────────────────────────────────────────────────── */
+.brand { display: flex; align-items: center; gap: 10px; user-select: none; }
+.brand .dot {
+  width: 10px; height: 10px; border-radius: 3px;
+  background: var(--accent); flex: none;
+}
+.brand .name {
+  font-family: var(--mono); font-size: 16px; font-weight: 600;
+  letter-spacing: .3px;
+}
+.brand .sub { color: var(--text-dim); font-size: 11px; margin-top: -2px; }
+
+/* ── loading ──────────────────────────────────────────────── */
+.loading-screen {
+  min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  color: var(--text-dim); font-size: 13px;
+}
+
+/* ── login ────────────────────────────────────────────────── */
+.login-screen {
+  position: relative; min-height: 100vh; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 18px; overflow: hidden;
+  padding: 24px;
+}
+.login-screen::before {
+  content: ""; position: absolute; inset: 0;
+  background: radial-gradient(600px 300px at 50% -10%, rgba(77, 141, 255, .16), transparent 70%);
+  pointer-events: none;
+}
+.login-card {
+  position: relative; width: 100%; max-width: 360px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 12px; padding: 28px 26px 22px;
+  display: flex; flex-direction: column; gap: 14px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, .45);
+}
+.login-card .brand { flex-direction: column; align-items: flex-start; margin-bottom: 6px; }
+.login-card label {
+  display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--text-dim);
+}
+.login-card input {
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  border-radius: var(--radius); padding: 9px 11px; font: inherit; outline: none;
+}
+.login-card input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(77, 141, 255, .22); }
+.login-card .btn { margin-top: 4px; width: 100%; justify-content: center; }
+.login-foot { position: relative; color: var(--text-dim); font-size: 12px; letter-spacing: .2px; margin: 0; }
+.form-error { color: var(--danger); font-size: 13px; margin: 0; }
+
+/* ── shell ────────────────────────────────────────────────── */
+.app-shell { display: flex; min-height: 100vh; }
+
+.sidebar {
+  width: 224px; flex: none; border-right: 1px solid var(--border);
+  background: var(--surface); display: flex; flex-direction: column;
+  padding: 18px 12px 14px; gap: 16px;
+}
+.sidebar .brand { padding: 0 8px; flex-direction: column; align-items: flex-start; gap: 2px; }
+.sidebar nav { display: flex; flex-direction: column; gap: 2px; flex: 1; }
+.nav-group {
+  margin: 14px 8px 4px; font-size: 10.5px; text-transform: uppercase;
+  letter-spacing: 1px; color: var(--text-dim);
+}
+.nav-group:first-child { margin-top: 0; }
+.nav-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 7px 10px; border-radius: 6px; color: var(--text-dim);
+  font-size: 13.5px; border-left: 3px solid transparent;
+}
+.nav-item.ghost { pointer-events: none; color: var(--text-dim); opacity: .65; }
+.nav-item .soon {
+  font-size: 10px; color: var(--text-dim); border: 1px solid var(--border);
+  border-radius: 99px; padding: 0 7px; line-height: 1.6; white-space: nowrap;
+}
+.nav-item.active {
+  background: var(--surface-2); color: var(--text); border-left-color: var(--accent);
+}
+
+/* ── content column ───────────────────────────────────────── */
+.content { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+.topbar {
+  display: flex; align-items: center; gap: 14px; padding: 10px 22px;
+  border-bottom: 1px solid var(--border); background: var(--surface);
+}
+.topbar .crumb { font-size: 13px; color: var(--text-dim); margin: 0; }
+.topbar .crumb b { color: var(--text); font-weight: 600; }
+.topbar .spacer { flex: 1; }
+
+.chip {
+  display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px;
+  color: var(--text-dim); border: 1px solid var(--border); border-radius: 99px;
+  padding: 3px 11px; background: var(--bg); white-space: nowrap;
+}
+.chip i { width: 7px; height: 7px; border-radius: 50%; font-style: normal; flex: none; }
+.chip.ok i { background: var(--ok); box-shadow: 0 0 7px var(--ok); }
+.chip.down i { background: var(--danger); box-shadow: 0 0 7px var(--danger); }
+
+/* ── buttons ──────────────────────────────────────────────── */
+.btn {
+  background: var(--accent); color: #fff; border: none; border-radius: var(--radius);
+  padding: 10px 18px; font: inherit; font-weight: 600; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 9px;
+}
+.btn:hover { background: var(--accent-hi); }
+.btn:disabled { opacity: .6; cursor: default; }
+.btn-ghost {
+  background: transparent; border: 1px solid var(--border); color: var(--text-dim);
+  border-radius: var(--radius); padding: 5px 12px; font: inherit; cursor: pointer;
+}
+.btn-ghost:hover { color: var(--text); border-color: var(--text-dim); }
+
+.spinner {
+  width: 13px; height: 13px; border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, .35); border-top-color: #fff;
+  animation: spin .8s linear infinite; flex: none;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── page content ─────────────────────────────────────────── */
+.page { padding: 30px 40px; max-width: 860px; width: 100%; }
+.page h1 { margin: 0 0 4px; font-size: 22px; font-weight: 650; }
+.page .lead { margin: 0 0 22px; color: var(--text-dim); }
+.page .prompt-note { color: var(--text-dim); font-size: 13px; margin: 0 0 16px; }
+.page .prompt-note code {
+  font-family: var(--mono); color: var(--text); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px;
+}
+.page .form-error { margin-bottom: 14px; }
+.answer-box {
+  margin: 0 0 16px; background: var(--bg); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px 16px; font-family: var(--mono);
+  font-size: 13.5px; white-space: pre-wrap; color: var(--text); overflow-x: auto;
+}
