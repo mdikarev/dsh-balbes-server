@@ -1371,8 +1371,9 @@ function makeApi(overrides: Partial<AdminApi> = {}): AdminApi {
 }
 
 describe("WorkspacesPage", () => {
+  let confirmSpy: ReturnType<typeof vi.spyOn>;
   beforeEach(() => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+    confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
   });
   afterEach(() => {
     vi.restoreAllMocks();
@@ -1407,7 +1408,7 @@ describe("WorkspacesPage", () => {
   });
 
   it("does not delete when confirm is cancelled", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(false);
+    confirmSpy.mockReturnValue(false);
     const api = makeApi();
     render(<WorkspacesPage api={api} />);
     await screen.findByText("alpha");
