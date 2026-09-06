@@ -1,8 +1,10 @@
 // Admin credentials lifecycle for the balbes server.
 // Usage: node scripts/admin-creds.mjs ensure|reset --core <core.js> [--home <dshHome>]
-// ensure: создаёт $DSH_HOME/admin-auth.json один раз (0600); если файл уже есть —
-//         ничего не меняет. Печатает JSON {login, password?, created}.
-// reset:  новый пароль (хэш), логин/jwtSecret не трогаются. Печатает {login, password}.
+// ensure: creates $DSH_HOME/admin-auth.json once (0600); leaves an existing
+//         file untouched. Prints {login, password?, created}.
+// reset:  re-hashes the password AND rotates jwtSecret (already-issued tokens
+//         become invalid immediately); login preserved, createdAt refreshed.
+//         Prints {login, password}.
 import { existsSync } from "node:fs";
 import { chmod, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -52,8 +54,15 @@ if (cmd === "ensure") {
   }
   const auth = JSON.parse(await readFile(file, "utf8"));
   const password = randomBytes(18).toString("base64url");
-  auth.passwordHash = await core.hashPassword(password);
-  auth.createdAt = new Date().toISOString();
-  await writeJson(auth);
+  // Rotate BOTH the password hash and the JWT signing secret: already-issued
+  // tokens become invalid the moment this file lands, forcing a fresh login
+  // with the new password. The login is preserved; the file keeps exactly the
+  // four fields {login, passwordHash, jwtSecret, createdAt}.
+  await writeJson({
+    login: auth.login,
+    passwordHash: await core.hashPassword(password),
+    jwtSecret: randomBytes(32).toString("base64url"),
+    createdAt: new Date().toISOString()
+  });
   console.log(JSON.stringify({ login: auth.login, password }));
 }

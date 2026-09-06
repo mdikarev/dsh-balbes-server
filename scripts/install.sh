@@ -432,7 +432,8 @@ admin_credentials_ensure() {
     fi
 }
 
-# admin_password_reset — новый пароль; логин/jwtSecret не меняются.
+# admin_password_reset — новый пароль и ротация jwtSecret (старые JWT сразу
+# недействительны); логин не меняется.
 admin_password_reset() {
     local core_module="$DSH_HOME/profiles/$PROFILE_NAME/node_modules/dsh-balbes-host/lib/core.js"
     [[ -f "$ADMIN_AUTH_FILE" ]] || die "no admin auth file at $ADMIN_AUTH_FILE"
