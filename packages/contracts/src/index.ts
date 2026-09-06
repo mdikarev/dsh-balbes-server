@@ -39,3 +39,28 @@ export interface ApiErrorBody {
   };
 }
 export type ApiResult<T> = { ok: true; value: T } | { ok: false; error: ApiErrorBody["error"] };
+
+export interface WorkspaceProject {
+  name: string;
+  path: string;
+  createdAt?: string; // ISO 8601; absent for hand-made dirs without a registry row
+}
+export interface WorkspaceHome {
+  path: string;
+}
+
+export interface WorkspaceListRequest {}
+export interface WorkspaceListResponse {
+  home: WorkspaceHome;
+  projects: WorkspaceProject[];
+}
+export interface WorkspaceCreateRequest {
+  name: string;
+}
+export interface WorkspaceCreateResponse {
+  project: WorkspaceProject;
+}
+export interface WorkspaceDeleteRequest {
+  name: string;
+}
+export interface WorkspaceDeleteResponse {}
