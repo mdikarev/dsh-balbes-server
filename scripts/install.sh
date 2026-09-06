@@ -487,14 +487,25 @@ EOF
 }
 
 # health_check — сервис отвечает POST /api/health (R-API-1: всё POST).
+# dsh грузит ядро несколько секунд после старта юнита, поэтому проверка
+# ретраится с паузой (до HEALTH_RETRIES * HEALTH_RETRY_SLEEP ≈ 60 c).
 health_check() {
-    local ok
-    ok="$(curl -fsS -X POST "http://127.0.0.1:$BALBES_PORT/api/health" 2>/dev/null || true)"
-    if [[ "$ok" != *'"ok":true'* ]]; then
-        warn "health check failed — see: systemctl status $SERVICE_NAME; journalctl -u $SERVICE_NAME -n 50"
-        return 1
-    fi
-    info "Health OK: POST http://127.0.0.1:$BALBES_PORT/api/health"
+    local attempt=0 ok
+    while true; do
+        attempt=$((attempt + 1))
+        ok="$(curl -fsS -X POST "http://127.0.0.1:$BALBES_PORT/api/health" 2>/dev/null || true)"
+        if [[ "$ok" == *'"ok":true'* ]]; then
+            info "Health OK: POST http://127.0.0.1:$BALBES_PORT/api/health"
+            return 0
+        fi
+        if (( attempt >= 20 )); then
+            break
+        fi
+        info "Health not ready yet (attempt $attempt/20) — waiting ${HEALTH_RETRY_SLEEP:-3}s..."
+        sleep "${HEALTH_RETRY_SLEEP:-3}"
+    done
+    warn "health check failed after 20 attempts — see: systemctl status $SERVICE_NAME; journalctl -u $SERVICE_NAME -n 50"
+    return 1
 }
 
 print_admin_summary() {
