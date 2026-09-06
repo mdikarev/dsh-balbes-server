@@ -1,6 +1,5 @@
 import z from "@deepseek-ai/schemastery";
 import { readFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { BalbesHttp } from "./types.js";
 import { issueToken, parseAdminAuth, verifyPassword, verifyToken, type AdminAuth } from "./core.js";
@@ -17,7 +16,7 @@ export interface AuthGuard {
   issue(login: string): string;
   verify(token: string): { login: string } | null;
   checkLogin(login: string, password: string): Promise<boolean>;
-  /** Warm the cached credentials synchronously at startup; false when the file is unreadable or shape-invalid. */
+  /** Validate the auth file synchronously at boot; false when the file is unreadable or shape-invalid. */
   loadSync(): boolean;
 }
 
@@ -29,31 +28,34 @@ export function createGuard(opts: {
   loginTtlSeconds?: number;
   logger?: { warn(m: string): void };
 }): AuthGuard {
-  let cached: AdminAuth | null = null;
   const logger = opts.logger;
+  const ttlSeconds = opts.loginTtlSeconds ?? 86400;
 
   function parse(raw: string): AdminAuth {
-    // The same shape contract as core.loadAdminAuth: a hand-edited file that
-    // lacks e.g. jwtSecret fails here with a clear error instead of poisoning
-    // the cache and crashing every later bearer verification.
+    // The same shape contract as core.parseAdminAuth: a hand-edited file that
+    // lacks e.g. jwtSecret fails here with a clear error instead of feeding an
+    // undefined secret into HMAC and crashing every later bearer verification.
     return parseAdminAuth(raw, opts.adminAuthFile);
   }
 
-  /** Re-read from disk; fail closed (null) on any read/parse failure. */
-  async function load(): Promise<AdminAuth | null> {
+  /**
+   * Synchronous read-through of the CURRENT admin-auth record. Every issue and
+   * verify reads the file fresh (no cached secret, no mtime), so a password
+   * reset that rotated jwtSecret takes effect immediately — without a restart
+   * and without waiting for a login attempt. Fails closed (null) on any
+   * read/parse failure and never throws.
+   */
+  function readCurrent(): AdminAuth | null {
     let raw: string;
     try {
-      raw = await readFile(opts.adminAuthFile, "utf8");
+      raw = readFileSync(opts.adminAuthFile, "utf8");
     } catch (error) {
-      cached = null;
       logger?.warn(`balbes-auth: cannot read ${opts.adminAuthFile}: ${error instanceof Error ? error.message : String(error)}`);
       return null;
     }
     try {
-      cached = parse(raw);
-      return cached;
+      return parse(raw);
     } catch (error) {
-      cached = null;
       logger?.warn(`balbes-auth: ${error instanceof Error ? error.message : String(error)}`);
       return null;
     }
@@ -61,34 +63,37 @@ export function createGuard(opts: {
 
   return {
     loadSync() {
-      // Startup fast path: a file that appears (or is rotated/fixed) later is
-      // picked up by checkLogin's lazy re-read; loadSync never throws.
-      try {
-        cached = parse(readFileSync(opts.adminAuthFile, "utf8"));
-        return true;
-      } catch {
-        cached = null;
-        return false;
-      }
+      // Boot-time warm check (called by the plugin apply): reports whether the
+      // file is usable right now and never throws. Freshness never depends on
+      // it — issue/verify read the file on every call, so a file that appears
+      // (or is rotated/fixed) later is picked up without a restart.
+      return readCurrent() !== null;
     },
     issue(login) {
-      const auth = cached;
-      if (auth === null) throw new Error("auth: admin file not loaded");
-      return issueToken(auth.jwtSecret, login, opts.loginTtlSeconds ?? 86400).token;
+      const auth = readCurrent();
+      if (auth === null) {
+        throw new Error(`balbes-auth: cannot issue a token while ${opts.adminAuthFile} is unreadable or shape-invalid`);
+      }
+      return issueToken(auth.jwtSecret, login, ttlSeconds).token;
     },
     verify(token) {
-      if (cached === null) return null;
+      // Read-through: a rotated jwtSecret invalidates already-issued tokens on
+      // the very next call. Fail closed (null) on any read/parse failure — a
+      // broken file must never crash a bearer request.
+      const auth = readCurrent();
+      if (auth === null) return null;
       try {
-        const payload = verifyToken(cached.jwtSecret, token);
+        const payload = verifyToken(auth.jwtSecret, token);
         return payload === null ? null : { login: payload.login };
       } catch {
-        return null; // fail closed: a corrupt cache must never crash a bearer request
+        return null; // fail closed: a corrupt secret must never crash a bearer request
       }
     },
     async checkLogin(login, password) {
-      // Lazy reload means a file fixed by hand (or regenerated) is picked up
-      // without a restart; a broken file fails closed (false), never throws.
-      const auth = await load();
+      // Per-attempt read: a file fixed by hand (or regenerated/rotated) is
+      // picked up without a restart; a broken file fails closed (false), never
+      // throws.
+      const auth = readCurrent();
       if (auth === null || login !== auth.login) return false;
       return verifyPassword(password, auth.passwordHash);
     }

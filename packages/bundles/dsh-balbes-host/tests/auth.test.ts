@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createAdminAuth, writeAdminAuth, verifyPassword, loadAdminAuth, issueToken } from "../src/core.js";
+import { createAdminAuth, writeAdminAuth, verifyPassword, loadAdminAuth, issueToken, verifyToken } from "../src/core.js";
 import { createGuard } from "../src/auth.js";
 
 describe("auth guard", () => {
@@ -22,7 +22,7 @@ describe("auth guard", () => {
     }
   });
 
-  it("verify authenticates a token issued before startup once loadSync warms the cache", async () => {
+  it("verify authenticates a token issued before startup (stateless bearer auth)", async () => {
     const dir = await mkdtemp(join(tmpdir(), "balbes-authv-"));
     try {
       const creds = await createAdminAuth();
@@ -34,6 +34,50 @@ describe("auth guard", () => {
       const { token } = issueToken(creds.jwtSecret, creds.login);
       expect(guard.verify(token)?.login).toBe(creds.login);
       expect(guard.verify("garbage")).toBeNull();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rotating jwtSecret (password reset) invalidates issued tokens immediately", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "balbes-authrot-"));
+    try {
+      const file = join(dir, "admin-auth.json");
+      const creds = await createAdminAuth();
+      await writeAdminAuth(dir, creds);
+      const guard = createGuard({ adminAuthFile: file });
+      expect(guard.loadSync()).toBe(true);
+
+      const oldToken = guard.issue(creds.login);
+      expect(guard.verify(oldToken)?.login).toBe(creds.login);
+
+      // Simulate `admin-creds.mjs reset`: login preserved, fresh passwordHash,
+      // NEW jwtSecret, refreshed createdAt — persisted via the same atomic
+      // tmp+rename write the real reset performs.
+      const next = await createAdminAuth();
+      const rotated = {
+        login: creds.login,
+        passwordHash: next.passwordHash,
+        jwtSecret: next.jwtSecret,
+        createdAt: new Date().toISOString()
+      };
+      await writeAdminAuth(dir, rotated);
+
+      // Read-through: the very next verify (no checkLogin in between, no
+      // restart, no mtime) already sees the rotated secret and rejects the
+      // previously issued token.
+      expect(guard.verify(oldToken)).toBeNull();
+      // New tokens are minted under the rotated secret...
+      const newToken = guard.issue(creds.login);
+      expect(guard.verify(newToken)?.login).toBe(creds.login);
+      expect(verifyToken(rotated.jwtSecret, newToken)?.login).toBe(creds.login);
+      // ...and only under it: the old secret neither validates the new token
+      // nor keeps validating the old one on a fresh guard read.
+      expect(verifyToken(creds.jwtSecret, newToken)).toBeNull();
+      expect(verifyToken(creds.jwtSecret, oldToken)?.login).toBe(creds.login);
+      // The old password stops working; the new one logs in.
+      await expect(guard.checkLogin(creds.login, creds.plaintextPassword)).resolves.toBe(false);
+      await expect(guard.checkLogin(creds.login, next.plaintextPassword)).resolves.toBe(true);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
