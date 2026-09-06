@@ -13,10 +13,11 @@ CONTRIBUTING.md и правила AGENTS.md/CLAUDE.md.
 
 1. OVERVIEW.md — зачем проект, scope, сигналы успеха.
 2. ARCHITECTURE.md — слои, компоненты, потоки, границы.
-3. GLOSSARY.md — термины (профиль, бандл, патч, host, headless и др.).
-4. CANON_CONTRACT.md — структура canon и шаблоны секций.
-5. DISCREPANCIES.md — открытые/закрытые расхождения.
-6. future_plans/INDEX.md — направленные инициативы будущего (не задачи).
+3. ADMIN_UI.md — общее направление внешнего вида админки (стиль/дизайн).
+4. GLOSSARY.md — термины (профиль, бандл, патч, host, headless и др.).
+5. CANON_CONTRACT.md — структура canon и шаблоны секций.
+6. DISCREPANCIES.md — открытые/закрытые расхождения.
+7. future_plans/INDEX.md — направленные инициативы будущего (не задачи).
 
 ## Sections
 
@@ -26,6 +27,7 @@ CONTRIBUTING.md и правила AGENTS.md/CLAUDE.md.
 | overview | OVERVIEW.md | overview | true |
 | architecture | ARCHITECTURE.md | architecture | true |
 | glossary | GLOSSARY.md | glossary | true |
+| admin-ui | ADMIN_UI.md | section | true |
 | discrepancies | DISCREPANCIES.md | discrepancies | true |
 | contract | CANON_CONTRACT.md | contract | true |
 | future-plans-index | future_plans/INDEX.md | section | true |

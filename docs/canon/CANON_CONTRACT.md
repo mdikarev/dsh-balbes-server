@@ -40,6 +40,11 @@ sections:
     role: glossary
     required: true
     template: GLOSSARY
+  - id: admin-ui
+    path: ADMIN_UI.md
+    role: section
+    required: true
+    template: SECTION
   - id: discrepancies
     path: DISCREPANCIES.md
     role: discrepancies
