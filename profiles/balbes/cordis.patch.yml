@@ -1,1 +1,8 @@
-[]
+# balbes profile patch layer: standalone plugins over the bundle patches.
+# The host bundle patch (dsh-balbes-host/cordis.patch.yml) inserts its own
+# plugins; this layer adds plugins that live in separate packages. Applies
+# after the bundle patches (profile patch is the outermost layer).
+
+- insert:
+    - id: balbes-workspaces
+      name: 'dsh-balbes-workspaces'

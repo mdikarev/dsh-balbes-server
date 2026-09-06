@@ -9,9 +9,10 @@
 # Provisions the environment (Node >= 22 via NodeSource, pnpm, git), installs
 # the global @deepseek-ai/dsh CLI (never patched or edited — dsh is a
 # dependency, not a fork), builds the workspace packages (dsh-balbes-host,
-# dsh-balbes-contracts, the admin SPA), syncs profiles/balbes from the
-# repository into $DSH_HOME/profiles, copies the built host into the profile,
-# deploys the built admin UI, stores the DeepSeek API key in
+# dsh-balbes-contracts, dsh-balbes-workspaces, the admin SPA), syncs
+# profiles/balbes from the repository into $DSH_HOME/profiles, copies the
+# built host and the workspaces plugin into the profile, deploys the built
+# admin UI, stores the DeepSeek API key in
 # $DSH_HOME/.credentials.yaml, generates the admin account
 # ($DSH_HOME/admin-auth.json, printed once), writes the dsh-balbes systemd
 # unit (enabled + restarted on every run, so an update takes effect at once),
@@ -398,6 +399,24 @@ copy_host_into_profile() {
     info "Host bundle copied into $dst"
 }
 
+# copy_workspaces_into_profile — собранный плагин воркспейсов реальным
+# каталогом в node_modules профиля (тот же рецепт, что и host).
+copy_workspaces_into_profile() {
+    local profile_dir="$DSH_HOME/profiles/$PROFILE_NAME"
+    local src="$REPO_DIR/packages/plugins/dsh-balbes-workspaces"
+    local dst="$profile_dir/node_modules/dsh-balbes-workspaces"
+    if [[ ! -d "$src/lib" ]]; then
+        die "workspaces plugin not built at $src/lib — build step failed"
+    fi
+    mkdir -p "$profile_dir/node_modules"
+    rm -rf "$dst"
+    cp -R "$src" "$dst"
+    rm -f "$dst/tsconfig.json" "$dst/tsconfig.build.json"
+    rm -rf "$dst/tests" "$dst/src" "$dst/lib/types"
+    chmod -R u+rwX,go-w "$dst"
+    info "Workspaces plugin copied into $dst"
+}
+
 # deploy_ui — собрать dist SPA в $DSH_HOME/balbes/ui (без старых файлов).
 deploy_ui() {
     local src="$REPO_DIR/packages/frontend/dsh-balbes-admin/dist"
@@ -553,6 +572,7 @@ main() {
     build_workspace
     sync_profile
     copy_host_into_profile
+    copy_workspaces_into_profile
     deploy_ui
     configure_api_key
     verify_composition

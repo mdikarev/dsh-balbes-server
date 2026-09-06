@@ -51,6 +51,13 @@ jobs:
           rm -rf "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-host/tests" \
                  "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-host/src" \
                  "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-host/lib/types"
+          mkdir -p "$HOME/.dsh/profiles/balbes/node_modules"
+          cp -R packages/plugins/dsh-balbes-workspaces "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-workspaces"
+          rm -f "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-workspaces/tsconfig.json" \
+                "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-workspaces/tsconfig.build.json"
+          rm -rf "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-workspaces/tests" \
+                 "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-workspaces/src" \
+                 "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-workspaces/lib/types"
 
       - name: Validate profile composition (no LLM)
         run: dsh --profile balbes --dump-config >/dev/null
