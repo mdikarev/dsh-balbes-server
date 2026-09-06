@@ -78,4 +78,19 @@ describe("WorkspacesPage", () => {
     render(<WorkspacesPage api={api} />);
     expect(await screen.findByText("—")).toBeTruthy();
   });
+
+  it("shows an error with a retry control when the initial load fails, then recovers on retry", async () => {
+    const api = makeApi({
+      listWorkspaces: vi.fn().mockRejectedValueOnce(new Error("registry unreadable")).mockResolvedValueOnce(listBody)
+    });
+    render(<WorkspacesPage api={api} />);
+    expect(await screen.findByTestId("workspace-load-error")).toBeTruthy();
+    expect(screen.getByText(/Не удалось загрузить воркспейсы/)).toBeTruthy();
+    // no endless «Загрузка…» dead end: retry must be present
+    expect(screen.queryByText("Загрузка…")).toBeNull();
+    fireEvent.click(screen.getByTestId("workspace-load-retry"));
+    expect(await screen.findByText("Дом агента")).toBeTruthy();
+    expect(await screen.findByText("alpha")).toBeTruthy();
+    expect(api.listWorkspaces).toHaveBeenCalledTimes(2);
+  });
 });

@@ -380,7 +380,7 @@ verify_composition() {
 # Сборка идёт ДО рестарта сервиса: при падении install.sh выходит с ошибкой,
 # работающий сервис не трогается.
 build_workspace() {
-    info "Building workspace packages (host, contracts, admin SPA)..."
+    info "Building workspace packages (host, workspaces, contracts, admin SPA)..."
     ( cd "$REPO_DIR" && pnpm install --frozen-lockfile=false && node scripts/link-core.mjs && pnpm -r --if-present run build ) || die "workspace build failed"
     info "Workspace build OK."
 }
@@ -550,6 +550,14 @@ Smoke without a browser (JWT):
   curl -fsS -X POST http://127.0.0.1:$BALBES_PORT/api/prompt \\
     -H "authorization: Bearer \$TOKEN" \\
     -d '{"prompt":"Напиши ok"}'
+  curl -fsS -X POST http://127.0.0.1:$BALBES_PORT/api/workspaces/list \\
+    -H "authorization: Bearer \$TOKEN"
+  curl -fsS -X POST http://127.0.0.1:$BALBES_PORT/api/workspaces/create \\
+    -H "authorization: Bearer \$TOKEN" -H 'content-type: application/json' \\
+    -d '{"name":"my-project"}'
+  curl -fsS -X POST http://127.0.0.1:$BALBES_PORT/api/workspaces/delete \\
+    -H "authorization: Bearer \$TOKEN" -H 'content-type: application/json' \\
+    -d '{"name":"my-project"}'
 =====================================================================
 EOF
 }

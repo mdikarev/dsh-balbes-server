@@ -24,9 +24,20 @@ export default function WorkspacesPage({ api }: WorkspacesPageProps) {
     setData(await api.listWorkspaces());
   }, [api]);
 
-  useEffect(() => {
-    void refresh().catch((err) => setError(err instanceof Error ? err.message : "list failed"));
+  // load = refresh with the failure surfaced in state; used on mount and by the
+  // retry button so an initial load failure shows an error instead of a spinner.
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "list failed");
+    }
   }, [refresh]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   async function handleCreate(): Promise<void> {
     const trimmed = name.trim();
@@ -63,7 +74,18 @@ export default function WorkspacesPage({ api }: WorkspacesPageProps) {
     return (
       <div className="page">
         <h1>Воркспейсы</h1>
-        <p className="lead">Загрузка…</p>
+        {error !== null ? (
+          <>
+            <p className="form-error" role="alert" data-testid="workspace-load-error">
+              Не удалось загрузить воркспейсы: {error}
+            </p>
+            <button type="button" className="btn" onClick={() => void load()} data-testid="workspace-load-retry">
+              Повторить
+            </button>
+          </>
+        ) : (
+          <p className="lead">Загрузка…</p>
+        )}
       </div>
     );
   }

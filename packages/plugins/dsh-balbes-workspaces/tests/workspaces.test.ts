@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { mkdtemp, mkdir, rm, writeFile, readFile, stat } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile, readdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -13,7 +13,8 @@ import {
   homeDir,
   projectsRoot,
   registryFile,
-  WorkspaceError
+  WorkspaceError,
+  RegistryData
 } from "../src/workspaces.js";
 
 let home: string;
@@ -30,7 +31,7 @@ describe("validateProjectName", () => {
     for (const ok of ["alpha", "my-proj_1", "a.b", "a1", "A-2"]) {
       expect(validateProjectName(ok), ok).toBe(true);
     }
-    for (const bad of ["", ".", "..", ".alpha", "alpha.", "a..b", "a/b", "a b", "-x", "x-", "_x", "a".repeat(65)]) {
+    for (const bad of ["", ".", "..", ".alpha", "alpha.", "a..b", "a/b", "a b", "-x", "x-", "_x", "«альфа»", "a".repeat(65)]) {
       expect(validateProjectName(bad), `name=${bad}`).toBe(false);
     }
   });
@@ -57,9 +58,34 @@ describe("registry", () => {
     await writeRegistry(home, { version: 1, projects: { alpha: { createdAt: "2026-09-06T00:00:00.000Z" } } });
     const reg = await readRegistry(home);
     expect(reg.projects.alpha?.createdAt).toBe("2026-09-06T00:00:00.000Z");
-    // atomic: no tmp leftovers
-    const entries = await readFile(registryFile(home), "utf8");
-    expect(entries).not.toContain(".tmp");
+    // atomic: no tmp leftovers in the registry file's parent directory
+    const entries = await readdir(home);
+    expect(entries.filter((name) => /\.tmp\./.test(name))).toEqual([]);
+  });
+
+  it("writeRegistry stores the registry file with mode 0o600", async () => {
+    await writeRegistry(home, { version: 1, projects: { alpha: { createdAt: "2026-09-06T00:00:00.000Z" } } });
+    const st = await stat(registryFile(home));
+    expect(st.mode & 0o777).toBe(0o600);
+  });
+
+  it("two interleaved writes commit on distinct tmp files (no ENOENT, no tmp leftovers)", async () => {
+    const withAlpha: RegistryData = { version: 1, projects: { alpha: { createdAt: "2026-09-06T00:00:00.000Z" } } };
+    const withBeta: RegistryData = { version: 1, projects: { beta: { createdAt: "2026-09-06T00:01:00.000Z" } } };
+    // Each call is a whole-snapshot commit (create/delete/list-prune all write
+    // full snapshots). With a pid-only tmp name the two chains share one tmp
+    // path: whichever renames first moves it away and the other chain dies with
+    // ENOENT. A unique tmp per write keeps both chains atomic — both must land.
+    await expect(Promise.all([writeRegistry(home, withAlpha), writeRegistry(home, withBeta)])).resolves.toEqual([undefined, undefined]);
+    // Atomic whole-file replace is last-write-wins: the file ends as one
+    // complete committed snapshot (never a torn mix), and no tmp survives.
+    const reg = await readRegistry(home);
+    expect(reg.version).toBe(1);
+    const rows = Object.keys(reg.projects);
+    expect(rows).toHaveLength(1);
+    expect(["alpha", "beta"]).toContain(rows[0]);
+    const leftovers = (await readdir(home)).filter((name) => /\.tmp\./.test(name));
+    expect(leftovers).toEqual([]);
   });
 
   it("readRegistry fails loud on malformed content", async () => {

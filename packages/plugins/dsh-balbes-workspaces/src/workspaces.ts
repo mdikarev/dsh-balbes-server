@@ -1,4 +1,5 @@
-import { mkdir, readFile, readdir, rm, rename, stat, writeFile, chmod } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, readdir, rm, rename, stat, writeFile, chmod, unlink } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { join, resolve, sep } from "node:path";
 
@@ -92,10 +93,20 @@ export async function readRegistry(dshHome: string): Promise<RegistryData> {
 
 export async function writeRegistry(dshHome: string, data: RegistryData): Promise<void> {
   const file = registryFile(dshHome);
-  const tmp = `${file}.tmp.${process.pid}`;
-  await writeFile(tmp, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
-  await chmod(tmp, 0o600);
-  await rename(tmp, file);
+  // Unique tmp per write: registry writes are un-mutexed async
+  // writeFile -> chmod -> rename chains, and concurrent create/delete/list
+  // prunes must never share one tmp path (a pid-only suffix lets one chain's
+  // rename steal the other's tmp mid-flight -> spurious ENOENT).
+  const tmp = `${file}.tmp.${process.pid}.${randomUUID()}`;
+  try {
+    await writeFile(tmp, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
+    await chmod(tmp, 0o600);
+    await rename(tmp, file);
+  } catch (error) {
+    // best-effort cleanup of the tmp on failure (rename failure, aborted write, ...)
+    await unlink(tmp).catch(() => {});
+    throw error;
+  }
 }
 
 /** Keep only rows whose project directory still exists. */
@@ -201,6 +212,9 @@ export async function deleteProject(dshHome: string, name: string): Promise<void
     if (!s.isDirectory()) throw workspaceError("not-found", `project not found: ${name}`);
   } catch (error) {
     if (error instanceof WorkspaceError) throw error;
+    // Only a missing directory means not-found; real stat errors (EACCES, ...)
+    // must surface as 500, mirroring readRegistry's ENOENT-only mapping.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     throw workspaceError("not-found", `project not found: ${name}`);
   }
   await rm(target, { recursive: true, force: true });

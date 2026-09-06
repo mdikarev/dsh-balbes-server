@@ -1,11 +1,11 @@
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, mkdir, cp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, cp, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAdminAuth, writeAdminAuth } from "../../../bundles/dsh-balbes-host/src/core.js";
 
@@ -168,9 +168,13 @@ describe.skipIf(!realEnabled)("REAL composition (workspaces API)", () => {
     try {
       const token = await bootServer();
 
-      // 401 without a token
+      // 401 without a token on every workspaces route
       const anon = await postJson(`${base}/api/workspaces/list`, {});
       expect(anon.status).toBe(401);
+      const anonCreate = await postJson(`${base}/api/workspaces/create`, { name: "alpha" });
+      expect(anonCreate.status).toBe(401);
+      const anonDelete = await postJson(`${base}/api/workspaces/delete`, { name: "alpha" });
+      expect(anonDelete.status).toBe(401);
 
       // list on a fresh home: home + empty projects, and $DSH_HOME/agent exists
       const empty = await postJson(`${base}/api/workspaces/list`, {}, token);

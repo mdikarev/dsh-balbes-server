@@ -166,9 +166,12 @@ button { font: inherit; }
 
 /* ── shell nav: live items are buttons now ────────────────── */
 /* Reset only the UA button chrome (.nav-item already defines layout,
-   padding and the active accent border-left — do not clobber them). */
+   padding and the active accent border-left — do not clobber them).
+   Explicit longhands instead of the `font` shorthand: `font: inherit`
+   would re-inherit the body's 14px and override .nav-item's 13.5px. */
 button.nav-item {
-  font: inherit; background: none; cursor: pointer; text-align: left; width: 100%;
+  font-family: inherit; font-size: 13.5px; font-weight: inherit; line-height: inherit;
+  background: none; cursor: pointer; text-align: left; width: 100%;
   border-top: none; border-right: none; border-bottom: none;
 }
 button.nav-item:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
