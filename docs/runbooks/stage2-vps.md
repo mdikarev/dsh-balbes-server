@@ -11,8 +11,12 @@ Runbook описывает развёртывание профиля dsh `balbes
 
 Профиль `balbes` на Этапе 2 собирается из бандлов `@deepseek-ai/dsh-base` и
 `dsh-balbes-host` (наш host: сервер + статика + auth + api + startup);
-headless и веб-морда (`dsh-web-app`) в профиль **не входят** — «мордой» теперь
-служит собственная админка host'а.
+поверх них в профиль подключён плагин воркспейсов `dsh-balbes-workspaces`
+(API `/api/workspaces/list|create|delete`, bearer): список, создание и
+удаление воркспейсов-проектов. В профиль плагин вносится патч-слоем
+`profiles/balbes/cordis.patch.yml`, а собранный пакет копируется в
+`node_modules` профиля рядом с host. Headless и веб-морда (`dsh-web-app`) в
+профиль **не входят** — «мордой» теперь служит собственная админка host'а.
 
 Критерий готовности этапа: по этому runbook'у сервер разворачивается на VPS и
 проходит ручную проверку — список команд и ожидаемых результатов в разделе
@@ -182,6 +186,18 @@ curl -fsS -X POST http://127.0.0.1:8080/api/prompt \
   -H "authorization: Bearer $TOKEN" \
   -d '{"prompt":"Напиши ok"}'
 # ожидается: HTTP 200, JSON вида {"text":"ok","reason":{"kind":"completed"}}
+```
+
+```bash
+# воркспейсы (bearer; подставьте TOKEN из входа выше)
+curl -sS -X POST http://127.0.0.1:8080/api/workspaces/list \
+  -H "authorization: Bearer $TOKEN"
+curl -sS -X POST http://127.0.0.1:8080/api/workspaces/create \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"name":"my-project"}'
+curl -sS -X POST http://127.0.0.1:8080/api/workspaces/delete \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"name":"my-project"}'
 ```
 
 Если на шаге 2 вместо токена пришла ошибка — проверьте, что в
