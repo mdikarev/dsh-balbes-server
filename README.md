@@ -8,19 +8,26 @@ dsh используется как зависимость (не форк): вс
 ## Что это и что умеет сейчас
 
 - **Профиль `balbes`** = ядро `@deepseek-ai/dsh-base` + собственный host-бандл
-  `dsh-balbes-host` (headless из ранних этапов убран).
+  `dsh-balbes-host` + плагин воркспейсов `dsh-balbes-workspaces`
+  (headless из ранних этапов убран).
 - **Сервер-демон** (systemd): `dsh --profile balbes` поднимает HTTP-админку и держит процесс.
-- **Админка** (`dsh-balbes-admin`, React + Vite): вход по логину/паролю (JWT), на этом этапе —
-  одна кнопка «Отправить тестовый промпт» → ответ модели над кнопкой.
+- **Админка** (`dsh-balbes-admin`, React + Vite): вход по логину/паролю (JWT); экраны —
+  тестовая страница («Отправить тестовый промпт» → ответ модели) и страница «Проекты»
+  (воркспейсы: дом агента отдельной секцией + список/создание/удаление проектов).
+- **Воркспейсы на сервере**: дом агента `$DSH_HOME/agent/` (зарезервирован, авто-создаётся
+  при старте) и проекты `$DSH_HOME/projects/<имя>/`; каталог — источник правды, реестр-индекс
+  `$DSH_HOME/projects.json` (600). Управление — API `/api/workspaces/list|create|delete`
+  (bearer) и страница «Проекты» в админке.
 - **Авторизация**: логин/пароль генерируются при установке один раз (пароль хранится только
   scrypt-хэшем), JWT HS256 (24 ч), лимит попыток входа 5/30 мин по IP. Все запросы к `/api/*` —
   только POST (правило R-API-1); кроме `login` и `health` каждый хендлер требует валидный токен.
 - **Задел на рост**: API-контракты типизированы (`dsh-balbes-contracts` + реестр в
-  canon — `docs/canon/API_CONTRACTS.md`), шов в ядро повторяет агентский цикл dsh — следующие этапы
-  (список сессий и чат, память, каналы Telegram/A2A и т.д.) добавляются поверх того же host'а.
+  canon — секция `docs/canon/API_CONTRACTS.md`), шов в ядро повторяет агентский цикл dsh — следующие этапы
+  (сессии/чат в воркспейсах, git/ключи, наполнение дома, каналы Telegram/A2A и т.д.)
+  добавляются поверх того же host'а.
 
-Текущая дорожная карта и детальные границы — в `docs/canon/` и спеке
-`docs/superpowers/specs/2026-09-05-mvp-design.md` (разделы «Этап 1», «Этап 2»).
+Текущая дорожная карта и детальные границы — в `docs/canon/`; дизайн и планы этапов —
+в `docs/superpowers/specs/` и `docs/superpowers/plans/`.
 
 ## Требования
 
@@ -38,9 +45,9 @@ curl -fsSL https://raw.githubusercontent.com/mdikarev/dsh-balbes-server/main/scr
 
 1. Ставит окружение: Node ≥ 22 (NodeSource), pnpm, git, глобальный `@deepseek-ai/dsh`.
 2. Клонирует/обновляет репозиторий в `~/dsh-balbes-server`.
-3. Собирает workspace (host, контракты, SPA).
-4. Синхронизирует профиль `balbes` в `$DSH_HOME/profiles/balbes` и кладёт собранный host
-   в его `node_modules`; SPA — в `$DSH_HOME/balbes/ui`.
+3. Собирает workspace (host, плагин воркспейсов, контракты, SPA).
+4. Синхронизирует профиль `balbes` в `$DSH_HOME/profiles/balbes` и кладёт собранные host
+   и плагин воркспейсов в его `node_modules`; SPA — в `$DSH_HOME/balbes/ui`.
 5. Принимает ключ DeepSeek (интерактивно; пусто = пропустить) в `$DSH_HOME/.credentials.yaml` (600).
 6. Генерирует учётные данные админки **один раз** и печатает их (**сохраните пароль**).
 7. Ставит и запускает systemd-юнит `dsh-balbes` (автозапуск, переживает reboot).
@@ -95,6 +102,15 @@ curl -sS -X POST http://127.0.0.1:8080/api/prompt \
   -H "authorization: Bearer $TOKEN" \
   -H 'content-type: application/json' \
   -d '{"prompt":"Напиши ok и больше ничего"}'
+
+# воркспейсы: список → создать → удалить
+curl -sS -X POST http://127.0.0.1:8080/api/workspaces/list -H "authorization: Bearer $TOKEN"
+curl -sS -X POST http://127.0.0.1:8080/api/workspaces/create \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"name":"my-project"}'
+curl -sS -X POST http://127.0.0.1:8080/api/workspaces/delete \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"name":"my-project"}'
 ```
 
 ## Настройки (окружение)
@@ -112,7 +128,12 @@ curl -sS -X POST http://127.0.0.1:8080/api/prompt \
 
 ## Где лежат данные (в `$DSH_HOME`)
 
-- `profiles/balbes/` — установленный профиль (включая наш host в его `node_modules`);
+- `profiles/balbes/` — установленный профиль (включая собранные host и плагин
+  воркспейсов в его `node_modules`);
+- `agent/` — дом агента (зарезервированный воркспейс; создаётся автоматически);
+- `projects/` — проекты-воркспейсы (`projects/<имя>/` — каталог проекта);
+- `projects.json` — реестр-индекс воркспейсов (600; только метаданные `createdAt`,
+  источник правды — каталоги на диске);
 - `.credentials.yaml` — ключ модели (600);
 - `admin-auth.json` — логин, scrypt-хэш пароля, `jwtSecret` (600; открытого пароля там нет);
 - `balbes/ui` — собранная админка;
@@ -123,6 +144,7 @@ curl -sS -X POST http://127.0.0.1:8080/api/prompt \
 ```
 packages/
   bundles/dsh-balbes-host/   # Cordis-бандл: патч-слой + плагины startup/server/auth/static/api
+  plugins/dsh-balbes-workspaces/ # плагин воркспейсов (дом агента + проекты, API /api/workspaces/*)
   contracts/                 # dsh-balbes-contracts — типы API-контрактов
   frontend/dsh-balbes-admin/ # React SPA (Vite)
 profiles/balbes/             # манифест профиля (источник правды — репозиторий)
@@ -132,13 +154,16 @@ scripts/
   link-core.mjs              # линковка зеркала @deepseek-ai для сборки/typecheck
 docs/
   canon/                     # канон (архитектура, глоссарий, контракты API — источник истины)
-  runbooks/stage2-vps.md     # эксплуатационный runbook (установка, DoD, неполадки)
-  superpowers/               # спека (этапы M1) и планы этапов
+  runbooks/                  # эксплуатационные runbook'и (установка, DoD, неполадки)
+  superpowers/               # спеки и планы этапов
 ```
 
 ## Документация
 
-- `docs/runbooks/stage2-vps.md` — установка, проверки DoD, устранение неполадок.
+- `docs/runbooks/stage1-vps.md`, `docs/runbooks/stage2-vps.md` — установка, проверки DoD,
+  устранение неполадок.
 - `docs/canon/API_CONTRACTS.md` — контракты API (реестр ручек `/api/*`).
+- `docs/canon/future_plans/` — направленные инициативы будущего (статусы draft/absorbed).
 - `docs/canon/` — архитектура, термины, зафиксированные решения.
-- `docs/superpowers/specs/2026-09-05-mvp-design.md` — продуктовая спека M1 (этапы 1–2 детально).
+- `docs/superpowers/specs/` — продуктовые спеки (MVP; воркспейсы).
+- `docs/superpowers/plans/` — планы реализации этапов (воркспейсы и др.).
