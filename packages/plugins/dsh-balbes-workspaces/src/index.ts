@@ -1,6 +1,7 @@
 import z from "@deepseek-ai/schemastery";
 import { join } from "node:path";
 import { ensureHome, listWorkspaces, createProject, deleteProject, WorkspaceError } from "./workspaces.js";
+import { readWorkspaceDir, type WorkspaceScope } from "./tree.js";
 
 export const name = "balbes-workspaces";
 export const inject = ["balbesHttp"];
@@ -74,6 +75,24 @@ export function apply(ctx: {
     } catch (error) {
       if (error instanceof WorkspaceError) {
         const status = error.code === "invalid-name" ? 400 : error.code === "not-found" ? 404 : 500;
+        send(res, status, { error: { code: error.code, message: error.message } });
+        return;
+      }
+      send(res, 500, { error: { code: "internal", message: error instanceof Error ? error.message : String(error) } });
+    }
+  });
+
+  http.post("/api/workspaces/tree", "bearer", async (_req, res, body) => {
+    const b = body as { scope?: unknown; name?: unknown; path?: unknown };
+    const scope = (typeof b?.scope === "string" ? b.scope : "") as WorkspaceScope;
+    const name = typeof b?.name === "string" ? b.name : undefined;
+    const path = typeof b?.path === "string" ? b.path : "";
+    try {
+      const entries = await readWorkspaceDir(dshHome, scope, name, path);
+      send(res, 200, { entries });
+    } catch (error) {
+      if (error instanceof WorkspaceError) {
+        const status = error.code === "invalid-name" || error.code === "invalid-path" ? 400 : error.code === "not-found" ? 404 : 500;
         send(res, status, { error: { code: error.code, message: error.message } });
         return;
       }
