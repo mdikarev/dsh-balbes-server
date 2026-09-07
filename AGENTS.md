@@ -42,13 +42,20 @@ Short rule set; full detail lives in `CONTRIBUTING.md`.
   GitHub `main` → re-running `scripts/install.sh` on the server (`git pull --ff-only`,
   rebuild, profile sync, plugin copy into profile `node_modules`, SPA deploy,
   service restart). The dev workspace is not the server.
+- The canonical operational commands for the server live in
+  `docs/runbooks/stage2-vps.md` (install, update, smoke, DoD, troubleshooting) and in
+  the installer's own summary. A functional change that affects the server surface
+  updates that runbook in the same commit (per CONTRIBUTING: docs change with the
+  behavior).
 - After finishing any functional change (or whenever the owner asks), hand over
-  concrete **server verification instructions**: the exact command(s) to run on the
-  server and the expected output — an update step, then API/disk/UI smoke for the
-  changed surface. Local unit/REAL tests alone are not the full verification story.
+  **server verification instructions** grounded in the runbook: the update command
+  (re-run install.sh on the server) plus the API/disk/UI smoke steps for the changed
+  surface, each with expected output. Local unit/REAL tests alone are not the full
+  verification story.
 - Before the owner can verify, changes must be on `origin/main`; pushing a shared
   branch requires the owner's go-ahead.
 - Do not assume agent-side server access; give commands the owner runs and offer to
   interpret the output.
+
 
 
