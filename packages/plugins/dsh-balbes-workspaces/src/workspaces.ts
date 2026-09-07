@@ -13,7 +13,7 @@ export interface WorkspaceHome {
   path: string;
 }
 
-export type WorkspaceErrorCode = "invalid-name" | "name-exists" | "not-found" | "registry-invalid";
+export type WorkspaceErrorCode = "invalid-name" | "name-exists" | "not-found" | "registry-invalid" | "invalid-path";
 export class WorkspaceError extends Error {
   constructor(public code: WorkspaceErrorCode, message: string) {
     super(message);
