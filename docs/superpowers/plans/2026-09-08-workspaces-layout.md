@@ -507,15 +507,14 @@ export function toChangeEvent(rootLabel: "home" | "projects", rel: string): Chan
   const norm = (rel ?? "").replace(/\\/g, "/");
   const segments = norm.split("/").filter((s) => s !== "");
   if (rootLabel === "home") {
-    const dir = relDirOf(norm);
-    return dir === "" ? { kind: "fs", scope: "home", path: "" } : { kind: "fs", scope: "home", path: dir };
+    return { kind: "fs", scope: "home", path: relDirOf(norm) };
   }
   if (segments.length === 0) return { kind: "list" }; // projects root itself changed
   const [name, ...rest] = segments;
-  if (name.startsWith(".")) return null; // hidden bookkeeping under the projects root
+  if (name === undefined || name.startsWith(".")) return null; // hidden bookkeeping under the projects root
+  if (rest.length === 0) return { kind: "list" }; // project dir added/removed/renamed
   const restPath = rest.join("/");
-  const dir = relDirOf(restPath);
-  return { kind: "fs", scope: "project", name, path: dir === "" && restPath !== "" ? "" : dir };
+  return { kind: "fs", scope: "project", name, path: relDirOf(restPath) };
 }
 
 const DEBOUNCE_MS = 120;
