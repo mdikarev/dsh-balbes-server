@@ -35,6 +35,16 @@ Short rule set; full detail lives in `CONTRIBUTING.md`.
 **Verification:** run the checks relevant to the change (`pnpm typecheck`, `pnpm lint`,
 `pnpm test` …) and report only commands actually executed.
 
+**Runbooks are living docs**
+
+- `docs/runbooks/*.md` must always be current: they describe how the server is
+  installed, updated, and verified. A functional change that touches the server
+  surface updates the affected runbook **in the same commit** — install steps,
+  profile composition, smoke/curl blocks, expected outputs, troubleshooting. A stale
+  runbook is a defect, not a separate doc task.
+- After finishing any functional change, hand over **server verification instructions
+  grounded in the runbook** (see below); never invent commands that contradict it.
+
 **Server verification handoff**
 
 - The product has a live deployment: a VPS running the `dsh-balbes` profile under
@@ -44,9 +54,7 @@ Short rule set; full detail lives in `CONTRIBUTING.md`.
   service restart). The dev workspace is not the server.
 - The canonical operational commands for the server live in
   `docs/runbooks/stage2-vps.md` (install, update, smoke, DoD, troubleshooting) and in
-  the installer's own summary. A functional change that affects the server surface
-  updates that runbook in the same commit (per CONTRIBUTING: docs change with the
-  behavior).
+  the installer's own summary.
 - After finishing any functional change (or whenever the owner asks), hand over
   **server verification instructions** grounded in the runbook: the update command
   (re-run install.sh on the server) plus the API/disk/UI smoke steps for the changed
