@@ -223,4 +223,74 @@ describe.skipIf(!realEnabled)("REAL composition (workspaces API)", () => {
       await stopServer();
     }
   }, 240_000);
+
+  it("workspaces API: tree reads are scoped, events stream file changes", async () => {
+    if (home === undefined) throw new Error("home not initialized");
+    const base = `http://127.0.0.1:${port}`;
+    const write = (await import("node:fs/promises")).writeFile;
+    const mkdir = (await import("node:fs/promises")).mkdir;
+    try {
+      const token = await bootServer();
+
+      // anon gets 401 on both new routes
+      expect((await postJson(`${base}/api/workspaces/tree`, { scope: "home", path: "" })).status).toBe(401);
+      expect((await postJson(`${base}/api/workspaces/events`, {})).status).toBe(401);
+
+      const created = await postJson(`${base}/api/workspaces/create`, { name: "alpha" }, token);
+      expect(created.status, JSON.stringify(created.json)).toBe(200);
+
+      // seed files directly on disk (the server process watches the same home)
+      const proot = join(home, "projects", "alpha");
+      await mkdir(join(proot, "src"), { recursive: true });
+      await write(join(proot, "src", "main.ts"), "export {}");
+      await write(join(proot, ".hidden"), "x");
+
+      // tree: project root lists dirs first, dotfiles included
+      const tree = await postJson(`${base}/api/workspaces/tree`, { scope: "project", name: "alpha", path: "" }, token);
+      expect(tree.status, JSON.stringify(tree.json)).toBe(200);
+      expect((tree.json as { entries?: Array<{ name: string; kind: string }> }).entries).toEqual([
+        { name: "src", kind: "dir" },
+        { name: ".hidden", kind: "file" }
+      ]);
+
+      // tree: nested dir, home scope, and error codes
+      const nested = await postJson(`${base}/api/workspaces/tree`, { scope: "project", name: "alpha", path: "src" }, token);
+      expect((nested.json as { entries?: unknown[] }).entries).toEqual([{ name: "main.ts", kind: "file" }]);
+      const homeTree = await postJson(`${base}/api/workspaces/tree`, { scope: "home", path: "" }, token);
+      expect(homeTree.status).toBe(200);
+      const bad = await postJson(`${base}/api/workspaces/tree`, { scope: "project", name: "alpha", path: "../.." }, token);
+      expect(bad.status).toBe(400);
+      expect((bad.json as { error?: { code?: string } }).error?.code).toBe("invalid-path");
+      const gone = await postJson(`${base}/api/workspaces/tree`, { scope: "project", name: "alpha", path: "nope" }, token);
+      expect(gone.status).toBe(404);
+
+      // events: open the stream, mutate the tree, expect a fs event for the project
+      const ac = new AbortController();
+      const streamRes = await fetch(`${base}/api/workspaces/events`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: "{}",
+        signal: ac.signal
+      });
+      expect(streamRes.status).toBe(200);
+      expect(streamRes.headers.get("content-type")).toContain("text/event-stream");
+      const reader = streamRes.body?.getReader();
+      if (reader === undefined) throw new Error("no stream body");
+
+      await mkdir(join(proot, "src", "lib"), { recursive: true });
+      const deadline = Date.now() + 15_000;
+      let sawAlpha = false;
+      let acc = "";
+      while (Date.now() < deadline && !sawAlpha) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        acc += new TextDecoder().decode(value);
+        sawAlpha = acc.includes('"scope":"project"') && acc.includes('"name":"alpha"');
+      }
+      ac.abort();
+      expect(sawAlpha, `expected a project fs event, got: ${acc}`).toBe(true);
+    } finally {
+      await stopServer();
+    }
+  }, 240_000);
 });

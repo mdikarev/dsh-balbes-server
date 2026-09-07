@@ -2,6 +2,7 @@ import z from "@deepseek-ai/schemastery";
 import { join } from "node:path";
 import { ensureHome, listWorkspaces, createProject, deleteProject, WorkspaceError } from "./workspaces.js";
 import { readWorkspaceDir, type WorkspaceScope } from "./tree.js";
+import { createChangeHub } from "./events.js";
 
 export const name = "balbes-workspaces";
 export const inject = ["balbesHttp"];
@@ -13,6 +14,10 @@ interface HttpSeatLike {
 interface ResLike {
   writeHead(status: number, headers?: Record<string, string>): void;
   end(body?: string): void;
+  write(chunk: string): boolean;
+  on(event: "close", listener: () => void): unknown;
+  destroyed: boolean;
+  writableEnded: boolean;
 }
 
 function send(res: ResLike, status: number, body: unknown): void {
@@ -98,5 +103,31 @@ export function apply(ctx: {
       }
       send(res, 500, { error: { code: "internal", message: error instanceof Error ? error.message : String(error) } });
     }
+  });
+
+  const changeHub = createChangeHub(dshHome);
+  http.post("/api/workspaces/events", "bearer", async (_req, res, body) => {
+    void body; // events request body is {} (R-API-1)
+    if (res.destroyed || res.writableEnded) return;
+    res.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      connection: "keep-alive"
+    });
+    const sendEvent = (e: unknown): void => {
+      if (res.destroyed || res.writableEnded) return;
+      res.write(`data: ${JSON.stringify(e)}\n\n`);
+    };
+    const unsubscribe = changeHub.subscribe(sendEvent);
+    const heartbeat = setInterval(() => {
+      if (res.destroyed || res.writableEnded) return;
+      res.write(": ping\n\n");
+    }, 25_000);
+    const cleanup = (): void => {
+      clearInterval(heartbeat);
+      unsubscribe();
+    };
+    res.on("close", cleanup);
+    // The stream lives until the client disconnects; dispatch must not end it.
   });
 }

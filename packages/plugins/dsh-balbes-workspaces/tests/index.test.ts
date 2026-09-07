@@ -35,7 +35,7 @@ describe("balbes-workspaces plugin", () => {
     expect(typeof apply).toBe("function");
   });
 
-  it("registers the four bearer routes and ensures the home at apply time", async () => {
+  it("registers the five bearer routes and ensures the home at apply time", async () => {
     const ctx = {
       get(key: string): unknown {
         return key === "balbesHttp" ? http : undefined;
@@ -46,6 +46,7 @@ describe("balbes-workspaces plugin", () => {
     expect(seats.map((s) => s.path).sort()).toEqual([
       "/api/workspaces/create",
       "/api/workspaces/delete",
+      "/api/workspaces/events",
       "/api/workspaces/list",
       "/api/workspaces/tree"
     ]);
