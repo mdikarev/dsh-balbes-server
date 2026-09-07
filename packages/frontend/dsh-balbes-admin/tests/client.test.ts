@@ -69,4 +69,51 @@ describe("api client", () => {
     vi.stubGlobal("fetch", mockFetchOnce(200, {}));
     await api.deleteWorkspace("a");
   });
+
+  it("readWorkspaceDir posts the tree request", async () => {
+    const seen: Array<{ path: string; body: unknown }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      seen.push({ path: String(_url), body });
+      return { ok: true, status: 200, json: async () => ({ entries: [{ name: "src", kind: "dir" }] }) };
+    }));
+    localStorage.setItem("balbes.authToken", "t");
+    const api = createApiClient();
+    const res = await api.readWorkspaceDir("project", "alpha", "src");
+    expect(res.entries).toEqual([{ name: "src", kind: "dir" }]);
+    expect(seen[0]?.path).toBe("/api/workspaces/tree");
+    expect(seen[0]?.body).toEqual({ scope: "project", name: "alpha", path: "src" });
+    vi.unstubAllGlobals();
+  });
+
+  it("subscribeWorkspaceEvents parses streamed events and unsubscribes cleanly", async () => {
+    const chunks = [
+      'data: {"kind":"fs","scope":"project","name":"alpha","path":"src"}\n\n',
+      ": ping\n\n",
+      'data: {"kind":"list"}\n\n'
+    ];
+    const reader = {
+      getReader: () => {
+        let i = 0;
+        return {
+          read: async () => {
+            if (i >= chunks.length) return { done: true, value: undefined };
+            return { done: false, value: new TextEncoder().encode(chunks[i++]) };
+          },
+          cancel: async () => undefined,
+          releaseLock: () => undefined
+        };
+      }
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, body: reader })));
+    localStorage.setItem("balbes.authToken", "t");
+    const api = createApiClient();
+    const got: unknown[] = [];
+    const unsub = api.subscribeWorkspaceEvents((e) => got.push(e));
+    await vi.waitFor(() => expect(got.length).toBe(2));
+    expect(got[0]).toEqual({ kind: "fs", scope: "project", name: "alpha", path: "src" });
+    expect(got[1]).toEqual({ kind: "list" });
+    unsub();
+    vi.unstubAllGlobals();
+  });
 });
