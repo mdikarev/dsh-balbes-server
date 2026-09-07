@@ -1,23 +1,26 @@
-# API-контракты dsh-balbes-server
+# API Contracts
+
+## Purpose
+
+Человекочитаемый реестр API-контрактов сервера `dsh-balbes-server`: каждая
+ручка `/api/*`, её запрос/ответ, ошибки и побочные эффекты. Компиляторный
+источник правды форм — TS-типы в `dsh-balbes-contracts`
+(`packages/contracts/src/index.ts`); эта секция — живая проекция для людей.
+
+## Scope
+
+- Покрывает: HTTP-контракты `/api/*` (method/path/auth/request/response/
+  errors/notes) — сейчас `health`, `auth.login`, `auth.me`, `prompt`,
+  `workspaces.list`, `workspaces.create`, `workspaces.delete`.
+- Вне scope: статика SPA (не API), внутренние сервисные интерфейсы Cordis,
+  будущие каналы (они появятся здесь же по мере реализации).
+- При расхождении реестра и типов побеждают типы (компилятор); реестр
+  правится в том же изменении, что и типы/поведение.
+
+## Current state
 
 Правила: **R-API-1** — все запросы к `/api/*` только POST; JSON тело/ответ;
-ошибки — `{error:{code,message}}`. Типы-контракты — `dsh-balbes-contracts`
-(`packages/contracts/src/index.ts`); при расхождении реестра и типов побеждают
-типы (компилятор), реестр правится в том же изменении.
-
-## Шаблон контракта
-
-### <id> — <название>
-- method: POST
-- path: /api/<domain>/<action>
-- auth: public | bearer
-- request:  <поля, типы, обязательность>
-- response: <успех: поля, типы>
-- errors:   <HTTP-коды и смысл>
-- notes:    <что делает, побочные эффекты, будущие изменения>
-- schema:   (пока пусто; zod/JSON Schema — при росте API)
-
-## Контракты
+ошибки — `{error:{code,message}}`.
 
 ### health — проверка живости
 - method: POST
@@ -91,3 +94,32 @@
 - notes: рекурсивно удаляет каталог проекта + prune строки реестра.
   Подтверждение — на стороне UI. Дом удалить нельзя: имя — один сегмент пути,
   проверка containment под `$DSH_HOME/projects/`.
+
+## Rules & invariants
+
+- R-API-1: `/api/*` — только POST (исключение — статика SPA, это не API).
+- Ошибки — тело `{error:{code,message}}`; коды стабильны и проверяются
+  тестами (REAL-композиция).
+- Типы `dsh-balbes-contracts` — компиляторный SoT форм; реестр им не
+  противоречит и правится в том же изменении (типы побеждают при расхождении).
+- Новая ручка `/api/*` появляется здесь в том же коммите, что и код.
+- Секция редактируется только через canon-скиллы (canon-first), не вручную.
+
+## Key details
+
+- Контракты в `Current state` оформлены по шаблону: `### <id> — <название>` и
+  поля method/path/auth/request/response/errors/notes (schema: пока пусто;
+  zod/JSON Schema — при росте API).
+- Bearer-токен: SPA хранит JWT в localStorage и шлёт `Authorization: Bearer`.
+- Каталог-источник правды воркспейсов и пути (`$DSH_HOME/agent`,
+  `$DSH_HOME/projects`) — в ARCHITECTURE.md; термины — в GLOSSARY.md.
+
+## Open questions
+
+- Пусто: каждая новая ручка добавляется сюда по мере реализации.
+
+## Related canon
+
+- ARCHITECTURE.md — слои host, роутинг, авторизация, воркспейсы.
+- OVERVIEW.md — роль API в scope продукта.
+- GLOSSARY.md — термины (`dsh-balbes-contracts`, R-API-1, воркспейс).

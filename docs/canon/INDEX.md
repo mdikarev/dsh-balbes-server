@@ -28,6 +28,7 @@ CONTRIBUTING.md и правила AGENTS.md/CLAUDE.md.
 | architecture | ARCHITECTURE.md | architecture | true |
 | glossary | GLOSSARY.md | glossary | true |
 | admin-ui | ADMIN_UI.md | section | true |
+| api-contracts | API_CONTRACTS.md | section | true |
 | discrepancies | DISCREPANCIES.md | discrepancies | true |
 | contract | CANON_CONTRACT.md | contract | true |
 | future-plans-index | future_plans/INDEX.md | section | true |

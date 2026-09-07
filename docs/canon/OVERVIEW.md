@@ -61,7 +61,8 @@ dsh — это лоадер профилей: профиль = список ба
   `curl | bash`): окружение, сборка workspace, синк профиля + копия host,
   развёртывание SPA, ключ DeepSeek в `.credentials.yaml`, systemd, health-
   проверка с ретраями.
-- Контракты API: типы `dsh-balbes-contracts` + реестр `docs/api-contracts.md`.
+- Контракты API: типы `dsh-balbes-contracts` + человекочитаемый реестр —
+  секция API_CONTRACTS.md.
 - CI (GitHub Actions) без LLM: сборка, typecheck, unit-тесты, композиция
   профиля, `bash -n`.
 - Runbook эксплуатации (`docs/runbooks/stage2-vps.md`).

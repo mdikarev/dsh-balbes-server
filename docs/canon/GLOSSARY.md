@@ -60,7 +60,7 @@ API (только POST, R-API-1) и SPA-админку; будущие кана�
 Пакет чистых TS-типов API-контрактов (запросы/ответы/`ApiErrorBody`).
 Импортируется SPA-клиентом; host держит структурные формы — соответствие
 проверяется REAL-тестами и typecheck. Человекочитаемый реестр —
-`docs/api-contracts.md`.
+секция API_CONTRACTS.md.
 
 ### `admin-auth.json`
 Учётные данные админки в `$DSH_HOME` (600): `{login, passwordHash, jwtSecret,

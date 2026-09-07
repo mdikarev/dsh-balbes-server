@@ -45,6 +45,11 @@ sections:
     role: section
     required: true
     template: SECTION
+  - id: api-contracts
+    path: API_CONTRACTS.md
+    role: section
+    required: true
+    template: SECTION
   - id: discrepancies
     path: DISCREPANCIES.md
     role: discrepancies

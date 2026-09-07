@@ -142,7 +142,7 @@ API `/api/workspaces/*` и страницей админки (см. Building blo
   Node и глобального dsh.
 - Правила API: R-API-1 — все запросы к `/api/*` только POST; ошибки —
   `{error:{code,message}}`; контракты-типы в `dsh-balbes-contracts`
-  (+ реестр `docs/api-contracts.md`).
+  (+ человекочитаемый реестр — секция API_CONTRACTS.md).
 - Воркспейсы: дом — `$DSH_HOME/agent/` (зарезервирован, не удаляется),
   проекты — `$DSH_HOME/projects/<имя>/`; имена проектов — строгий slug
   `[A-Za-z0-9._-]` (без `/`, `..`, пробелов, ведущих/хвостовых точек,
