@@ -829,8 +829,8 @@ describe("createSseParser", () => {
     const out: string[] = [];
     const feed = createSseParser((d) => out.push(d));
     feed('data: {"a":1}\n\ndata: {"b');
-    feed(': ping\n\n');
     feed('":2}\n\n');
+    feed(': ping\n\n');
     expect(out).toEqual(['{"a":1}', '{"b":2}']);
   });
 
