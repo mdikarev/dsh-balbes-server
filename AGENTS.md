@@ -35,3 +35,20 @@ Short rule set; full detail lives in `CONTRIBUTING.md`.
 **Verification:** run the checks relevant to the change (`pnpm typecheck`, `pnpm lint`,
 `pnpm test` …) and report only commands actually executed.
 
+**Server verification handoff**
+
+- The product has a live deployment: a VPS running the `dsh-balbes` profile under
+  systemd, and the owner has access to it. Code reaches that server only through
+  GitHub `main` → re-running `scripts/install.sh` on the server (`git pull --ff-only`,
+  rebuild, profile sync, plugin copy into profile `node_modules`, SPA deploy,
+  service restart). The dev workspace is not the server.
+- After finishing any functional change (or whenever the owner asks), hand over
+  concrete **server verification instructions**: the exact command(s) to run on the
+  server and the expected output — an update step, then API/disk/UI smoke for the
+  changed surface. Local unit/REAL tests alone are not the full verification story.
+- Before the owner can verify, changes must be on `origin/main`; pushing a shared
+  branch requires the owner's go-ahead.
+- Do not assume agent-side server access; give commands the owner runs and offer to
+  interpret the output.
+
+
