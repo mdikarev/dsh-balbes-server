@@ -14,10 +14,11 @@ CONTRIBUTING.md и правила AGENTS.md/CLAUDE.md.
 1. OVERVIEW.md — зачем проект, scope, сигналы успеха.
 2. ARCHITECTURE.md — слои, компоненты, потоки, границы.
 3. ADMIN_UI.md — общее направление внешнего вида админки (стиль/дизайн).
-4. GLOSSARY.md — термины (профиль, бандл, патч, host, headless и др.).
-5. CANON_CONTRACT.md — структура canon и шаблоны секций.
-6. DISCREPANCIES.md — открытые/закрытые расхождения.
-7. future_plans/INDEX.md — направленные инициативы будущего (не задачи).
+4. API_CONTRACTS.md — реестр ручек `/api/*` (методы, запросы/ответы, ошибки).
+5. GLOSSARY.md — термины (профиль, бандл, патч, host, headless и др.).
+6. CANON_CONTRACT.md — структура canon и шаблоны секций.
+7. DISCREPANCIES.md — открытые/закрытые расхождения.
+8. future_plans/INDEX.md — направленные инициативы будущего (не задачи).
 
 ## Sections
 
