@@ -6,10 +6,18 @@ import type {
   WorkspaceCreateResponse,
   WorkspaceDeleteRequest,
   WorkspaceDeleteResponse,
+  WorkspaceFsEvent,
   WorkspaceHome,
+  WorkspaceListEvent,
   WorkspaceListRequest,
   WorkspaceListResponse,
-  WorkspaceProject
+  WorkspaceProject,
+  WorkspaceScope,
+  WorkspaceTreeEntry,
+  WorkspaceTreeEntryKind,
+  WorkspaceTreeRequest,
+  WorkspaceTreeResponse,
+  WorkspaceEvent
 } from "../src/index.js";
 
 describe("contracts", () => {
@@ -53,5 +61,24 @@ describe("workspace contracts", () => {
     expect(deleteReq).toEqual({ name: "alpha" });
     expect(deleteRes).toEqual({});
     expect(home).toEqual({ path: "/home/u/.dsh/agent" });
+  });
+});
+
+// Workspace tree/events contracts — structural shape is the contract (R-API-1 + types win).
+describe("workspace tree/events contracts", () => {
+  it("exposes the documented shapes", () => {
+    const scope: WorkspaceScope = "project";
+    const req: WorkspaceTreeRequest = { scope, name: "alpha", path: "src" };
+    const homeReq: WorkspaceTreeRequest = { scope: "home", path: "" };
+    const entry: WorkspaceTreeEntry = { name: "main.ts", kind: "file" };
+    const kind: WorkspaceTreeEntryKind = "dir";
+    const resp: WorkspaceTreeResponse = { entries: [entry] };
+    const fsEvt: WorkspaceFsEvent = { kind: "fs", scope, name: "alpha", path: "src" };
+    const listEvt: WorkspaceListEvent = { kind: "list" };
+    const evt: WorkspaceEvent = fsEvt;
+    void ([scope, req, homeReq, entry, kind, resp, fsEvt, listEvt, evt] as unknown[]);
+    // exactOptionalPropertyTypes guard: an omitted name is absent, never undefined
+    const e = evt as WorkspaceFsEvent;
+    void e;
   });
 });

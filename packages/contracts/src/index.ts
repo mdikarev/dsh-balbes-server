@@ -64,3 +64,36 @@ export interface WorkspaceDeleteRequest {
   name: string;
 }
 export interface WorkspaceDeleteResponse {}
+
+export type WorkspaceScope = "home" | "project";
+
+export interface WorkspaceTreeRequest {
+  scope: WorkspaceScope;
+  /** Project slug; required when scope === "project", absent for "home". */
+  name?: string;
+  /** Relative directory path inside the workspace root; "" means the root. */
+  path: string;
+}
+export type WorkspaceTreeEntryKind = "dir" | "file" | "link";
+export interface WorkspaceTreeEntry {
+  name: string;
+  kind: WorkspaceTreeEntryKind;
+}
+export interface WorkspaceTreeResponse {
+  entries: WorkspaceTreeEntry[];
+}
+
+export interface WorkspaceEventsRequest {}
+
+/** Directory whose listing changed ("" = workspace root). */
+export interface WorkspaceFsEvent {
+  kind: "fs";
+  scope: WorkspaceScope;
+  name?: string;
+  path: string;
+}
+/** Projects root changed: a project directory appeared/disappeared/was renamed. */
+export interface WorkspaceListEvent {
+  kind: "list";
+}
+export type WorkspaceEvent = WorkspaceFsEvent | WorkspaceListEvent;
