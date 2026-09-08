@@ -109,6 +109,26 @@ describe("balbes-models plugin", () => {
     expect(credentials.refs.get("DEEPSEEK_API_KEY")).toBe("sk-new");
   });
 
+  it("custom save with key null unsets the key ref and keeps route config", async () => {
+    apply(ctx as never, {});
+    await call("/api/models/save", { kind: "custom", displayName: "My Gateway", baseURL: "https://x", key: "k", models: ["m"] });
+    const res = await call("/api/models/save", { kind: "custom", routeId: "my-gateway", displayName: "My Gateway", baseURL: "https://x", key: null, models: ["m"] });
+    expect(res.status).toBe(200);
+    expect(credentials.refs.has("BALBES_MY_GATEWAY_API_KEY")).toBe(false);
+    const section = settings.get("llm-pi-ai") as { providers: Record<string, any> };
+    expect(section.providers["my-gateway"]).toMatchObject({ displayName: "My Gateway", baseURL: "https://x", apiKeyEnv: "BALBES_MY_GATEWAY_API_KEY", models: [{ id: "m" }] });
+    const listed = await call("/api/models/list", {});
+    const gw = (listed.json as { connections: Array<{ routeId: string; hasKey: boolean }> }).connections.find((c) => c.routeId === "my-gateway");
+    expect(gw?.hasKey).toBe(false);
+  });
+
+  it("deepseek save with a null key -> 400 invalid-key", async () => {
+    apply(ctx as never, {});
+    const res = await call("/api/models/save", { kind: "deepseek", key: null });
+    expect(res.status).toBe(400);
+    expect((res.json as { error: { code: string } }).error.code).toBe("invalid-key");
+  });
+
   it("delete custom removes route + ref; delete deepseek -> 400 reserved", async () => {
     apply(ctx as never, {});
     await call("/api/models/save", { kind: "custom", displayName: "My Gateway", baseURL: "https://x", key: "k", models: ["m"] });

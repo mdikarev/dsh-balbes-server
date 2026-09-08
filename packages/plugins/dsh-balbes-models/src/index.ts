@@ -139,7 +139,8 @@ export function apply(ctx: { get(key: string): unknown; logger: { warn(m: string
       };
       if (payload.baseURL !== undefined) routeConfig.baseURL = payload.baseURL;
       await settings.update(LLM_PI_AI_NS, { providers: { [route]: routeConfig } });
-      if (typeof payload.key === "string" && payload.key !== "") await credentials.set(apiKeyEnv, payload.key);
+      if (payload.key === null) await credentials.unset(apiKeyEnv);
+      else if (typeof payload.key === "string" && payload.key !== "") await credentials.set(apiKeyEnv, payload.key);
       const connection = (await readConnections(credentials, settings, defaultModel)).find((c) => c.routeId === route);
       send(res, 200, { connection });
     } catch (error) {

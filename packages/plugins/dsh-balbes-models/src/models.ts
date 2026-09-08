@@ -67,18 +67,21 @@ export function parseModelIds(raw: string[]): string[] | null {
 
 export function validateCustomPayload(p: {
   displayName?: unknown; baseURL?: unknown; key?: unknown; models?: unknown;
-}): { displayName: string; baseURL?: string; key?: string; models: string[] }
+}): { displayName: string; baseURL?: string; key?: string | null; models: string[] }
   | { error: "invalid-display-name" | "invalid-url" | "invalid-key" | "invalid-models" } {
   if (typeof p.displayName !== "string" || p.displayName.trim() === "") return { error: "invalid-display-name" };
   if (p.baseURL !== undefined && p.baseURL !== null && p.baseURL !== "" && (typeof p.baseURL !== "string" || !validateBaseUrl(p.baseURL))) return { error: "invalid-url" };
   if (p.key !== undefined && p.key !== null && p.key !== "" && typeof p.key !== "string") return { error: "invalid-key" };
   const models = parseModelIds(Array.isArray(p.models) ? p.models : []);
   if (models === null) return { error: "invalid-models" };
-  const out: { displayName: string; baseURL?: string; key?: string; models: string[] } = {
+  const out: { displayName: string; baseURL?: string; key?: string | null; models: string[] } = {
     displayName: p.displayName.trim(),
     models
   };
   if (typeof p.baseURL === "string" && p.baseURL !== "") out.baseURL = p.baseURL;
   if (typeof p.key === "string" && p.key !== "") out.key = p.key;
+  // An explicit null key is a clear signal (route stays, credential ref removed);
+  // preserve it so the save handler can unset instead of skipping.
+  if (p.key === null) out.key = null;
   return out;
 }

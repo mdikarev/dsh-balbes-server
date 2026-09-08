@@ -42,6 +42,11 @@ describe("models domain", () => {
     expect(validateCustomPayload({ displayName: "X", baseURL: "https://x", models: [] })).toEqual({ error: "invalid-models" });
   });
 
+  it("preserves an explicit null key as a clear signal", () => {
+    const cleared = validateCustomPayload({ displayName: "X", baseURL: "https://x", key: null, models: ["m1"] });
+    expect(cleared).toEqual({ displayName: "X", baseURL: "https://x", key: null, models: ["m1"] });
+  });
+
   it("exposes the pinned official DeepSeek catalog (dsh 0.1.2-rc.1)", () => {
     expect(DEEPSEEK_OFFICIAL_MODELS.map((m) => m.id)).toContain("deepseek-v4-flash");
     expect(DEEPSEEK_OFFICIAL_MODELS.map((m) => m.id)).toContain("deepseek-v4-pro");
