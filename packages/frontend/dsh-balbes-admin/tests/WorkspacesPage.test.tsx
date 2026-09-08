@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, cleanup, act } from "@testing-library/react";
 import WorkspacesPage from "../src/pages/WorkspacesPage";
 import type { AdminApi } from "../src/api/client";
 import type { WorkspaceListResponse, WorkspaceProject, WorkspaceScope } from "dsh-balbes-contracts";
@@ -273,6 +273,43 @@ describe("WorkspacesPage live events", () => {
     cb({ kind: "list" });
     await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
     expect(await screen.findByText("Выберите воркспейс")).toBeTruthy();
+  });
+
+  it("shows the action banner when a list-event refresh fails and a later success clears it", async () => {
+    // local registry (like the create/delete failure tests): the initial load
+    // succeeds so the loaded layout (and its action banner) is on screen; the
+    // first event-driven refresh rejects, the second (a retry) resolves
+    const projects: WorkspaceProject[] = listBody.projects.map((p) => ({ ...p }));
+    const list = vi
+      .fn()
+      .mockImplementationOnce(async () => ({ home: listBody.home, projects: [...projects] }))
+      .mockRejectedValueOnce(new Error("registry hiccup"))
+      .mockImplementation(async () => ({ home: listBody.home, projects: [...projects] }));
+    const api = makeApi({ listWorkspaces: list });
+    render(<WorkspacesPage api={api} />);
+    await screen.findByText("alpha");
+    const subscribe = api.subscribeWorkspaceEvents as ReturnType<typeof vi.fn>;
+    const latestCallback = (): ((e: unknown) => void) => {
+      const cbs = subscribe.mock.calls;
+      const cb = cbs[cbs.length - 1]?.[0] as (e: unknown) => void;
+      expect(cb).toBeTypeOf("function");
+      return cb;
+    };
+
+    // failing event-driven refresh surfaces in the in-layout banner (no
+    // unhandled rejection: the error is caught by refreshFromEvent)
+    act(() => {
+      latestCallback()({ kind: "list" });
+    });
+    const banner = await screen.findByTestId("workspace-action-error");
+    expect(banner.textContent).toContain("Не удалось: registry hiccup");
+
+    // a subsequent successful refresh (retry via a second list event) clears it
+    act(() => {
+      latestCallback()({ kind: "list" });
+    });
+    await waitFor(() => expect(screen.queryByTestId("workspace-action-error")).toBeNull());
+    expect(list).toHaveBeenCalledTimes(3);
   });
 
   it("unsubscribes on unmount", async () => {

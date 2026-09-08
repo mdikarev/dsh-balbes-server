@@ -56,6 +56,17 @@ export default function WorkspacesPage({ api }: WorkspacesPageProps) {
     }
   }, [refresh]);
 
+  // list events arrive outside any user gesture, so the refresh must not leak a
+  // rejection: mirror the action handlers' banner discipline (clear, then try)
+  const refreshFromEvent = useCallback(async (): Promise<void> => {
+    setError(null);
+    try {
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "refresh failed");
+    }
+  }, [refresh]);
+
   useEffect(() => {
     void load();
   }, [load]);
@@ -76,7 +87,7 @@ export default function WorkspacesPage({ api }: WorkspacesPageProps) {
     const flushTimer = { current: null as ReturnType<typeof setTimeout> | null };
     const unsubscribe = api.subscribeWorkspaceEvents((event) => {
       if (event.kind === "list") {
-        void refresh();
+        void refreshFromEvent();
         return;
       }
       const matches =
@@ -95,7 +106,7 @@ export default function WorkspacesPage({ api }: WorkspacesPageProps) {
       unsubscribe();
       if (flushTimer.current !== null) clearTimeout(flushTimer.current);
     };
-  }, [api, refresh, selected]);
+  }, [api, refreshFromEvent, selected]);
 
   const select = useCallback((ref: WorkspaceRef): void => {
     setSelected(ref);
