@@ -81,7 +81,6 @@ export default function WorkspaceList({ homePath, projects, selected, busy, onSe
               <span className="ws-row-path">{homePath}</span>
             </span>
           </button>
-          <span className="chip">зарезервирован</span>
         </li>
         {projects.map((p) => {
           const ref: WorkspaceRef = { scope: "project", name: p.name };

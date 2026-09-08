@@ -34,11 +34,11 @@ function setup(overrides: Partial<Parameters<typeof WorkspaceList>[0]> = {}) {
 afterEach(() => cleanup());
 
 describe("WorkspaceList", () => {
-  it("renders the pinned home with a reserved chip and no action menu", () => {
+  it("renders the pinned home without a reserved chip or action menu", () => {
     setup();
     expect(screen.getByText("Воркспейсы")).toBeTruthy();
     expect(screen.getByText("Дом агента")).toBeTruthy();
-    expect(screen.getByText("зарезервирован")).toBeTruthy();
+    expect(screen.queryByText("зарезервирован")).toBeNull();
     expect(screen.queryByTestId("ws-menu-home")).toBeNull();
   });
 
