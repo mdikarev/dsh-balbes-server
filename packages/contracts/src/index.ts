@@ -120,7 +120,8 @@ export interface ModelsSaveRequest {
   kind: ModelKind;
   displayName?: string;
   baseURL?: string;
-  key?: string;
+  /** null clears the stored key; absent keeps it unchanged. */
+  key?: string | null;
   models?: string[];
 }
 export interface ModelsSaveResponse {
