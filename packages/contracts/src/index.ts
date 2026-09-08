@@ -97,3 +97,46 @@ export interface WorkspaceListEvent {
   kind: "list";
 }
 export type WorkspaceEvent = WorkspaceFsEvent | WorkspaceListEvent;
+export type ModelKind = "deepseek" | "custom";
+
+export interface ModelConnection {
+  routeId: string;
+  kind: ModelKind;
+  displayName: string;
+  baseURL?: string;
+  hasKey: boolean;
+  models: string[];
+  isDefault: boolean;
+}
+
+export interface ModelsListRequest {}
+export interface ModelsListResponse {
+  connections: ModelConnection[];
+  default: { provider: string; model: string };
+}
+
+export interface ModelsSaveRequest {
+  routeId?: string;
+  kind: ModelKind;
+  displayName?: string;
+  baseURL?: string;
+  key?: string;
+  models?: string[];
+}
+export interface ModelsSaveResponse {
+  connection: ModelConnection;
+}
+
+export interface ModelsDeleteRequest {
+  routeId: string;
+}
+export interface ModelsDeleteResponse {}
+
+export interface ModelsDefaultRequest {
+  provider: string;
+  model: string;
+}
+export interface ModelsDefaultResponse {
+  default: { provider: string; model: string };
+}
+
