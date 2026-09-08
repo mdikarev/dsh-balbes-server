@@ -1245,12 +1245,13 @@ function setup(overrides: Partial<Parameters<typeof WorkspaceList>[0]> = {}) {
     onDelete: vi.fn(),
     ...overrides
   };
+  const projectsOverride = overrides.projects ?? projects;
   render(
     <WorkspaceList
       homePath={homePath}
-      projects={projects}
-      selected={null}
-      busy={false}
+      projects={projectsOverride}
+      selected={overrides.selected ?? null}
+      busy={overrides.busy ?? false}
       onSelect={handlers.onSelect}
       onCreate={handlers.onCreate}
       onDelete={handlers.onDelete}
