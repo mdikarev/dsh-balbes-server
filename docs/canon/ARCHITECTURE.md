@@ -36,7 +36,9 @@ API `/api/workspaces/*` и страницей админки (см. Building blo
 
 - `profiles/balbes/` — профиль-манифест: `package.json` с
   `dsh.profile.bundles = ["@deepseek-ai/dsh-base", "dsh-balbes-host"]` и
-  `patchReload: startup`; `cordis.patch.yml` = `[]`. В репозитории профиль
+  `patchReload: startup`; профильный слой патчей `cordis.patch.yml` —
+  insert-запись `balbes-workspaces` (внешний плагин воркспейсов; профильный
+  слой применяется последним, после патчей бандлов). В репозитории профиль
   живёт без `node_modules`.
 - `@deepseek-ai/dsh-base` — бандл ядра: полный стандартный агентский набор
   (агентский цикл, тулы bash/fs/web/workflow/subagent/skill, скиллы, сессии,
