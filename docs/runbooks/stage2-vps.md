@@ -233,6 +233,18 @@ curl -sS -X POST http://127.0.0.1:8080/api/workspaces/delete \
   -d '{"name":"my-project"}'
 ```
 
+Модели: список подключений и дефолтная модель — `POST /api/models/list`
+(bearer). Полный smoke — REAL-тест пакета `dsh-balbes-models`; с настроенным
+ключом DeepSeek ожидается подключение `deepseek-official`:
+
+```bash
+# models.list (JWT из входа)
+curl -sS -X POST http://127.0.0.1:8080/api/models/list \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{}'
+# ожидается: {"connections":[{"routeId":"deepseek-official","kind":"deepseek","hasKey":true,...}],
+#             "default":{"provider":"deepseek-official","model":"deepseek-v4-flash"}}
+```
+
 Дерево и события (в сводку установщика не входят — их полный smoke — в
 REAL-тесте `dsh-balbes-workspaces`). Создайте проект `alpha` и проверьте
 чтение каталогов (`/api/workspaces/tree`) и защиту каналов:
@@ -540,8 +552,9 @@ curl -fsS -X POST http://127.0.0.1:8080/api/prompt -H "authorization: Bearer $TO
 
 - `profiles/balbes/` — профиль: манифест (`package.json` с
   `dsh.profile.bundles`) и `node_modules/` — копии собранных пакетов,
-  которыми пользуется демон: `dsh-balbes-host/` (host-бандл) и
-  `dsh-balbes-workspaces/` (плагин воркспейсов);
+  которыми пользуется демон: `dsh-balbes-host/` (host-бандл),
+  `dsh-balbes-workspaces/` (плагин воркспейсов) и
+  `dsh-balbes-models/` (плагин моделей);
 - `profiles/node_modules/` — зеркало-симлинки на установку dsh
   (`@deepseek-ai/*`), откуда резолвятся базовые бандлы;
 - `admin-auth.json` — учётка администратора: логин, scrypt-хэш пароля,

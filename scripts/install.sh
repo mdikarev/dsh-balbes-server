@@ -9,10 +9,10 @@
 # Provisions the environment (Node >= 22 via NodeSource, pnpm, git), installs
 # the global @deepseek-ai/dsh CLI (never patched or edited — dsh is a
 # dependency, not a fork), builds the workspace packages (dsh-balbes-host,
-# dsh-balbes-contracts, dsh-balbes-workspaces, the admin SPA), syncs
-# profiles/balbes from the repository into $DSH_HOME/profiles, copies the
-# built host and the workspaces plugin into the profile, deploys the built
-# admin UI, stores the DeepSeek API key in
+# dsh-balbes-contracts, dsh-balbes-workspaces, dsh-balbes-models, the admin
+# SPA), syncs profiles/balbes from the repository into $DSH_HOME/profiles,
+# copies the built host and the workspaces and models plugins into the
+# profile, deploys the built admin UI, stores the DeepSeek API key in
 # $DSH_HOME/.credentials.yaml, generates the admin account
 # ($DSH_HOME/admin-auth.json, printed once), writes the dsh-balbes systemd
 # unit (enabled + restarted on every run, so an update takes effect at once),
@@ -380,7 +380,7 @@ verify_composition() {
 # Сборка идёт ДО рестарта сервиса: при падении install.sh выходит с ошибкой,
 # работающий сервис не трогается.
 build_workspace() {
-    info "Building workspace packages (host, workspaces, contracts, admin SPA)..."
+    info "Building workspace packages (host, workspaces, models, contracts, admin SPA)..."
     ( cd "$REPO_DIR" && pnpm install --frozen-lockfile=false && node scripts/link-core.mjs && pnpm -r --if-present run build ) || die "workspace build failed"
     info "Workspace build OK."
 }
@@ -415,6 +415,24 @@ copy_workspaces_into_profile() {
     rm -rf "$dst/tests" "$dst/src" "$dst/lib/types"
     chmod -R u+rwX,go-w "$dst"
     info "Workspaces plugin copied into $dst"
+}
+
+# copy_models_into_profile — mirror of copy_workspaces_into_profile: the
+# built models plugin is copied as a real dir into the profile node_modules.
+copy_models_into_profile() {
+    local profile_dir="$DSH_HOME/profiles/$PROFILE_NAME"
+    local src="$REPO_DIR/packages/plugins/dsh-balbes-models"
+    local dst="$profile_dir/node_modules/dsh-balbes-models"
+    if [[ ! -d "$src/lib" ]]; then
+        die "models plugin not built at $src/lib — build step failed"
+    fi
+    mkdir -p "$profile_dir/node_modules"
+    rm -rf "$dst"
+    cp -R "$src" "$dst"
+    rm -f "$dst/tsconfig.json" "$dst/tsconfig.build.json"
+    rm -rf "$dst/tests" "$dst/src" "$dst/lib/types"
+    chmod -R u+rwX,go-w "$dst"
+    info "Models plugin copied into $dst"
 }
 
 # deploy_ui — собрать dist SPA в $DSH_HOME/balbes/ui (без старых файлов).
@@ -581,6 +599,7 @@ main() {
     sync_profile
     copy_host_into_profile
     copy_workspaces_into_profile
+    copy_models_into_profile
     deploy_ui
     configure_api_key
     verify_composition

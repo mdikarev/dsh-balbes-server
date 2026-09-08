@@ -6,3 +6,6 @@
 - insert:
     - id: balbes-workspaces
       name: 'dsh-balbes-workspaces'
+
+    - id: balbes-models
+      name: 'dsh-balbes-models'
