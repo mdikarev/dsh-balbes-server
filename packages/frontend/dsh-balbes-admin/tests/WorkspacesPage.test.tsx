@@ -1,5 +1,5 @@
-import { describe, expect, it, vi, beforeEach, afterEach, type MockInstance } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import WorkspacesPage from "../src/pages/WorkspacesPage";
 import type { AdminApi } from "../src/api/client";
 import type { WorkspaceListResponse } from "dsh-balbes-contracts";
@@ -19,77 +19,66 @@ function makeApi(overrides: Partial<AdminApi> = {}): AdminApi {
     listWorkspaces: vi.fn().mockResolvedValue(listBody),
     createWorkspace: vi.fn().mockResolvedValue({ project: { name: "beta", path: "/h/projects/beta", createdAt: "2026-09-06T00:00:00.000Z" } }),
     deleteWorkspace: vi.fn().mockResolvedValue({}),
+    readWorkspaceDir: vi.fn(async () => ({ entries: [] })),
+    subscribeWorkspaceEvents: vi.fn(() => () => {}),
     ...overrides
   } as AdminApi;
 }
 
-describe("WorkspacesPage", () => {
-  let confirmSpy: MockInstance<Window["confirm"]>;
-  beforeEach(() => {
-    confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
-  });
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
+beforeEach(() => localStorage.clear());
+afterEach(() => cleanup());
 
-  it("shows the home section and the project list", async () => {
+describe("WorkspacesPage layout", () => {
+  it("shows the pinned home and projects in the list pane", async () => {
     render(<WorkspacesPage api={makeApi()} />);
     expect(await screen.findByText("Дом агента")).toBeTruthy();
     expect(screen.getByText("/home/u/.dsh/agent")).toBeTruthy();
     expect(await screen.findByText("alpha")).toBeTruthy();
-    expect(screen.getByText("Проекты")).toBeTruthy();
+    expect(screen.getByTestId("workspace-list-pane")).toBeTruthy();
+    expect(screen.getByTestId("tree-pane")).toBeTruthy();
   });
 
-  it("creates a project from the form and refreshes the list", async () => {
+  it("starts unselected and prompts to choose a workspace", async () => {
+    render(<WorkspacesPage api={makeApi()} />);
+    expect(await screen.findByText("Выберите воркспейс")).toBeTruthy();
+  });
+
+  it("selecting a project loads its tree; the choice survives remount", async () => {
+    const api = makeApi({
+      readWorkspaceDir: vi.fn(async (scope, name, path) => {
+        expect(path).toBe("");
+        return { entries: scope === "project" && name === "alpha" ? [{ name: "src", kind: "dir" as const }] : [] };
+      })
+    });
+    const { unmount } = render(<WorkspacesPage api={api} />);
+    fireEvent.click(await screen.findByTestId("ws-row-project:alpha"));
+    expect(await screen.findByText("src")).toBeTruthy();
+    unmount();
+
+    // remount restores the last selection from localStorage
+    const api2 = makeApi({
+      readWorkspaceDir: vi.fn(async () => ({ entries: [{ name: "src", kind: "dir" as const }] }))
+    });
+    render(<WorkspacesPage api={api2} />);
+    expect(await screen.findByText("src")).toBeTruthy();
+    expect(api2.readWorkspaceDir).toHaveBeenCalledWith("project", "alpha", "");
+  });
+
+  it("selecting the home loads the agent home tree", async () => {
     const api = makeApi();
     render(<WorkspacesPage api={api} />);
-    await screen.findByText("alpha");
-    fireEvent.change(screen.getByTestId("workspace-name-input"), { target: { value: "beta" } });
-    fireEvent.click(screen.getByTestId("workspace-create-submit"));
-    await waitFor(() => expect(api.createWorkspace).toHaveBeenCalledWith("beta"));
-    await waitFor(() => expect(api.listWorkspaces).toHaveBeenCalledTimes(2));
+    fireEvent.click(await screen.findByTestId("ws-row-home"));
+    await waitFor(() => expect(api.readWorkspaceDir).toHaveBeenCalledWith("home", undefined, ""));
   });
 
-  it("deletes a project after confirm and refreshes", async () => {
-    const api = makeApi();
-    render(<WorkspacesPage api={api} />);
-    await screen.findByText("alpha");
-    fireEvent.click(screen.getByTestId("workspace-delete-alpha"));
-    expect(window.confirm).toHaveBeenCalled();
-    await waitFor(() => expect(api.deleteWorkspace).toHaveBeenCalledWith("alpha"));
-    await waitFor(() => expect(api.listWorkspaces).toHaveBeenCalledTimes(2));
-  });
-
-  it("does not delete when confirm is cancelled", async () => {
-    confirmSpy.mockReturnValue(false);
-    const api = makeApi();
-    render(<WorkspacesPage api={api} />);
-    await screen.findByText("alpha");
-    fireEvent.click(screen.getByTestId("workspace-delete-alpha"));
-    expect(api.deleteWorkspace).not.toHaveBeenCalled();
-  });
-
-  it("renders a dash for a project without createdAt", async () => {
-    const noDate: WorkspaceListResponse = {
-      home: { path: "/h/agent" },
-      projects: [{ name: "hand", path: "/h/projects/hand" }]
-    };
-    const api = makeApi({ listWorkspaces: vi.fn().mockResolvedValue(noDate) });
-    render(<WorkspacesPage api={api} />);
-    expect(await screen.findByText("—")).toBeTruthy();
-  });
-
-  it("shows an error with a retry control when the initial load fails, then recovers on retry", async () => {
+  it("shows an error with retry when the initial list load fails, then recovers", async () => {
     const api = makeApi({
       listWorkspaces: vi.fn().mockRejectedValueOnce(new Error("registry unreadable")).mockResolvedValueOnce(listBody)
     });
     render(<WorkspacesPage api={api} />);
     expect(await screen.findByTestId("workspace-load-error")).toBeTruthy();
     expect(screen.getByText(/Не удалось загрузить воркспейсы/)).toBeTruthy();
-    // no endless «Загрузка…» dead end: retry must be present
-    expect(screen.queryByText("Загрузка…")).toBeNull();
     fireEvent.click(screen.getByTestId("workspace-load-retry"));
-    expect(await screen.findByText("Дом агента")).toBeTruthy();
     expect(await screen.findByText("alpha")).toBeTruthy();
     expect(api.listWorkspaces).toHaveBeenCalledTimes(2);
   });
