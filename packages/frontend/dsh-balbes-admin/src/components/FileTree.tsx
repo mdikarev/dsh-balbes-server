@@ -31,12 +31,21 @@ export default function FileTree({ api, workspace, refreshKey }: FileTreeProps) 
   const [errors, setErrors] = useState<Map<string, string>>(new Map());
   const [loading, setLoading] = useState<Set<string>>(new Set());
   const lastWorkspace = useRef<WorkspaceRef | null>(null);
-  const seq = useRef(0);
+  // per-directory request counters, plus a generation counter bumped on every
+  // workspace switch. A response is applied only if its dir's latest request
+  // (same generation) is still outstanding — in-flight previous-workspace
+  // responses are stale, but same-burst reloads of different dirs (refreshKey
+  // bump) each keep their own counter and are all applied.
+  const loadSeq = useRef<Map<string, number>>(new Map());
+  const generation = useRef(0);
 
   const loadDir = useCallback(
     async (dir: string) => {
       if (workspace === null) return;
-      const mySeq = ++seq.current;
+      const myGen = generation.current;
+      const mySeq = (loadSeq.current.get(dir) ?? 0) + 1;
+      loadSeq.current.set(dir, mySeq);
+      const stale = () => generation.current !== myGen || loadSeq.current.get(dir) !== mySeq;
       setLoading((s) => new Set(s).add(dir));
       setErrors((m) => {
         const next = new Map(m);
@@ -45,17 +54,21 @@ export default function FileTree({ api, workspace, refreshKey }: FileTreeProps) 
       });
       try {
         const res = await api.readWorkspaceDir(workspace.scope, workspace.name, dir);
-        if (mySeq !== seq.current) return; // superseded by a newer load
-        setCache((m) => new Map(m).set(dir, res.entries));
+        if (!stale()) setCache((m) => new Map(m).set(dir, res.entries));
       } catch (err) {
-        if (mySeq !== seq.current) return;
-        setErrors((m) => new Map(m).set(dir, err instanceof Error ? err.message : "load failed"));
+        if (!stale()) {
+          setErrors((m) => new Map(m).set(dir, err instanceof Error ? err.message : "load failed"));
+        }
       } finally {
-        setLoading((s) => {
-          const next = new Set(s);
-          next.delete(dir);
-          return next;
-        });
+        // only the latest request for this dir clears the loading marker; a
+        // stale request must not remove it while a newer one is still in flight
+        if (!stale()) {
+          setLoading((s) => {
+            const next = new Set(s);
+            next.delete(dir);
+            return next;
+          });
+        }
       }
     },
     [api, workspace]
@@ -65,9 +78,11 @@ export default function FileTree({ api, workspace, refreshKey }: FileTreeProps) 
   useEffect(() => {
     if (!isSameRef(lastWorkspace.current, workspace)) {
       lastWorkspace.current = workspace;
+      generation.current += 1; // supersede any in-flight responses from the old workspace
       setExpanded(new Set());
       setCache(new Map());
       setErrors(new Map());
+      setLoading(new Set());
     }
   }, [workspace]);
 
@@ -144,6 +159,7 @@ export default function FileTree({ api, workspace, refreshKey }: FileTreeProps) 
                 errors={errors}
                 loading={loading}
                 onToggle={toggle}
+                onRetry={loadDir}
               />
             ))}
         {rootEntries !== undefined &&
@@ -163,9 +179,10 @@ interface DirRowProps {
   errors: Map<string, string>;
   loading: Set<string>;
   onToggle(dir: string): void;
+  onRetry(dir: string): void;
 }
 
-function DirRow({ dir, depth, expanded, cache, errors, loading, onToggle }: DirRowProps) {
+function DirRow({ dir, depth, expanded, cache, errors, loading, onToggle, onRetry }: DirRowProps) {
   const name = dir.split("/").pop() ?? dir;
   const open = expanded.has(dir);
   const children = cache.get(dir);
@@ -191,7 +208,7 @@ function DirRow({ dir, depth, expanded, cache, errors, loading, onToggle }: DirR
       {open && hasChildren &&
         children
           .filter((c) => c.kind === "dir")
-          .map((c) => <DirRow key={c.name} dir={joinRel(dir, c.name)} depth={depth + 1} expanded={expanded} cache={cache} errors={errors} loading={loading} onToggle={onToggle} />)}
+          .map((c) => <DirRow key={c.name} dir={joinRel(dir, c.name)} depth={depth + 1} expanded={expanded} cache={cache} errors={errors} loading={loading} onToggle={onToggle} onRetry={onRetry} />)}
       {open && hasChildren &&
         children
           .filter((c) => c.kind !== "dir")
@@ -199,7 +216,7 @@ function DirRow({ dir, depth, expanded, cache, errors, loading, onToggle }: DirR
       {open && errors.has(dir) && (
         <p className="form-error">
           {errors.get(dir)}{" "}
-          <button type="button" className="btn-ghost" onClick={() => onToggle(dir)}>
+          <button type="button" className="btn-ghost" onClick={() => onRetry(dir)}>
             Повторить
           </button>
         </p>
