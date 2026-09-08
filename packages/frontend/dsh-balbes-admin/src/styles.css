@@ -200,7 +200,7 @@ button.nav-item:focus-visible { outline: 1px solid var(--accent); outline-offset
 .ws-project-name { font-family: var(--mono); color: var(--text); }
 .ws-project-path { color: var(--text-dim); font-size: 12px; }
 .ws-project-date { color: var(--text-dim); font-size: 12px; white-space: nowrap; }
-.ws-empty { color: var(--text-dim); }
+.ws-empty { margin: 0; padding: 6px 16px 14px; color: var(--text-dim); font-size: 13px; }
 .btn-danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
 .btn-danger:hover { background: var(--danger); color: var(--bg); }
 
