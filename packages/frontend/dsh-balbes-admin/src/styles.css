@@ -242,12 +242,30 @@ button.nav-item:focus-visible { outline: 1px solid var(--accent); outline-offset
 .ws-row-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .ws-row-main code { font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ws-row-path { color: var(--text-dim); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ws-row-actions { position: relative; flex: none; padding-right: 4px; }
-.ws-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; min-width: 150px; padding: 4px; box-shadow: 0 8px 24px rgba(0, 0, 0, .4); }
+.ws-row-actions { flex: none; padding-right: 4px; }
+.ws-menu {
+  position: fixed; z-index: 60; background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 8px; min-width: 150px;
+  padding: 4px; box-shadow: 0 8px 24px rgba(0, 0, 0, .4);
+}
 .ws-menu-item { display: block; width: 100%; text-align: left; background: none; border: none; color: var(--text); padding: 7px 10px; border-radius: 5px; cursor: pointer; }
 .ws-menu-item:hover { background: var(--surface); }
 .ws-menu-item.danger { color: var(--danger); }
 .ws-menu-item.danger:hover { background: var(--danger); color: var(--bg); }
+
+/* ⋮ and + in the workspace list must read as controls: bigger and bolder */
+.ws-list-pane .ws-row-actions .icon-btn,
+.ws-list-pane .ws-add {
+  color: var(--text);
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 5px 8px;
+}
+.ws-list-pane .ws-row-actions .icon-btn:hover,
+.ws-list-pane .ws-add:hover { color: var(--accent-hi); background: var(--surface-2); }
+.ws-list-pane .ws-row-actions .icon-btn:focus-visible,
+.ws-list-pane .ws-add:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 
 /* ── file tree pane ─────────────────────────────────────── */
 .ws-tree-pane { flex: 1; min-width: 0; border-right: 1px solid var(--border); }

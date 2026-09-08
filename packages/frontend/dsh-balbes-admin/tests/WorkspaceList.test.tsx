@@ -54,12 +54,22 @@ describe("WorkspaceList", () => {
     expect(handlers.onSelect).toHaveBeenCalledWith({ scope: "home" });
   });
 
-  it("opens the ⋮ menu and offers delete; outside click closes it", () => {
+  it("opens the ⋮ menu above the list and offers delete", () => {
     const handlers = setup();
     fireEvent.click(screen.getByTestId("ws-menu-project:beta"));
     expect(screen.getByText("Удалить")).toBeTruthy();
+    // the menu must float outside the scrollable rows list, not be clipped inside it
+    expect(screen.getByTestId("ws-dropdown-project:beta").closest("ul")).toBeNull();
     fireEvent.click(screen.getByText("Удалить"));
     expect(handlers.onDelete).toHaveBeenCalledWith(projects[1]);
+  });
+
+  it("closes the ⋮ menu on an outside pointerdown", () => {
+    setup();
+    fireEvent.click(screen.getByTestId("ws-menu-project:beta"));
+    expect(screen.getByText("Удалить")).toBeTruthy();
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByTestId("ws-dropdown-project:beta")).toBeNull();
   });
 
   it("shows the empty hint when there are no projects", () => {
