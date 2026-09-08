@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AdminApi } from "../api/client";
-import type { WorkspaceListResponse } from "dsh-balbes-contracts";
+import type { WorkspaceListResponse, WorkspaceProject } from "dsh-balbes-contracts";
 import WorkspaceList from "../components/WorkspaceList";
 import FileTree from "../components/FileTree";
+import Modal from "../components/Modal";
 import type { WorkspaceRef } from "../workspaceRef";
-import { isSameRef } from "../workspaceRef";
 
 const SELECTED_KEY = "balbes.selectedWorkspace";
 const TREE_WIDTH_KEY = "balbes.treePaneWidth";
@@ -33,6 +33,8 @@ export default function WorkspacesPage({ api }: WorkspacesPageProps) {
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState<WorkspaceRef | null>(readSelected);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [modal, setModal] = useState<null | { type: "create" } | { type: "delete"; project: WorkspaceProject }>(null);
+  const [name, setName] = useState("");
   const pageRef = useRef<HTMLDivElement>(null);
   const [treeWidth, setTreeWidth] = useState<number | null>(() => {
     const stored = Number(localStorage.getItem(TREE_WIDTH_KEY));
@@ -72,6 +74,45 @@ export default function WorkspacesPage({ api }: WorkspacesPageProps) {
     localStorage.setItem(SELECTED_KEY, JSON.stringify(ref));
   }, []);
 
+  async function handleCreate(): Promise<void> {
+    const trimmed = name.trim();
+    if (trimmed === "" || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api.createWorkspace(trimmed);
+      setName("");
+      setModal(null);
+      const fresh = await refresh();
+      const created = fresh.projects.find((p) => p.name === res.project.name);
+      if (created !== undefined) select({ scope: "project", name: created.name });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "create failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmDelete(): Promise<void> {
+    if (modal === null || modal.type !== "delete" || busy) return;
+    setBusy(true);
+    setError(null);
+    const project = modal.project;
+    try {
+      await api.deleteWorkspace(project.name);
+      setModal(null);
+      if (selected !== null && selected.scope === "project" && selected.name === project.name) {
+        setSelected(null);
+        localStorage.removeItem(SELECTED_KEY);
+      }
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "delete failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (data === null) {
     return (
       <div className="workspaces-page" data-testid="workspaces-page">
@@ -101,8 +142,8 @@ export default function WorkspacesPage({ api }: WorkspacesPageProps) {
         selected={selected}
         busy={busy}
         onSelect={select}
-        onCreate={() => {/* modal wiring lands in Task 11 */}}
-        onDelete={() => {/* modal wiring lands in Task 11 */}}
+        onCreate={() => setModal({ type: "create" })}
+        onDelete={(p) => setModal({ type: "delete", project: p })}
       />
       <div
         className="ws-tree-shell"
@@ -112,6 +153,49 @@ export default function WorkspacesPage({ api }: WorkspacesPageProps) {
       </div>
       <div className="ws-splitter" data-testid="ws-splitter" onPointerDown={startResize} />
       <div className="ws-pane ws-void-pane" data-testid="ws-void-pane" />
+      {modal !== null && modal.type === "create" && (
+        <Modal title="Создать проект" onClose={() => setModal(null)}>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void handleCreate();
+            }}
+          >
+            <input
+              data-testid="workspace-name-input"
+              className="ws-name-input"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="имя проекта (a-z, 0-9, . _ -)"
+              aria-label="Имя нового проекта"
+              autoFocus
+            />
+            <div className="modal-actions">
+              <button type="button" className="btn-ghost" onClick={() => setModal(null)} data-testid="workspace-create-cancel">
+                Отмена
+              </button>
+              <button type="submit" className="btn" disabled={busy || name.trim() === ""} data-testid="workspace-create-submit">
+                {busy ? "Создаётся…" : "Создать"}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+      {modal !== null && modal.type === "delete" && (
+        <Modal title="Удалить проект" onClose={() => setModal(null)}>
+          <p className="ws-modal-text">
+            Удалить проект <code>{modal.project.name}</code>? Каталог {modal.project.path} будет удалён безвозвратно.
+          </p>
+          <div className="modal-actions">
+            <button type="button" className="btn-ghost" onClick={() => setModal(null)} data-testid="workspace-delete-cancel">
+              Отмена
+            </button>
+            <button type="button" className="btn-danger" disabled={busy} onClick={() => void confirmDelete()} data-testid={`workspace-delete-${modal.project.name}`}>
+              {busy ? "Удаляется…" : "Удалить"}
+            </button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 

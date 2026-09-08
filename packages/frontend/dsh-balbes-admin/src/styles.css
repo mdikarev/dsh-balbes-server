@@ -276,3 +276,9 @@ button.ws-tree-row:hover { background: var(--surface); }
 .ws-void-pane { flex: 1; min-width: 0; background: var(--bg); }
 .ws-center-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
 
+/* ── modal flows on the workspaces page ─────────────────── */
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
+.ws-modal-text { margin: 0; font-size: 13.5px; color: var(--text); }
+.ws-modal-text code { font-family: var(--mono); color: var(--text); }
+.modal form { display: flex; flex-direction: column; gap: 12px; }
+
