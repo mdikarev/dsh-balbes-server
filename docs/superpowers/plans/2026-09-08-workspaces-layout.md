@@ -1862,7 +1862,7 @@ git commit -m "feat(admin): lazy file tree pane"
 - Consumes: Tasks 6/8/9 pieces (`AdminApi` + new methods, `WorkspaceList`, `FileTree`, `WorkspaceRef` helpers).
 - Produces: page with:
   - Three panes under the topbar, full height, no page `h1`/lead; right pane `ws-void-pane` empty.
-  - Resizable splitter between tree pane and void pane (pointer drag; width persisted under localStorage key `balbes.treePaneWidth`, default = 1/3 of the available width minus list width, clamped [220, 0.6 × available]).
+  - Resizable splitter between tree pane and void pane (pointer drag; width persisted under localStorage key `balbes.treePaneWidth`, default = 1/3 of the container width, clamped [220, container.width - 360] (leaving room for the list pane and a void minimum)).
   - Selection persisted under `balbes.selectedWorkspace` (`WorkspaceRef` JSON); restored on mount and validated against the loaded list (project gone → cleared).
   - Initial empty state (nothing selected → «Выберите воркспейс» via FileTree); list load error + retry retained (`workspace-load-error`, `workspace-load-retry`, text «Не удалось загрузить воркспейсы» / «Загрузка…»).
   - Deleting the selected project deselects; creating a project selects it.
