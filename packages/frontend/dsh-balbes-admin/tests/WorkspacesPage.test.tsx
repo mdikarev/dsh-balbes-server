@@ -242,3 +242,45 @@ describe("WorkspacesPage create/delete flows", () => {
     expect(screen.queryByTestId("ws-row-project:alpha")).toBeNull();
   });
 });
+
+describe("WorkspacesPage live events", () => {
+  it("refreshes the tree on an fs event for the selected workspace", async () => {
+    const read = vi.fn(async () => ({ entries: [{ name: "src", kind: "dir" as const }] }));
+    const api = makeApi({ readWorkspaceDir: read });
+    render(<WorkspacesPage api={api} />);
+    fireEvent.click(await screen.findByTestId("ws-row-project:alpha"));
+    expect(await screen.findByText("src")).toBeTruthy();
+    expect(read).toHaveBeenCalledTimes(1);
+    const subscribe = api.subscribeWorkspaceEvents as ReturnType<typeof vi.fn>;
+    const cbs = subscribe.mock.calls;
+    const cb = cbs[cbs.length - 1]?.[0] as (e: unknown) => void;
+    expect(cb).toBeTypeOf("function");
+    cb({ kind: "fs", scope: "project", name: "alpha", path: "" });
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+  });
+
+  it("deselects a project that a list event removed", async () => {
+    const list = vi.fn()
+      .mockResolvedValueOnce(listBody)
+      .mockResolvedValueOnce({ home: { path: "/h/agent" }, projects: [] });
+    const api = makeApi({ listWorkspaces: list });
+    render(<WorkspacesPage api={api} />);
+    fireEvent.click(await screen.findByTestId("ws-row-project:alpha"));
+    await screen.findByText("src");
+    const subscribe = api.subscribeWorkspaceEvents as ReturnType<typeof vi.fn>;
+    const cbs = subscribe.mock.calls;
+    const cb = cbs[cbs.length - 1]?.[0] as (e: unknown) => void;
+    cb({ kind: "list" });
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("Выберите воркспейс")).toBeTruthy();
+  });
+
+  it("unsubscribes on unmount", async () => {
+    const unsub = vi.fn();
+    const api = makeApi({ subscribeWorkspaceEvents: vi.fn(() => unsub) });
+    const { unmount } = render(<WorkspacesPage api={api} />);
+    await screen.findByText("alpha");
+    unmount();
+    expect(unsub).toHaveBeenCalledTimes(1);
+  });
+});

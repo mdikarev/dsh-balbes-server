@@ -69,6 +69,34 @@ export default function WorkspacesPage({ api }: WorkspacesPageProps) {
     }
   }, [data, selected]);
 
+  // live workspace events: a list change refreshes the list (whose data effect
+  // above then drops a vanished selection); an fs change under the selected
+  // workspace bumps refreshKey (debounced) so FileTree re-reads its dirs.
+  useEffect(() => {
+    const flushTimer = { current: null as ReturnType<typeof setTimeout> | null };
+    const unsubscribe = api.subscribeWorkspaceEvents((event) => {
+      if (event.kind === "list") {
+        void refresh();
+        return;
+      }
+      const matches =
+        selected !== null &&
+        event.scope === selected.scope &&
+        (selected.scope === "home" || event.name === selected.name);
+      if (!matches) return;
+      if (flushTimer.current === null) {
+        flushTimer.current = setTimeout(() => {
+          flushTimer.current = null;
+          setRefreshKey((k) => k + 1);
+        }, 300);
+      }
+    });
+    return () => {
+      unsubscribe();
+      if (flushTimer.current !== null) clearTimeout(flushTimer.current);
+    };
+  }, [api, refresh, selected]);
+
   const select = useCallback((ref: WorkspaceRef): void => {
     setSelected(ref);
     localStorage.setItem(SELECTED_KEY, JSON.stringify(ref));
