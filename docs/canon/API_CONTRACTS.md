@@ -151,17 +151,20 @@
 - auth: bearer
 - request: `{routeId?, kind: "deepseek"|"custom", displayName?, baseURL?, key?: string|null, models?: string[]}`
 - response: `{connection: {...}}` (форма элемента — как в models.list)
-- errors: 400 `invalid-*` (имя/routeId/baseURL/модели), 409 `route-exists`, 401
+- errors: 400 `invalid-*` (имя/routeId/baseURL/модели), 409 `route-exists`, 409
+  `default-in-use` (правка убрала бы дефолтную модель), 401
 - notes: `routeId` — id роута движка: `deepseek-official` (зарезервирован,
   существует всегда) или lower-hyphen custom. Без `routeId` — создание
   (routeId генерируется из displayName, `^[a-z][a-z0-9-]*$`, уникален;
   дубль → 409 `route-exists`). С явным `routeId` — upsert: существующий
-  роут обновляется, отсутствующий создаётся. Для deepseek сохраняется только
-  ключ (baseURL/модели фиксированы закреплённым официальным списком каталога
-  dsh 0.1.2-rc.1, ре-синк при обновлении движка). Валидация: baseURL —
-  валидный http(s)-URL; модели custom — ≥ 1 id без пробелов/запятых. `key`
-  передан — пишет ref в `$DSH_HOME/.credentials.yaml`; `key: null` у custom —
-  сбрасывает (unset). Секрет не логируется и в ответ не возвращается никогда.
+  роут обновляется, отсутствующий создаётся. Правка, убирающая модель,
+  на которой стоит дефолт, → 409 `default-in-use`: владелец сначала меняет
+  дефолтную модель. Для deepseek сохраняется только ключ (baseURL/модели
+  фиксированы закреплённым официальным списком каталога dsh 0.1.2-rc.1,
+  ре-синк при обновлении движка). Валидация: baseURL — валидный http(s)-URL;
+  модели custom — ≥ 1 id без пробелов/запятых. `key` передан — пишет ref
+  в `$DSH_HOME/.credentials.yaml`; `key: null` у custom — сбрасывает (unset).
+  Секрет не логируется и в ответ не возвращается никогда.
 
 ### models.delete — удалить подключение провайдера
 - method: POST
