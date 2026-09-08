@@ -5,9 +5,16 @@ import Topbar from "./components/Topbar";
 import Login from "./pages/Login";
 import TestPage from "./pages/TestPage";
 import WorkspacesPage from "./pages/WorkspacesPage";
+import ModelsPage from "./pages/ModelsPage";
 
 type View = "loading" | "login" | "main";
-type Page = "test" | "workspaces";
+type Page = "test" | "workspaces" | "models";
+
+const PAGE_TITLES: Record<Page, string> = {
+  test: "Тестовая страница",
+  workspaces: "Проекты",
+  models: "Модели"
+};
 
 export default function App({ api }: { api: AdminApi }) {
   const [view, setView] = useState<View>("loading");
@@ -40,8 +47,14 @@ export default function App({ api }: { api: AdminApi }) {
     <div className="app-shell">
       <Sidebar active={page} onNavigate={(id) => setPage(id as Page)} />
       <main className="content">
-        <Topbar title={page === "test" ? "Тестовая страница" : "Проекты"} onLogout={handleLogout} />
-        {page === "test" ? <TestPage api={api} /> : <WorkspacesPage api={api} />}
+        <Topbar title={PAGE_TITLES[page]} onLogout={handleLogout} />
+        {page === "test" ? (
+          <TestPage api={api} />
+        ) : page === "workspaces" ? (
+          <WorkspacesPage api={api} />
+        ) : (
+          <ModelsPage api={api} />
+        )}
       </main>
     </div>
   );

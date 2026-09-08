@@ -302,3 +302,74 @@ button.ws-tree-row:hover { background: var(--surface); }
 .ws-modal-text code { font-family: var(--mono); color: var(--text); }
 .modal form { display: flex; flex-direction: column; gap: 12px; }
 
+
+
+/* ── models page (Модели) ───────────────────────────────── */
+.models-page {
+  flex: 1; min-width: 0; overflow-y: auto; background: var(--bg);
+  padding: 20px 24px 28px;
+}
+.models-banner { margin: 0 0 14px; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.models-toolbar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 14px; margin-bottom: 16px; flex-wrap: wrap;
+}
+.models-default { display: flex; align-items: center; gap: 10px; color: var(--text-dim); font-size: 13px; }
+.models-select {
+  background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 7px 10px; font: inherit; outline: none;
+  min-width: 240px;
+}
+.models-select:focus { border-color: var(--accent); }
+.models-add { flex: none; }
+.models-cards { display: flex; flex-direction: column; gap: 12px; max-width: 880px; }
+.models-card {
+  position: relative; background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px 14px; display: flex; flex-direction: column; gap: 7px;
+}
+.models-card.pinned { border-left: 3px solid var(--accent); }
+.mc-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.mc-id { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.mc-name { font-size: 14px; }
+.mc-route { font-family: var(--mono); font-size: 12px; color: var(--text-dim); }
+.mc-pin {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .6px; color: var(--text-dim);
+  border: 1px solid var(--border); border-radius: 99px; padding: 1px 8px; white-space: nowrap;
+}
+.mc-line { margin: 0; color: var(--text-dim); font-size: 13px; }
+.mc-line code { font-family: var(--mono); color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; }
+.mc-actions { display: flex; gap: 8px; margin-top: 2px; }
+.mc-menu-btn { align-self: flex-start; font-size: 18px; font-weight: 700; line-height: 1; color: var(--text); padding: 4px 8px; }
+.mc-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.mc-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: var(--mono); font-size: 12px; color: var(--text);
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 99px;
+  padding: 2px 10px; white-space: nowrap;
+}
+.mc-chip.removable { padding-right: 4px; }
+.mc-chip-remove { font-size: 13px; padding: 0 3px; }
+.mc-menu {
+  position: absolute; right: 10px; top: 44px; z-index: 60;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+  min-width: 150px; padding: 4px; box-shadow: 0 8px 24px rgba(0, 0, 0, .4);
+}
+.mc-menu-item { display: block; width: 100%; text-align: left; background: none; border: none; color: var(--text); padding: 7px 10px; border-radius: 5px; cursor: pointer; }
+.mc-menu-item:hover { background: var(--surface); }
+.mc-menu-item.danger { color: var(--danger); }
+.mc-menu-item.danger:hover { background: var(--danger); color: var(--bg); }
+.models-empty { margin: 0; color: var(--text-dim); font-size: 13px; padding: 14px 2px; }
+
+/* model editor form */
+.form-field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--text-dim); }
+.form-field > span { color: var(--text-dim); }
+.form-input {
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  border-radius: var(--radius); padding: 8px 11px; font: inherit; outline: none; width: 100%;
+}
+.form-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(77, 141, 255, .22); }
+.form-input::placeholder { color: var(--text-dim); }
+.form-hint { font-size: 12px; color: var(--text-dim); }
+.form-check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); cursor: pointer; }
+.mc-model-add { display: flex; gap: 8px; align-items: center; }
+.mc-model-add .form-input { flex: 1; }
