@@ -130,6 +130,10 @@ export function apply(ctx: { get(key: string): unknown; logger: { warn(m: string
       }
       const providers = routeProviders(settings);
       if (!editing && providers[route] !== undefined) return fail(res, 409, "route-exists", "route " + route + " already exists");
+      const selection = defaultModel.currentSelection();
+      if (editing && selection.provider === route && !payload.models.includes(selection.model)) {
+        return fail(res, 409, "default-in-use", "the default model " + selection.model + " would no longer be offered by this connection; change the default model first");
+      }
       const apiKeyEnv = refNameForRoute(route);
       const routeConfig: Record<string, unknown> = {
         displayName: payload.displayName,

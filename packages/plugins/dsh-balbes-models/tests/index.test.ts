@@ -151,4 +151,27 @@ describe("balbes-models plugin", () => {
     expect(bad.status).toBe(400);
     expect((bad.json as { error: { code: string } }).error.code).toBe("invalid-model");
   });
+
+  it("editing a custom connection to drop its default model -> 409 default-in-use, nothing written", async () => {
+    apply(ctx as never, {});
+    await call("/api/models/save", { kind: "custom", displayName: "My Gateway", baseURL: "https://gw.example/v1", key: "k1", models: ["m-1", "m-2"] });
+    await call("/api/models/default", { provider: "my-gateway", model: "m-1" });
+    const res = await call("/api/models/save", { kind: "custom", routeId: "my-gateway", displayName: "My Gateway", baseURL: "https://gw.example/v2", key: "k2", models: ["m-2"] });
+    expect(res.status).toBe(409);
+    expect((res.json as { error: { code: string } }).error.code).toBe("default-in-use");
+    const section = settings.get("llm-pi-ai") as { providers: Record<string, any> };
+    expect(section.providers["my-gateway"]).toMatchObject({ displayName: "My Gateway", baseURL: "https://gw.example/v1", apiKeyEnv: "BALBES_MY_GATEWAY_API_KEY", models: [{ id: "m-1" }, { id: "m-2" }] });
+    expect(credentials.refs.get("BALBES_MY_GATEWAY_API_KEY")).toBe("k1");
+  });
+
+  it("editing the same connection while keeping its default model -> 200", async () => {
+    apply(ctx as never, {});
+    await call("/api/models/save", { kind: "custom", displayName: "My Gateway", baseURL: "https://x", key: "k", models: ["m-1"] });
+    await call("/api/models/default", { provider: "my-gateway", model: "m-1" });
+    const res = await call("/api/models/save", { kind: "custom", routeId: "my-gateway", displayName: "My Gateway", baseURL: "https://y", key: "k2", models: ["m-1", "m-2"] });
+    expect(res.status).toBe(200);
+    const section = settings.get("llm-pi-ai") as { providers: Record<string, any> };
+    expect(section.providers["my-gateway"]).toMatchObject({ displayName: "My Gateway", baseURL: "https://y", apiKeyEnv: "BALBES_MY_GATEWAY_API_KEY", models: [{ id: "m-1" }, { id: "m-2" }] });
+    expect((res.json as { connection: unknown }).connection).toBeDefined();
+  });
 });
