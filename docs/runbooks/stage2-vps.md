@@ -12,8 +12,11 @@ Runbook описывает развёртывание профиля dsh `balbes
 Профиль `balbes` на Этапе 2 собирается из бандлов `@deepseek-ai/dsh-base` и
 `dsh-balbes-host` (наш host: сервер + статика + auth + api + startup);
 поверх них в профиль подключён плагин воркспейсов `dsh-balbes-workspaces`
-(API `/api/workspaces/list|create|delete`, bearer): список, создание и
-удаление воркспейсов-проектов. В профиль плагин вносится патч-слоем
+(API `/api/workspaces/list|create|delete|tree|events`, bearer): список,
+создание и удаление воркспейсов-проектов, чтение дерева каталогов
+(`tree`) и push-канал их изменений (`events`), на котором админка
+обновляет дерево без перезагрузки страницы. В профиль плагин вносится
+патч-слоем
 `profiles/balbes/cordis.patch.yml`, а собранный пакет копируется в
 `node_modules` профиля рядом с host. Headless и веб-морда (`dsh-web-app`) в
 профиль **не входят** — «мордой» теперь служит собственная админка host'а.
@@ -152,14 +155,42 @@ sudo ufw status verbose        # ожидается: 8080/tcp ALLOW
 `hostname -I | awk '{print $1}'`). Собранный SPA отдаёт сам сервер.
 
 Страница — экран входа («balbes admin»). Логин и пароль — из лога установки
-(строки `login:` / `password:` выше блока сводки). После входа показывается
-страница с тестовым промптом (`Напиши 'ok' и больше ничего`) и кнопкой
-**«Отправить тестовый промпт»**: ответ реальной модели появляется над кнопкой.
-JWT хранится в localStorage и при перезагрузке страницы проверяется через
-`POST /api/auth/me` — повторный вход не требуется, пока токен жив (24 часа).
+(строки `login:` / `password:` выше блока сводки). После входа — рабочая
+зона с сайдбаром: **«Тестовая страница»** (промпт `Напиши 'ok' и больше
+ничего` и кнопка **«Отправить тестовый промпт»**: ответ реальной модели
+появляется над кнопкой) и **«Проекты»** — страница воркспейсов (smoke —
+в подразделе ниже). JWT хранится в localStorage и при перезагрузке страницы
+проверяется через `POST /api/auth/me` — повторный вход не требуется, пока
+токен жив (24 часа).
 
 Неверный пароль → ошибка 401; после 5 неудачных попыток с одного IP вход
 блокируется на 30 минут (429).
+
+### Страница «Проекты» (три панели)
+
+В сайдбаре выберите **«Проекты»** (группа «Работа»). Страница — три панели:
+слева список воркспейсов, в середине дерево каталогов выбранного
+воркспейса, справа пустая панель-заглушка (зарезервирована под будущие
+рабочие области).
+
+Список (панель «Воркспейсы»): вверху закреплён **«Дом агента»** (чип
+«зарезервирован»), ниже — проекты; у каждого проекта справа кнопка «⋮»
+с меню действий (сегодня — «Удалить»); «+» над списком открывает модалку
+создания проекта. Ожидается: клик по строке подсвечивает её, выбор
+переживает перезагрузку страницы (localStorage).
+
+Дерево: пока воркспейс не выбран, средняя панель показывает «Выберите
+воркспейс»; после выбора (дом или проект) появляется дерево корня —
+каталоги раскрываются кликом, содержимое читается лениво, по одному
+каталогу (`/api/workspaces/tree`). Для пустого проекта ожидается «Каталог
+пуст» вместо списка.
+
+Живое обновление: создайте файл на сервере, не трогая страницу —
+`touch "$DSH_HOME/projects/<имя проекта>/x.txt"` — ожидается появление
+`x.txt` в дереве в течение пары секунд **без перезагрузки страницы**
+(страница подписана на `/api/workspaces/events`; тот же канал обновляет
+список при создании/удалении проектов и дерево «Дома агента» —
+`$DSH_HOME/agent/`).
 
 ## Smoke без браузера (curl + JWT)
 
@@ -199,6 +230,63 @@ curl -sS -X POST http://127.0.0.1:8080/api/workspaces/delete \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"name":"my-project"}'
 ```
+
+Дерево и события (в сводку установщика не входят — их полный smoke — в
+REAL-тесте `dsh-balbes-workspaces`). Создайте проект `alpha` и проверьте
+чтение каталогов (`/api/workspaces/tree`) и защиту каналов:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/api/workspaces/create \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"name":"alpha"}' -w '\nHTTP %{http_code}\n'
+#    ожидается: {"project":{"name":"alpha",...}} и HTTP 200
+
+# корень проекта: пустой у нового проекта
+curl -sS -X POST http://127.0.0.1:8080/api/workspaces/tree \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"scope":"project","name":"alpha","path":""}' -w '\nHTTP %{http_code}\n'
+#    ожидается: {"entries":[]} и HTTP 200
+
+# попытка выйти за корень воркспейса (traversal)
+curl -sS -X POST http://127.0.0.1:8080/api/workspaces/tree \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"scope":"project","name":"alpha","path":"../.."}' -w '\nHTTP %{http_code}\n'
+#    ожидается: HTTP 400 {"error":{"code":"invalid-path",...}}
+
+# несуществующий каталог
+curl -sS -X POST http://127.0.0.1:8080/api/workspaces/tree \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"scope":"project","name":"alpha","path":"no-such-dir"}' -w '\nHTTP %{http_code}\n'
+#    ожидается: HTTP 404 {"error":{"code":"not-found",...}}
+
+# без токена: tree и events обязаны отвечать 401
+curl -sS -X POST http://127.0.0.1:8080/api/workspaces/tree \
+  -H 'content-type: application/json' \
+  -d '{"scope":"project","name":"alpha","path":""}' -w '\nHTTP %{http_code}\n'
+#    ожидается: HTTP 401
+curl -sS -X POST http://127.0.0.1:8080/api/workspaces/events \
+  -H 'content-type: application/json' -d '{}' -w '\nHTTP %{http_code}\n'
+#    ожидается: HTTP 401
+
+curl -sS -X POST http://127.0.0.1:8080/api/workspaces/delete \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"name":"alpha"}'
+#    ожидается: {}
+```
+
+Полный smoke потока событий — REAL-тест пакета `dsh-balbes-workspaces`
+(`RUN_REAL=1 pnpm --filter dsh-balbes-workspaces test`, нужен `dsh` на PATH).
+Вручную: откройте поток в соседнем терминале и держите открытым:
+
+```bash
+curl -N -X POST http://127.0.0.1:8080/api/workspaces/events \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{}'
+```
+
+Затем создайте файл под проектом — `touch "$DSH_HOME/projects/alpha/x.txt"`:
+ожидается кадр `data: {"kind":"fs","scope":"project","name":"alpha","path":""}`.
+Соединение сервер не закрывает: heartbeat `: ping` — каждые 25 с, закрытие — на
+стороне клиента.
 
 Если на шаге 2 вместо токена пришла ошибка — проверьте, что в
 `-d '{"login":...,"password":...}'` подставлены именно те значения, что
