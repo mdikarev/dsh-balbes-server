@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { createApiClient, ApiError, TOKEN_KEY } from "../src/api/client";
+import type { ModelsSaveRequest } from "dsh-balbes-contracts";
 
 function mockFetchOnce(status: number, body: unknown) {
   return vi.fn().mockResolvedValue({
@@ -184,5 +185,37 @@ describe("api client", () => {
     expect(boom).toHaveBeenCalledTimes(2);
     unsub();
     vi.unstubAllGlobals();
+  });
+
+  it("listModels POSTs to /api/models/list", async () => {
+    localStorage.setItem("balbes.authToken", "tok-1");
+    const body = { connections: [{ routeId: "deepseek-official", kind: "deepseek", displayName: "D", hasKey: true, models: ["deepseek-v4-flash"], isDefault: true }], default: { provider: "deepseek-official", model: "deepseek-v4-flash" } };
+    const fetchMock = mockFetchOnce(200, body);
+    vi.stubGlobal("fetch", fetchMock);
+    const api = createApiClient();
+    const res = await api.listModels();
+    expect(res.connections[0]?.routeId).toBe("deepseek-official");
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/models/list");
+    expect(init.method).toBe("POST");
+  });
+
+  it("saveModel/deleteModel/setDefaultModel post the right bodies", async () => {
+    localStorage.setItem("balbes.authToken", "tok-1");
+    const seen: Array<{ path: string; body: unknown }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      seen.push({ path: String(_url), body: JSON.parse(String(init?.body)) });
+      return { ok: true, status: 200, json: async () => ({}) };
+    }));
+    const api = createApiClient();
+    const req: ModelsSaveRequest = { kind: "custom", displayName: "GW", baseURL: "https://g/v1", key: "sk", models: ["m"] };
+    await api.saveModel(req);
+    await api.deleteModel("gw");
+    await api.setDefaultModel("gw", "m");
+    expect(seen).toEqual([
+      { path: "/api/models/save", body: req },
+      { path: "/api/models/delete", body: { routeId: "gw" } },
+      { path: "/api/models/default", body: { provider: "gw", model: "m" } }
+    ]);
   });
 });

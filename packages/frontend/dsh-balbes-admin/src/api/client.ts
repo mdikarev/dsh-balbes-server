@@ -14,7 +14,14 @@ import type {
   WorkspaceEvent,
   WorkspaceScope,
   WorkspaceTreeRequest,
-  WorkspaceTreeResponse
+  WorkspaceTreeResponse,
+  ModelsListResponse,
+  ModelsSaveRequest,
+  ModelsSaveResponse,
+  ModelsDeleteRequest,
+  ModelsDeleteResponse,
+  ModelsDefaultRequest,
+  ModelsDefaultResponse
 } from "dsh-balbes-contracts";
 import { createSseParser } from "./sse";
 
@@ -48,6 +55,10 @@ export interface AdminApi {
   createWorkspace(name: string): Promise<WorkspaceCreateResponse>;
   deleteWorkspace(name: string): Promise<WorkspaceDeleteResponse>;
   readWorkspaceDir(scope: WorkspaceScope, name: string | undefined, path: string): Promise<WorkspaceTreeResponse>;
+  listModels(): Promise<ModelsListResponse>;
+  saveModel(req: ModelsSaveRequest): Promise<ModelsSaveResponse>;
+  deleteModel(routeId: string): Promise<ModelsDeleteResponse>;
+  setDefaultModel(provider: string, model: string): Promise<ModelsDefaultResponse>;
   subscribeWorkspaceEvents(cb: (e: WorkspaceEvent) => void): () => void;
   onUnauthorized(cb: () => void): void;
 }
@@ -146,6 +157,10 @@ export function createApiClient(): AdminApi {
       const body: WorkspaceTreeRequest = name === undefined ? { scope, path } : { scope, name, path };
       return guard(request<WorkspaceTreeResponse>("/api/workspaces/tree", body));
     },
+    listModels: () => guard(request<ModelsListResponse>("/api/models/list", {})),
+    saveModel: (req) => guard(request<ModelsSaveResponse>("/api/models/save", req satisfies ModelsSaveRequest)),
+    deleteModel: (routeId) => guard(request<ModelsDeleteResponse>("/api/models/delete", { routeId } satisfies ModelsDeleteRequest)),
+    setDefaultModel: (provider, model) => guard(request<ModelsDefaultResponse>("/api/models/default", { provider, model } satisfies ModelsDefaultRequest)),
     subscribeWorkspaceEvents: (cb) => {
       eventListeners.add(cb);
       openEventStream();
