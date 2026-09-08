@@ -2428,14 +2428,23 @@ Expected: FAIL — no subscription yet.
 
 - [ ] **Step 3: Wire the subscription**
 
-In `WorkspacesPage.tsx` add an effect (after the selection-validity effect):
+In `WorkspacesPage.tsx` add a refresh wrapper and an effect (after the selection-validity effect). The wrapper mirrors `load`'s error discipline so an event-driven list failure surfaces in the action banner instead of an unhandled rejection:
 
 ```tsx
+  const refreshFromEvent = useCallback(async (): Promise<void> => {
+    setError(null);
+    try {
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "refresh failed");
+    }
+  }, [refresh]);
+
   useEffect(() => {
     const flushTimer = { current: null as ReturnType<typeof setTimeout> | null };
     const unsubscribe = api.subscribeWorkspaceEvents((event) => {
       if (event.kind === "list") {
-        void refresh();
+        void refreshFromEvent();
         return;
       }
       const matches =
@@ -2454,7 +2463,7 @@ In `WorkspacesPage.tsx` add an effect (after the selection-validity effect):
       unsubscribe();
       if (flushTimer.current !== null) clearTimeout(flushTimer.current);
     };
-  }, [api, refresh, selected]);
+  }, [api, refreshFromEvent, selected]);
 ```
 
 - [ ] **Step 4: Run tests + typecheck**
