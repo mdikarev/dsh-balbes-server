@@ -64,7 +64,7 @@ describe("balbes-models plugin", () => {
 
   it("exposes name/inject/apply contract and registers four bearer routes", () => {
     expect(name).toBe("balbes-models");
-    expect(inject).toEqual(["balbesHttp"]);
+    expect(inject).toEqual(["balbesHttp", "settings", "credentials", "agentDefaultModel"]);
     apply(ctx as never, {});
     expect(seats.map((s) => s.path).sort()).toEqual([
       "/api/models/default", "/api/models/delete", "/api/models/list", "/api/models/save"

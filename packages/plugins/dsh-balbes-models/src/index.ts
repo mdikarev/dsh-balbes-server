@@ -5,7 +5,7 @@ import {
 } from "./models.js";
 
 export const name = "balbes-models";
-export const inject = ["balbesHttp"];
+export const inject = ["balbesHttp", "settings", "credentials", "agentDefaultModel"];
 export const Config = z.object({});
 
 interface HttpSeatLike {
@@ -35,7 +35,7 @@ interface ResLike {
 }
 
 const LLM_PI_AI_NS = "llm-pi-ai";
-const CUSTOM_WIRE_API = "chat"; // pi-ai wire protocol for OpenAI-compatible routes
+const CUSTOM_WIRE_API = "openai-completions"; // pi-ai wire protocol for OpenAI-compatible routes
 
 function send(res: ResLike, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
