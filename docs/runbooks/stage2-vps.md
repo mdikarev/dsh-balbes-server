@@ -283,10 +283,20 @@ curl -N -X POST http://127.0.0.1:8080/api/workspaces/events \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{}'
 ```
 
+Блок выше удалил проект `alpha` — создайте его заново (в основном терминале;
+поток в соседнем при этом остаётся открытым):
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/api/workspaces/create \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"name":"alpha"}' -w '\nHTTP %{http_code}\n'
+#    ожидается: {"project":{"name":"alpha",...}} и HTTP 200
+```
+
 Затем создайте файл под проектом — `touch "$DSH_HOME/projects/alpha/x.txt"`:
 ожидается кадр `data: {"kind":"fs","scope":"project","name":"alpha","path":""}`.
-Соединение сервер не закрывает: heartbeat `: ping` — каждые 25 с, закрытие — на
-стороне клиента.
+Соединение сервер не закрывает: heartbeat `: ping` — каждые 25 с. Получив кадр,
+остановите поток в соседнем терминале (Ctrl-C).
 
 Если на шаге 2 вместо токена пришла ошибка — проверьте, что в
 `-d '{"login":...,"password":...}'` подставлены именно те значения, что
