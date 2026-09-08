@@ -11,9 +11,11 @@
 
 - Покрывает: HTTP-контракты `/api/*` (method/path/auth/request/response/
   errors/notes) — сейчас `health`, `auth.login`, `auth.me`, `prompt`,
-  `workspaces.list`, `workspaces.create`, `workspaces.delete`.
+  `workspaces.list`, `workspaces.create`, `workspaces.delete`,
+  `workspaces.tree`, `workspaces.events`.
 - Вне scope: статика SPA (не API), внутренние сервисные интерфейсы Cordis,
-  будущие каналы (они появятся здесь же по мере реализации).
+  потоковая доставка ответов модели в чат (по-прежнему вне scope; новые
+  каналы появятся здесь же по мере реализации).
 - При расхождении реестра и типов побеждают типы (компилятор); реестр
   правится в том же изменении, что и типы/поведение.
 
@@ -94,6 +96,38 @@
 - notes: рекурсивно удаляет каталог проекта + prune строки реестра.
   Подтверждение — на стороне UI. Дом удалить нельзя: имя — один сегмент пути,
   проверка containment под `$DSH_HOME/projects/`.
+
+### workspaces.tree — дерево воркспейса (чтение одного каталога)
+- method: POST
+- path: /api/workspaces/tree
+- auth: bearer
+- request: `{scope: "home"|"project", name?: string, path: string}` (`name` —
+  только при `scope: "project"`)
+- response: `{entries: [{name: string, kind: "dir"|"file"|"link"}]}`
+- errors: 400 `invalid-name` (нет/битый `name` у project), 400 `invalid-path`
+  (неверный путь, в т.ч. traversal за корень), 404 `not-found` (каталога нет
+  или он вне воркспейса), 401
+- notes: ленивое чтение по одному каталогу (`path: ""` = корень воркспейса);
+  записи — только из `Dirent`: симлинки = `kind: "link"` и никогда не
+  разыменовываются; dot-записи включены; сначала каталоги (dirs first).
+  Контеймент скоупа — лексический и по realpath: ручка никогда не выходит за
+  корень воркспейса. Дерево дома — `$DSH_HOME/agent/`.
+
+### workspaces.events — события изменений воркспейсов (SSE-канал)
+- method: POST
+- path: /api/workspaces/events
+- auth: bearer
+- request: `{}`
+- response: 200 `text/event-stream`, поток не закрывается; кадры `data: {json}`,
+  payload — `WorkspaceFsEvent` (`{kind: "fs", scope: "home"|"project", name?,
+  path}` — каталог, чей список изменился; `path: ""` = корень) или
+  `WorkspaceListEvent` (`{kind: "list"}` — состав проектов изменился);
+  heartbeat `: ping` каждые 25 с
+- errors: 401 (нет/битый токен)
+- notes: push-канал изменений каталогов для дерева в админке (внешние правки
+  владельца/агента); соединение закрывает клиент; исключения из R-API-1 нет —
+  запрос остаётся POST; потоковая доставка ответов модели в чат — по-прежнему
+  вне scope.
 
 ## Rules & invariants
 
