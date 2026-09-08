@@ -417,8 +417,8 @@ copy_workspaces_into_profile() {
     info "Workspaces plugin copied into $dst"
 }
 
-# copy_models_into_profile — mirror of copy_workspaces_into_profile: the
-# built models plugin is copied as a real dir into the profile node_modules.
+# copy_models_into_profile — зеркало copy_workspaces_into_profile: собранный
+# плагин моделей копируется реальным каталогом в node_modules профиля.
 copy_models_into_profile() {
     local profile_dir="$DSH_HOME/profiles/$PROFILE_NAME"
     local src="$REPO_DIR/packages/plugins/dsh-balbes-models"
@@ -576,6 +576,8 @@ Smoke without a browser (JWT):
   curl -fsS -X POST http://127.0.0.1:$BALBES_PORT/api/workspaces/delete \\
     -H "authorization: Bearer \$TOKEN" -H 'content-type: application/json' \\
     -d '{"name":"my-project"}'
+  curl -fsS -X POST http://127.0.0.1:$BALBES_PORT/api/models/list \\
+    -H "authorization: Bearer \$TOKEN"
 =====================================================================
 EOF
 }
