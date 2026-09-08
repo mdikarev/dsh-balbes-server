@@ -116,4 +116,73 @@ describe("api client", () => {
     unsub();
     vi.unstubAllGlobals();
   });
+
+  it("retries an events stream on 503 while a listener remains", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(async () => ({ ok: false, status: 503, statusText: "Service Unavailable" }));
+      vi.stubGlobal("fetch", fetchMock);
+      const api = createApiClient();
+      const unsub = api.subscribeWorkspaceEvents(() => {});
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(0); // let the first failure reach the reconnect scheduler
+      await vi.advanceTimersByTimeAsync(1500); // EVENT_RETRY_MS: a second fetch attempt happens
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      unsub();
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not reconnect an events stream on 404 while a listener remains", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(async () => ({ ok: false, status: 404, statusText: "Not Found" }));
+      vi.stubGlobal("fetch", fetchMock);
+      const api = createApiClient();
+      const unsub = api.subscribeWorkspaceEvents(() => {});
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(3000); // well past EVENT_RETRY_MS: still no retry
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      unsub();
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("a throwing listener does not abort the read loop for other listeners", async () => {
+    const chunks = [
+      'data: {"kind":"list"}\n\n',
+      'data: {"kind":"fs","scope":"project","name":"alpha","path":"src"}\n\n'
+    ];
+    const reader = {
+      getReader: () => {
+        let i = 0;
+        return {
+          read: async () => {
+            if (i >= chunks.length) return { done: true, value: undefined };
+            return { done: false, value: new TextEncoder().encode(chunks[i++]) };
+          },
+          cancel: async () => undefined,
+          releaseLock: () => undefined
+        };
+      }
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, body: reader })));
+    localStorage.setItem("balbes.authToken", "t");
+    const api = createApiClient();
+    const boom = vi.fn(() => {
+      throw new Error("listener boom");
+    });
+    const got: unknown[] = [];
+    api.subscribeWorkspaceEvents(boom);
+    const unsub = api.subscribeWorkspaceEvents((e) => got.push(e));
+    await vi.waitFor(() => expect(got.length).toBe(2));
+    expect(boom).toHaveBeenCalledTimes(2);
+    unsub();
+    vi.unstubAllGlobals();
+  });
 });

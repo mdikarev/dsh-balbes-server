@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { AdminApi } from "../api/client";
 import type { WorkspaceListResponse, WorkspaceProject } from "dsh-balbes-contracts";
 import WorkspaceList from "../components/WorkspaceList";
@@ -36,10 +36,13 @@ export default function WorkspacesPage({ api }: WorkspacesPageProps) {
   const [modal, setModal] = useState<null | { type: "create" } | { type: "delete"; project: WorkspaceProject }>(null);
   const [name, setName] = useState("");
   const pageRef = useRef<HTMLDivElement>(null);
+  // keep a stored width only when it is a sane finite pixel value (>= the drag
+  // minimum of 220); anything else falls back to the CSS default (33%)
   const [treeWidth, setTreeWidth] = useState<number | null>(() => {
     const stored = Number(localStorage.getItem(TREE_WIDTH_KEY));
-    return Number.isFinite(stored) && stored > 0 ? stored : null; // null = CSS default (33%)
+    return Number.isFinite(stored) && stored >= 220 ? stored : null; // null = CSS default (33%)
   });
+  const widthClamped = useRef(false);
 
   const refresh = useCallback(async (): Promise<WorkspaceListResponse> => {
     const next = await api.listWorkspaces();
@@ -70,6 +73,20 @@ export default function WorkspacesPage({ api }: WorkspacesPageProps) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // a stored width can exceed the current container (stale from a narrower
+  // window or an edited value): clamp it down once the pane is laid out, never
+  // again, so later user drags keep the full range. The 220 floor keeps a sane
+  // minimum when the container is 0/negative (e.g. before layout).
+  useLayoutEffect(() => {
+    if (widthClamped.current) return;
+    const container = pageRef.current;
+    if (container === null) return;
+    widthClamped.current = true;
+    const bound = Math.max(container.clientWidth - 360, 220);
+    setTreeWidth((w) => (w !== null && w > bound ? bound : w));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data === null]);
 
   // keep the selection valid: project rows can disappear on refresh/events
   useEffect(() => {
@@ -260,6 +277,7 @@ export default function WorkspacesPage({ api }: WorkspacesPageProps) {
     const onUp = (): void => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
       localStorage.setItem(TREE_WIDTH_KEY, String(lastW));
@@ -268,5 +286,6 @@ export default function WorkspacesPage({ api }: WorkspacesPageProps) {
     document.body.style.userSelect = "none";
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
   }
 }

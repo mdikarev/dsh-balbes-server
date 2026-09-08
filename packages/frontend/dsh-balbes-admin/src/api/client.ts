@@ -79,7 +79,7 @@ export function createApiClient(): AdminApi {
       const headers: Record<string, string> = { "content-type": "application/json" };
       const stored = localStorage.getItem(TOKEN_KEY);
       if (stored !== null) headers.authorization = `Bearer ${stored}`;
-      let retry = true; // reconnect only on network/EOF failures, never on HTTP errors
+      let retry = true; // reconnect on network/EOF failures and transient HTTP errors (5xx)
       try {
         const res = await fetch("/api/workspaces/events", {
           method: "POST",
@@ -88,7 +88,7 @@ export function createApiClient(): AdminApi {
           signal: controller.signal
         });
         if (!res.ok) {
-          retry = false;
+          retry = res.status >= 500; // 4xx is permanent (401 handled below); 5xx is transient
           if (res.status === 401) notify401();
           throw new ApiError(res.status, "events", `events stream failed: ${res.status}`);
         }
@@ -102,7 +102,13 @@ export function createApiClient(): AdminApi {
           } catch {
             return;
           }
-          for (const fn of eventListeners) fn(parsed as WorkspaceEvent);
+          for (const fn of eventListeners) {
+            try {
+              fn(parsed as WorkspaceEvent);
+            } catch {
+              // one throwing listener must not abort the read loop for the rest
+            }
+          }
         };
         const feed = createSseParser(onData);
         for (;;) {

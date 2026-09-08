@@ -16,8 +16,11 @@ function joinRel(dir: string, name: string): string {
   return dir === ROOT ? name : `${dir}/${name}`;
 }
 
+// Collision-free testid encoding of a rel dir path: `_` -> `__` and `/` -> `_`,
+// so a root entry literally named `a_b` (id `a__b`) never collides with a
+// nested dir `a/b` (id `a_b`). Simple names like `src` are unchanged.
 function dirIdOf(dir: string): string {
-  return dir === ROOT ? "root" : dir.replace(/\//g, "_");
+  return dir === ROOT ? "root" : dir.replace(/_/g, "__").replace(/\//g, "_");
 }
 
 /**

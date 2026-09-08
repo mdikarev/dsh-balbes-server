@@ -81,6 +81,13 @@ describe("readWorkspaceDir", () => {
     await expect(readWorkspaceDir(home, "bogus" as WorkspaceScope, undefined, "")).rejects.toMatchObject({ code: "invalid-path" });
   });
 
+  it("maps ENOTDIR (relPath resolving to a regular file) to not-found", async () => {
+    const home = await tempHome();
+    const root = join(projectsRoot(home), "alpha");
+    await writeFile(join(root, "note.md"), "x");
+    await expect(readWorkspaceDir(home, "project", "alpha", "note.md")).rejects.toMatchObject({ code: "not-found" });
+  });
+
   it("reads the agent home root", async () => {
     const home = await tempHome();
     await writeFile(join(homeDir(home), "self.md"), "# agent");

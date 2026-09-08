@@ -83,7 +83,18 @@ export async function readWorkspaceDir(
     throw error;
   }
   if (!realOk) throw workspaceError("not-found", `directory is outside the workspace: ${relPath}`);
-  const dirents = await readdir(target, { withFileTypes: true });
+  // ENOTDIR: relPath resolved to a regular file (a dir was replaced by a
+  // same-named file, or a direct path-to-file request) — treat like ENOENT
+  let dirents: Dirent[];
+  try {
+    dirents = await readdir(target, { withFileTypes: true });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      throw workspaceError("not-found", `directory not found: ${relPath}`);
+    }
+    throw error;
+  }
   const entries: TreeEntry[] = dirents.map((d) => ({ name: d.name, kind: classify(d) }));
   const byKind = (a: TreeEntry, b: TreeEntry): number => {
     if (a.kind === "dir" && b.kind !== "dir") return -1;

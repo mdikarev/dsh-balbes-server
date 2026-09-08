@@ -1,6 +1,5 @@
 import { watch, type FSWatcher } from "node:fs";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { homeDir, projectsRoot } from "./workspaces.js";
 import { relDirOf } from "./tree.js";
 
