@@ -223,3 +223,27 @@ button.nav-item:focus-visible { outline: 1px solid var(--accent); outline-offset
 }
 .icon-btn:hover { color: var(--text); background: var(--surface-2); }
 
+/* ── workspaces layout panes ───────────────────────────────── */
+.workspaces-page {
+  flex: 1; min-height: 0; display: flex; width: 100%;
+  overflow: hidden; background: var(--bg);
+}
+.ws-pane { display: flex; flex-direction: column; min-height: 0; }
+.ws-list-pane { width: 260px; flex: none; border-right: 1px solid var(--border); background: var(--surface); }
+.ws-pane-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+.ws-pane-header h2 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); }
+.ws-rows { list-style: none; margin: 0; padding: 8px; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
+.ws-row-wrap { position: relative; display: flex; align-items: center; gap: 6px; border-radius: 6px; }
+.ws-row-wrap:hover { background: var(--surface-2); }
+.ws-row { flex: 1; min-width: 0; text-align: left; background: none; border: none; color: var(--text); cursor: pointer; padding: 7px 9px; border-radius: 6px; border-left: 3px solid transparent; }
+.ws-row.active { background: var(--surface-2); border-left-color: var(--accent); }
+.ws-row-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ws-row-main code { font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ws-row-path { color: var(--text-dim); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ws-row-actions { position: relative; flex: none; padding-right: 4px; }
+.ws-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; min-width: 150px; padding: 4px; box-shadow: 0 8px 24px rgba(0, 0, 0, .4); }
+.ws-menu-item { display: block; width: 100%; text-align: left; background: none; border: none; color: var(--text); padding: 7px 10px; border-radius: 5px; cursor: pointer; }
+.ws-menu-item:hover { background: var(--surface); }
+.ws-menu-item.danger { color: var(--danger); }
+.ws-menu-item.danger:hover { background: var(--danger); color: var(--bg); }
+
