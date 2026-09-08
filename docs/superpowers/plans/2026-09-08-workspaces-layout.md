@@ -1512,24 +1512,65 @@ describe("FileTree", () => {
     expect(await screen.findByText("Каталог пуст")).toBeTruthy();
   });
 
-  it("bumping refreshKey refetches the loaded root", async () => {
-    const read = vi.fn(async () => rootBody);
+  it("bumping refreshKey reapplies fresh root listings", async () => {
+    let n = 0;
+    const read = vi.fn(async () => {
+      n += 1;
+      return n === 1 ? rootBody : { entries: [{ name: "lib", kind: "dir" }] };
+    });
     const api = { readWorkspaceDir: read } as unknown as AdminApi;
     const { rerender } = render(<FileTree api={api} workspace={alpha} refreshKey={0} />);
     expect(await screen.findByText("src")).toBeTruthy();
     rerender(<FileTree api={api} workspace={alpha} refreshKey={1} />);
-    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("lib")).toBeTruthy();
+    expect(screen.queryByText("src")).toBeNull(); // fresh listing actually applied
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it("a refresh bump with an expanded dir re-reads and keeps both levels", async () => {
+    const read = vi.fn(async (_s: string, _n: string | undefined, p: string) => {
+      if (p === "") return rootBody;
+      return srcBody; // "src"
+    });
+    const api = { readWorkspaceDir: read } as unknown as AdminApi;
+    const { rerender } = render(<FileTree api={api} workspace={alpha} refreshKey={0} />);
+    fireEvent.click(await screen.findByTestId("tree-dir-src"));
+    expect(await screen.findByText("main.ts")).toBeTruthy();
+    expect(read).toHaveBeenCalledTimes(2); // root + src
+    rerender(<FileTree api={api} workspace={alpha} refreshKey={1} />);
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(4)); // root + src again
+    expect(await screen.findByText("main.ts")).toBeTruthy();
+    expect(screen.getByText("src")).toBeTruthy();
+  });
+
+  it("per-dir retry refetches in place while the branch stays expanded", async () => {
+    const read = vi.fn()
+      .mockResolvedValueOnce({ entries: [{ name: "src", kind: "dir" }] }) // root
+      .mockRejectedValueOnce(new Error("boom"))                            // first src load
+      .mockResolvedValueOnce({ entries: [{ name: "main.ts", kind: "file" }] }); // retry
+    const api = { readWorkspaceDir: read } as unknown as AdminApi;
+    render(<FileTree api={api} workspace={alpha} refreshKey={0} />);
+    fireEvent.click(await screen.findByTestId("tree-dir-src"));
+    expect(await screen.findByText(/boom/)).toBeTruthy();
+    fireEvent.click(screen.getByText("Повторить"));
+    expect(await screen.findByText("main.ts")).toBeTruthy();
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(screen.getByTestId("tree-dir-src").getAttribute("aria-expanded")).toBe("true");
   });
 
   it("switching workspace resets the tree", async () => {
     const read = vi.fn(async (_s: string, n: string | undefined, p: string) =>
-      p === "" && n === "alpha" ? rootBody : { entries: [] }
+      p === "" && n === "alpha"
+        ? rootBody
+        : { entries: [{ name: "beta-file", kind: "file" }] }
     );
     const api = { readWorkspaceDir: read } as unknown as AdminApi;
     const { rerender } = render(<FileTree api={api} workspace={alpha} refreshKey={0} />);
     expect(await screen.findByText("src")).toBeTruthy();
     rerender(<FileTree api={api} workspace={{ scope: "project", name: "beta" }} refreshKey={0} />);
-    await waitFor(() => expect(read).toHaveBeenCalledWith("project", "beta", ""));
+    expect(await screen.findByText("beta-file")).toBeTruthy();
+    expect(screen.queryByText("src")).toBeNull(); // previous workspace content is gone
+    expect(read).toHaveBeenCalledWith("project", "beta", "");
     expect(read).toHaveBeenCalledTimes(2);
   });
 });
@@ -1576,26 +1617,32 @@ export default function FileTree({ api, workspace, refreshKey }: FileTreeProps) 
   const [errors, setErrors] = useState<Map<string, string>>(new Map());
   const [loading, setLoading] = useState<Set<string>>(new Set());
   const lastWorkspace = useRef<WorkspaceRef | null>(null);
-  const seq = useRef(0);
+  const loadSeq = useRef<Map<string, number>>(new Map());
+  const generation = useRef(0);
 
   const loadDir = useCallback(
     async (dir: string) => {
       if (workspace === null) return;
-      const mySeq = ++seq.current;
+      const myGen = generation.current;
+      const mySeq = (loadSeq.current.get(dir) ?? 0) + 1;
+      loadSeq.current.set(dir, mySeq);
       setLoading((s) => new Set(s).add(dir));
       setErrors((m) => {
         const next = new Map(m);
         next.delete(dir);
         return next;
       });
+      const stale = (): boolean =>
+        generation.current !== myGen || loadSeq.current.get(dir) !== mySeq;
       try {
         const res = await api.readWorkspaceDir(workspace.scope, workspace.name, dir);
-        if (mySeq !== seq.current) return; // superseded by a newer load
+        if (stale()) return; // superseded by a workspace switch or a newer load of this dir
         setCache((m) => new Map(m).set(dir, res.entries));
       } catch (err) {
-        if (mySeq !== seq.current) return;
+        if (stale()) return;
         setErrors((m) => new Map(m).set(dir, err instanceof Error ? err.message : "load failed"));
       } finally {
+        if (stale()) return;
         setLoading((s) => {
           const next = new Set(s);
           next.delete(dir);
@@ -1606,13 +1653,16 @@ export default function FileTree({ api, workspace, refreshKey }: FileTreeProps) 
     [api, workspace]
   );
 
-  // workspace switch: full reset
+  // workspace switch: full reset; bump the generation so in-flight loads from
+  // the previous workspace are dropped at resolution time
   useEffect(() => {
     if (!isSameRef(lastWorkspace.current, workspace)) {
       lastWorkspace.current = workspace;
+      generation.current += 1;
       setExpanded(new Set());
       setCache(new Map());
       setErrors(new Map());
+      setLoading(new Set());
     }
   }, [workspace]);
 
@@ -1689,6 +1739,7 @@ export default function FileTree({ api, workspace, refreshKey }: FileTreeProps) 
                 errors={errors}
                 loading={loading}
                 onToggle={toggle}
+                onRetry={loadDir}
               />
             ))}
         {rootEntries !== undefined &&
@@ -1708,9 +1759,10 @@ interface DirRowProps {
   errors: Map<string, string>;
   loading: Set<string>;
   onToggle(dir: string): void;
+  onRetry(dir: string): void;
 }
 
-function DirRow({ dir, depth, expanded, cache, errors, loading, onToggle }: DirRowProps) {
+function DirRow({ dir, depth, expanded, cache, errors, loading, onToggle, onRetry }: DirRowProps) {
   const name = dir.split("/").pop() ?? dir;
   const open = expanded.has(dir);
   const children = cache.get(dir);
@@ -1736,7 +1788,7 @@ function DirRow({ dir, depth, expanded, cache, errors, loading, onToggle }: DirR
       {open && hasChildren &&
         children
           .filter((c) => c.kind === "dir")
-          .map((c) => <DirRow key={c.name} dir={joinRel(dir, c.name)} depth={depth + 1} expanded={expanded} cache={cache} errors={errors} loading={loading} onToggle={onToggle} />)}
+          .map((c) => <DirRow key={c.name} dir={joinRel(dir, c.name)} depth={depth + 1} expanded={expanded} cache={cache} errors={errors} loading={loading} onToggle={onToggle} onRetry={onRetry} />)}
       {open && hasChildren &&
         children
           .filter((c) => c.kind !== "dir")
@@ -1744,7 +1796,7 @@ function DirRow({ dir, depth, expanded, cache, errors, loading, onToggle }: DirR
       {open && errors.has(dir) && (
         <p className="form-error">
           {errors.get(dir)}{" "}
-          <button type="button" className="btn-ghost" onClick={() => onToggle(dir)}>
+          <button type="button" className="btn-ghost" onClick={() => onRetry(dir)}>
             Повторить
           </button>
         </p>
