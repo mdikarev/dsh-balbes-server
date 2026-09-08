@@ -46,10 +46,73 @@ export function registryFile(dshHome: string): string {
   return join(dshHome, "projects.json");
 }
 
-/** The home always exists: mkdir -p, idempotent. */
+/**
+ * Starter files provisioned into a fresh agent home. Provisioning is strictly
+ * additive: files that already exist (owner edits included) are never touched.
+ * Contents are English starter templates for the owner to extend; wiring home
+ * files into the agent context is a later stage.
+ */
+const AGENTS_STARTER = [
+  "# Agent home rules",
+  "",
+  "Auto-created by the server on first start. This file belongs to the owner:",
+  "edit it by hand; the server never overwrites it. Wiring home files into the",
+  "agent context is a later stage.",
+  "",
+  "Baseline rules:",
+  "- Never read or expose secrets: `$DSH_HOME/.credentials.yaml`, `$DSH_HOME/admin-auth.json`,",
+  "  and any key files.",
+  "- Irreversible operations (deleting workspaces, overwriting files) only after",
+  "  explicit owner confirmation.",
+  "- Do not leave `$DSH_HOME` without the owner's permission.",
+  "",
+  "Starter templates (uncomment and extend):",
+  "<!-- - Verify outcomes, not just code: facts, paths, side effects. -->",
+  "<!-- - Keep replies concise and grounded. -->",
+  ""
+].join("\n");
+
+const SELF_STARTER = [
+  "# About",
+  "",
+  "Auto-created by the server on first start; the owner fills it in.",
+  "A short self-description of the agent, for the owner and future sessions.",
+  "",
+  "Draft fields:",
+  '- Name: (e.g. "balbes")',
+  "- Role: the owner's personal agent on the dsh-balbes server",
+  "- Language: Russian",
+  "- Style: concise and factual; verify claims, do not invent",
+  "- Boundaries: see AGENTS.md - secrets, irreversible operations, leaving $DSH_HOME",
+  ""
+].join("\n");
+
+const SKILLS_README_STARTER = [
+  "# skills/",
+  "",
+  "Directory for agent skills (later stages). Format and wiring to be defined.",
+  ""
+].join("\n");
+
+/** Write a file only when it does not exist yet; owner content is never touched. */
+async function provisionFile(file: string, content: string): Promise<void> {
+  try {
+    await writeFile(file, content, { flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return;
+    throw error;
+  }
+}
+
+/** The home always exists: mkdir -p, then provision missing starter files, idempotent. */
 export async function ensureHome(dshHome: string): Promise<string> {
   const dir = homeDir(dshHome);
   await mkdir(dir, { recursive: true });
+  const skillsDir = join(dir, "skills");
+  await mkdir(skillsDir, { recursive: true });
+  await provisionFile(join(dir, "AGENTS.md"), AGENTS_STARTER);
+  await provisionFile(join(dir, "self.md"), SELF_STARTER);
+  await provisionFile(join(skillsDir, "README.md"), SKILLS_README_STARTER);
   return dir;
 }
 

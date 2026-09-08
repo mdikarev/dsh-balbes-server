@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { mkdtemp, mkdir, rm, writeFile, readdir, stat } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile, readdir, stat, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -45,6 +45,28 @@ describe("ensureHome", () => {
     expect(again).toBe(homeDir(home));
     const s = await stat(homeDir(home));
     expect(s.isDirectory()).toBe(true);
+  });
+
+  it("provisions starter files into a fresh home", async () => {
+    await ensureHome(home);
+    const agents = await readFile(join(homeDir(home), "AGENTS.md"), "utf8");
+    expect(agents).toContain("# Agent home rules");
+    const self = await readFile(join(homeDir(home), "self.md"), "utf8");
+    expect(self).toContain("# About");
+    const skillsReadme = await readFile(join(homeDir(home), "skills", "README.md"), "utf8");
+    expect(skillsReadme).toContain("# skills/");
+    const entries = await readdir(homeDir(home));
+    expect(entries).toEqual(expect.arrayContaining(["AGENTS.md", "self.md", "skills"]));
+  });
+
+  it("never overwrites owner edits to starter files", async () => {
+    await ensureHome(home);
+    const agents = join(homeDir(home), "AGENTS.md");
+    await writeFile(agents, "# custom rules by the owner\n", "utf8");
+    // later runs (boot, every list) must leave the owner's content alone
+    await ensureHome(home);
+    await ensureHome(home);
+    expect(await readFile(agents, "utf8")).toBe("# custom rules by the owner\n");
   });
 });
 
