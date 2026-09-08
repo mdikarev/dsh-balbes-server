@@ -225,9 +225,11 @@ button.nav-item:focus-visible { outline: 1px solid var(--accent); outline-offset
 
 /* ── workspaces layout panes ───────────────────────────────── */
 .workspaces-page {
-  flex: 1; min-height: 0; display: flex; width: 100%;
+  flex: 1; min-height: 0; display: flex; flex-direction: column; width: 100%;
   overflow: hidden; background: var(--bg);
 }
+.ws-panes { flex: 1; min-height: 0; display: flex; width: 100%; }
+.ws-error-banner { margin: 0; padding: 8px 22px; border-bottom: 1px solid var(--border); background: var(--surface); font-size: 13px; }
 .ws-pane { display: flex; flex-direction: column; min-height: 0; }
 .ws-list-pane { width: 260px; flex: none; border-right: 1px solid var(--border); background: var(--surface); }
 .ws-pane-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--border); }

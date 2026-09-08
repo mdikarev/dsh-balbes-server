@@ -165,4 +165,80 @@ describe("WorkspacesPage create/delete flows", () => {
     expect(api.deleteWorkspace).not.toHaveBeenCalled();
     expect(screen.queryByText("Удалить проект")).toBeNull();
   });
+
+  it("create failure shows an action banner, keeps the modal open, and a retry clears it", async () => {
+    // local registry: the first create rejects, the retry must succeed and the
+    // created project must appear in the post-create refresh list
+    const projects: WorkspaceProject[] = listBody.projects.map((p) => ({ ...p }));
+    const api = makeApi({
+      listWorkspaces: vi.fn(async () => ({ home: listBody.home, projects: [...projects] })),
+      createWorkspace: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("disk full"))
+        .mockImplementation(async (name: string) => {
+          const project: WorkspaceProject = { name, path: `/h/projects/${name}`, createdAt: NOW };
+          projects.push(project);
+          return { project };
+        })
+    });
+    render(<WorkspacesPage api={api} />);
+    fireEvent.click(await screen.findByTestId("workspace-create-open"));
+    fireEvent.change(screen.getByTestId("workspace-name-input"), { target: { value: "beta" } });
+    fireEvent.click(screen.getByTestId("workspace-create-submit"));
+
+    // the failure is visible in the loaded layout: banner with the message
+    const banner = await screen.findByTestId("workspace-action-error");
+    expect(banner.textContent).toContain("Не удалось: disk full");
+    // the modal stays open and busy reset lets the user retry
+    expect(screen.getByText("Создать проект")).toBeTruthy();
+    const submit = screen.getByTestId("workspace-create-submit") as HTMLButtonElement;
+    await waitFor(() => expect(submit.disabled).toBe(false));
+    expect(submit.textContent).toBe("Создать");
+
+    // a clean retry hides the banner and completes the create
+    fireEvent.click(submit);
+    await waitFor(() => expect(screen.queryByTestId("workspace-action-error")).toBeNull());
+    await waitFor(() => expect(api.readWorkspaceDir).toHaveBeenCalledWith("project", "beta", ""));
+    expect(api.createWorkspace).toHaveBeenCalledTimes(2);
+    expect(api.listWorkspaces).toHaveBeenCalledTimes(2);
+  });
+
+  it("delete failure shows an action banner, keeps the row, and a retry clears it", async () => {
+    // local registry: the first delete rejects, the retry succeeds and removes
+    // alpha so the refreshed list drops the row
+    const projects: WorkspaceProject[] = listBody.projects.map((p) => ({ ...p }));
+    const api = makeApi({
+      listWorkspaces: vi.fn(async () => ({ home: listBody.home, projects: [...projects] })),
+      deleteWorkspace: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("catalog busy"))
+        .mockImplementation(async (name: string) => {
+          const idx = projects.findIndex((p) => p.name === name);
+          if (idx !== -1) projects.splice(idx, 1);
+          return {};
+        })
+    });
+    render(<WorkspacesPage api={api} />);
+    await screen.findByText("alpha");
+    fireEvent.click(screen.getByTestId("ws-menu-project:alpha"));
+    fireEvent.click(screen.getByTestId("ws-delete-alpha"));
+    fireEvent.click(screen.getByTestId("workspace-delete-alpha"));
+
+    // the failure is visible: banner with the message, modal open, row still listed
+    const banner = await screen.findByTestId("workspace-action-error");
+    expect(banner.textContent).toContain("Не удалось: catalog busy");
+    expect(screen.getByText("Удалить проект")).toBeTruthy();
+    expect(screen.getByTestId("ws-row-project:alpha")).toBeTruthy();
+    const confirm = screen.getByTestId("workspace-delete-alpha") as HTMLButtonElement;
+    await waitFor(() => expect(confirm.disabled).toBe(false));
+    expect(confirm.textContent).toBe("Удалить");
+
+    // a clean retry hides the banner and completes the delete
+    fireEvent.click(confirm);
+    await waitFor(() => expect(screen.queryByTestId("workspace-action-error")).toBeNull());
+    await waitFor(() => expect(api.deleteWorkspace).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(api.listWorkspaces).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText("Удалить проект")).toBeNull();
+    expect(screen.queryByTestId("ws-row-project:alpha")).toBeNull();
+  });
 });

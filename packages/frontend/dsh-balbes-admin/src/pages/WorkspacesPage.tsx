@@ -136,23 +136,30 @@ export default function WorkspacesPage({ api }: WorkspacesPageProps) {
 
   return (
     <div className="workspaces-page" data-testid="workspaces-page" ref={pageRef}>
-      <WorkspaceList
-        homePath={data.home.path}
-        projects={data.projects}
-        selected={selected}
-        busy={busy}
-        onSelect={select}
-        onCreate={() => setModal({ type: "create" })}
-        onDelete={(p) => setModal({ type: "delete", project: p })}
-      />
-      <div
-        className="ws-tree-shell"
-        style={treeWidth === null ? undefined : ({ "--tree-w": `${treeWidth}px` } as React.CSSProperties)}
-      >
-        <FileTree api={api} workspace={selected} refreshKey={refreshKey} />
+      {error !== null && (
+        <p className="form-error ws-error-banner" role="alert" data-testid="workspace-action-error">
+          Не удалось: {error}
+        </p>
+      )}
+      <div className="ws-panes">
+        <WorkspaceList
+          homePath={data.home.path}
+          projects={data.projects}
+          selected={selected}
+          busy={busy}
+          onSelect={select}
+          onCreate={() => setModal({ type: "create" })}
+          onDelete={(p) => setModal({ type: "delete", project: p })}
+        />
+        <div
+          className="ws-tree-shell"
+          style={treeWidth === null ? undefined : ({ "--tree-w": `${treeWidth}px` } as React.CSSProperties)}
+        >
+          <FileTree api={api} workspace={selected} refreshKey={refreshKey} />
+        </div>
+        <div className="ws-splitter" data-testid="ws-splitter" onPointerDown={startResize} />
+        <div className="ws-pane ws-void-pane" data-testid="ws-void-pane" />
       </div>
-      <div className="ws-splitter" data-testid="ws-splitter" onPointerDown={startResize} />
-      <div className="ws-pane ws-void-pane" data-testid="ws-void-pane" />
       {modal !== null && modal.type === "create" && (
         <Modal title="Создать проект" onClose={() => setModal(null)}>
           <form
