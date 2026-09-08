@@ -12,7 +12,8 @@
 - Покрывает: HTTP-контракты `/api/*` (method/path/auth/request/response/
   errors/notes) — сейчас `health`, `auth.login`, `auth.me`, `prompt`,
   `workspaces.list`, `workspaces.create`, `workspaces.delete`,
-  `workspaces.tree`, `workspaces.events`.
+  `workspaces.tree`, `workspaces.events`, `models.list`, `models.save`,
+  `models.delete`, `models.default`.
 - Вне scope: статика SPA (не API), внутренние сервисные интерфейсы Cordis,
   потоковая доставка ответов модели в чат (по-прежнему вне scope; новые
   каналы появятся здесь же по мере реализации).
@@ -128,6 +129,59 @@
   владельца/агента); соединение закрывает клиент; исключения из R-API-1 нет —
   запрос остаётся POST; потоковая доставка ответов модели в чат — по-прежнему
   вне scope.
+
+### models.list — список подключений и дефолтная модель
+- method: POST
+- path: /api/models/list
+- auth: bearer
+- request: `{}`
+- response: `{connections: [{routeId: string, kind: "deepseek"|"custom", displayName: string, baseURL?: string, hasKey: boolean, models: string[], isDefault: boolean}], default: {provider: string, model: string}}`
+- errors: 401
+- notes: отдаёт состояние движка: роуты провайдеров (settings-секция
+  `llm-pi-ai`) и каталог моделей DeepSeek; встроенный `deepseek-official`
+  в списке всегда. `hasKey` — признак наличия ключа: значение секрета не
+  возвращается никогда; `isDefault` — derived (на этом подключении стоит
+  дефолтная модель).
+
+### models.save — создать/обновить подключение провайдера
+- method: POST
+- path: /api/models/save
+- auth: bearer
+- request: `{routeId?, kind: "deepseek"|"custom", displayName?, baseURL?, key?: string|null, models?: string[]}`
+- response: `{connection: {...}}` (форма элемента — как в models.list)
+- errors: 400 `invalid-*` (имя/routeId/baseURL/модели), 409 `route-exists`, 401
+- notes: `routeId` — id роута движка: `deepseek-official` (зарезервирован,
+  существует всегда) или lower-hyphen custom. custom: без `routeId` — создание
+  (routeId генерируется из displayName, `^[a-z][a-z0-9-]*$`, уникален),
+  с `routeId` — обновление существующего. Для deepseek сохраняется только
+  ключ (baseURL/модели фиксированы каталогом движка). Валидация: baseURL —
+  валидный http(s)-URL; модели custom — ≥ 1 id без пробелов/запятых. `key`
+  передан — пишет ref в `$DSH_HOME/.credentials.yaml`; `key: null` у custom —
+  сбрасывает (unset). Секрет не логируется и в ответ не возвращается никогда.
+
+### models.delete — удалить подключение провайдера
+- method: POST
+- path: /api/models/delete
+- auth: bearer
+- request: `{routeId: string}`
+- response: `{}`
+- errors: 400 `reserved` (попытка удалить `deepseek-official`), 404 `not-found`
+  (роута нет), 409 `default-in-use` (на подключении стоит дефолтная модель),
+  401
+- notes: удаляет только custom-подключения (роут в `llm-pi-ai`);
+  закреплённый `deepseek-official` не удаляется. При `default-in-use`
+  владелец сначала меняет дефолтную модель. Подтверждение — на стороне UI.
+
+### models.default — глобальная дефолтная модель
+- method: POST
+- path: /api/models/default
+- auth: bearer
+- request: `{provider: string, model: string}` (`provider` = routeId подключения)
+- response: `{default: {provider: string, model: string}}`
+- errors: 400 `invalid-*` (нет такого роута/модели), 401
+- notes: пишет settings-секцию `agent-default-model`; применяется к следующим
+  запросам `/api/prompt` — runner читает selection на каждый запрос, рестарт
+  сервера не нужен.
 
 ## Rules & invariants
 
