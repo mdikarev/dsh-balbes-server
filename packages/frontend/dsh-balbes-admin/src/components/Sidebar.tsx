@@ -23,7 +23,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     title: "Управление",
     items: [
-      { label: "Ключи", soon: true },
+      { id: "models", label: "Модели", soon: false },
       { label: "Скиллы", soon: true },
       { label: "Агенты", soon: true },
       { label: "Команды", soon: true }
