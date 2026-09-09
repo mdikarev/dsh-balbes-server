@@ -145,6 +145,39 @@ describe("createBotClient", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it("masks a token that Telegram echoes inside an error description", async () => {
+    // The masking guarantee is absolute: even if a description contained the
+    // token, the surfaced message must carry the redacted form instead.
+    const fetchImpl = vi.fn(async (_url: string, _init: unknown) =>
+      jsonResponse(400, { ok: false, error_code: 400, description: `Bad Request: invalid token ${TOKEN}` })
+    );
+    const bot = createBotClient({ token: TOKEN, apiBase: API_BASE, fetchImpl: asFetch(fetchImpl) });
+
+    const err = await rejectionOf(bot.getMe());
+
+    expect(err).toBeInstanceOf(BotApiError);
+    expect(err.status).toBe(400);
+    expect(err.telegramCode).toBe(400);
+    expect(err.message).toBe("Bad Request: invalid token [redacted]");
+    expect(err.message).not.toContain(TOKEN);
+    expect(String(err)).not.toContain(TOKEN);
+  });
+
+  it("masks a token that leaks through a network failure reason", async () => {
+    // A wrapped transport error may embed the request URL (which holds the
+    // token); the temporary-failure message must still be token-free.
+    const fetchImpl = vi.fn().mockRejectedValue(new Error(`fetch failed: ${API_BASE}/bot${TOKEN}/getMe`));
+    const bot = createBotClient({ token: TOKEN, apiBase: API_BASE, fetchImpl: asFetch(fetchImpl), retries: 0 });
+
+    const err = await rejectionOf(bot.getMe());
+
+    expect(err).toBeInstanceOf(BotApiError);
+    expect(err.status).toBe(0);
+    expect(err.message).toBe(`temporary failure: fetch failed: ${API_BASE}/bot[redacted]/getMe`);
+    expect(err.message).not.toContain(TOKEN);
+    expect(String(err)).not.toContain(TOKEN);
+  });
+
   it("retries a network rejection before succeeding", async () => {
     const fetchImpl = vi
       .fn()
