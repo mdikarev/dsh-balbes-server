@@ -660,6 +660,9 @@ export default function ModelsPage({ api }: ModelsPageProps) {
                           data-testid="model-catalog-filter"
                           value={catalogFilter}
                           onChange={(e) => setCatalogFilter(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") e.preventDefault();
+                          }}
                           placeholder="Поиск по id или названию"
                           aria-label="Поиск моделей в каталоге"
                         />
