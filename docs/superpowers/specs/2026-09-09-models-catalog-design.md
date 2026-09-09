@@ -23,7 +23,7 @@ builtin-каталог pi-ai по allowlist провайдеров. UI выби�
 2. Сервер читает каталог в рантайме (require "@earendil-works/pi-ai/providers/all"
    из зеркала профиля; deepseek-official — каталог pi-ai "deepseek" == каталогу
    dsh-llm-deepseek, 3 id). Провайдер вне allowlist -> каталог не отдаём.
-3. Новый эндпоинт models.catalog {provider} -> {models:[{id,name?}]}.
+3. Новый эндпоинт models.catalog {provider} -> {models:[{id,name?}]}; provider — routeId подключения ("deepseek-official" или id пресета).
 4. У подключения хранятся выбранные модели (chosen) — как раньше; каталог
    служит источником выбора и показывает актуальный список у deepseek-official.
 5. fallback: если рантайм-каталог недоступен — pinned DEEPSEEK_OFFICIAL_MODELS
@@ -51,7 +51,7 @@ builtin-каталог pi-ai по allowlist провайдеров. UI выби�
 
 - Unit: каталог-ридер (мок require/путь): allowlist, deepseek 3 id, ошибки;
   ручка catalog (fake services + fake reader); fallback pinned.
-- REAL: models.catalog {provider:"deepseek"} -> 3 id (flash/pro/vision-exp);
+- REAL: models.catalog {provider:"deepseek-official"} -> 3 id (flash/pro/vision-exp);
   {provider:"openai"} -> непустой список; {provider:"custom-url-имя"} -> 400.
   deepseek официальный models.list содержит vision-exp.
 - SPA: пикер (выбор из каталога, поиск, чипы, fallback manual).

@@ -7,7 +7,7 @@
 **Spec:** docs/superpowers/specs/2026-09-09-models-catalog-design.md; базовые: v1/v2 спски.
 
 ## Global Constraints
-- R-API-1 POST bearer; {error:{code,message}}; секреты не возвращаются; строгий TS ESM; английские код/комментарии; русская UI-копия; TDD; REAL; canon-правки только canon-скиллами; allowlist провайдеров = deepseek + 11 пресетов (MODEL_PROVIDER_PRESETS + "deepseek").
+- R-API-1 POST bearer; {error:{code,message}}; секреты не возвращаются; строгий TS ESM; английские код/комментарии; русская UI-копия; TDD; REAL; canon-правки только canon-скиллами; allowlist провайдеров по routeId подключения: "deepseek-official" + 11 пресетов (MODEL_PROVIDER_PRESETS); reader мапит deepseek-official на pi-ai каталог "deepseek".
 - Каталог-ридер: ленивый require("@earendil-works/pi-ai/providers/all") с try/catch fallback; ids/имена не перечисляем в контрактах хардкодом (кроме pinned-фолбэка DeepSeek 3 id).
 - Только пакеты contracts / dsh-balbes-models / dsh-balbes-admin могут меняться (installer/CI/профиль не трогаем).
 
@@ -22,13 +22,13 @@
 
 ### Task 2: Плагин — каталог-ридер + ручка models.catalog + deepseek из каталога
 **Files:** packages/plugins/dsh-balbes-models/src/models.ts, src/index.ts; tests/*.test.ts
-**Produces:** reader listEngineModels(providerId): Promise<ModelOption[]> (ленивый require @earendil-works/pi-ai/providers/all; getBuiltinModels(providerId)->[{id,name?}]; fallback DEEPSEEK_OFFICIAL_MODELS для deepseek; [] для custom/неизвестных); DEEPSEEK_OFFICIAL_MODELS += deepseek-v4-flash-vision-exp (3); ручка POST /api/models/catalog (bearer) {provider} -> {provider, models} (allowlist: deepseek + 11 presets; custom/unknown -> 400 invalid-provider); в readConnections deepseek connection models = (await reader) ?? fallback; preserve choice semantics.
+**Produces:** reader listEngineModels(providerId): Promise<ModelOption[]> (ленивый require @earendil-works/pi-ai/providers/all; getBuiltinModels(providerId)->[{id,name?}]; fallback DEEPSEEK_OFFICIAL_MODELS для deepseek; [] для custom/неизвестных); DEEPSEEK_OFFICIAL_MODELS += deepseek-v4-flash-vision-exp (3); ручка POST /api/models/catalog (bearer) {provider: routeId подключения} -> {provider, models} (allowlist: deepseek + 11 presets; custom/unknown -> 400 invalid-provider); в readConnections deepseek connection models = (await reader) ?? fallback; preserve choice semantics.
 - [ ] unit tests (мок-модуль reader через inject? структурный: reader вынесен как функция с параметром requireFn — тестируем с фейком): deepseek 3, openai непусто (фейк), unknown->[], ручка 200/400, list deepseek models=3; REAL не трогаем в этом таске
 - [ ] commit feat(models): engine model catalog endpoint
 
 ### Task 3: REAL — models.catalog на живом движке
 **Files:** tests/integration.test.ts (новый it)
-- [ ] boot; 401 без токена на catalog; catalog {provider:"deepseek"} -> 200 и models содержит deepseek-v4-flash/pro/vision-exp; {provider:"openai"} -> 200 models.length>0; {provider:"openai"...} дубли? нет; {provider:"<custom route id>"} -> 400 invalid-provider; models.list: deepseek connection models == 3 с vision-exp. commit test(models): REAL model catalog
+- [ ] boot; 401 без токена на catalog; catalog {provider:"deepseek-official"} -> 200 и models содержит deepseek-v4-flash/pro/vision-exp; {provider:"openai"} -> 200 models.length>0; {provider:"openai"...} дубли? нет; {provider:"<custom route id>"} -> 400 invalid-provider; models.list: deepseek connection models == 3 с vision-exp. commit test(models): REAL model catalog
 
 ### Task 4: SPA — пикер моделей из каталога
 **Files:** packages/frontend/dsh-balbes-admin/src/pages/ModelsPage.tsx (+api client методы models.catalog), tests/ModelsPage.test.tsx, client.test.ts (метод catalogModels(provider))
