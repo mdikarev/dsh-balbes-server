@@ -9,3 +9,6 @@
 
     - id: balbes-models
       name: 'dsh-balbes-models'
+
+    - id: balbes-telegram
+      name: 'dsh-balbes-telegram'

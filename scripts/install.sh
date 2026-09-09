@@ -9,10 +9,11 @@
 # Provisions the environment (Node >= 22 via NodeSource, pnpm, git), installs
 # the global @deepseek-ai/dsh CLI (never patched or edited — dsh is a
 # dependency, not a fork), builds the workspace packages (dsh-balbes-host,
-# dsh-balbes-contracts, dsh-balbes-workspaces, dsh-balbes-models, the admin
-# SPA), syncs profiles/balbes from the repository into $DSH_HOME/profiles,
-# copies the built host and the workspaces and models plugins into the
-# profile, deploys the built admin UI, stores the DeepSeek API key in
+# dsh-balbes-contracts, dsh-balbes-workspaces, dsh-balbes-models,
+# dsh-balbes-telegram, the admin SPA), syncs profiles/balbes from the
+# repository into $DSH_HOME/profiles, copies the built host and the
+# workspaces, models and telegram plugins into the profile, deploys the built
+# admin UI, stores the DeepSeek API key in
 # $DSH_HOME/.credentials.yaml, generates the admin account
 # ($DSH_HOME/admin-auth.json, printed once), writes the dsh-balbes systemd
 # unit (enabled + restarted on every run, so an update takes effect at once),
@@ -435,6 +436,24 @@ copy_models_into_profile() {
     info "Models plugin copied into $dst"
 }
 
+# copy_telegram_into_profile — зеркало copy_models_into_profile: собранный
+# плагин telegram копируется реальным каталогом в node_modules профиля.
+copy_telegram_into_profile() {
+    local profile_dir="$DSH_HOME/profiles/$PROFILE_NAME"
+    local src="$REPO_DIR/packages/plugins/dsh-balbes-telegram"
+    local dst="$profile_dir/node_modules/dsh-balbes-telegram"
+    if [[ ! -d "$src/lib" ]]; then
+        die "telegram plugin not built at $src/lib — build step failed"
+    fi
+    mkdir -p "$profile_dir/node_modules"
+    rm -rf "$dst"
+    cp -R "$src" "$dst"
+    rm -f "$dst/tsconfig.json" "$dst/tsconfig.build.json"
+    rm -rf "$dst/tests" "$dst/src" "$dst/lib/types"
+    chmod -R u+rwX,go-w "$dst"
+    info "Telegram plugin copied into $dst"
+}
+
 # deploy_ui — собрать dist SPA в $DSH_HOME/balbes/ui (без старых файлов).
 deploy_ui() {
     local src="$REPO_DIR/packages/frontend/dsh-balbes-admin/dist"
@@ -602,6 +621,7 @@ main() {
     copy_host_into_profile
     copy_workspaces_into_profile
     copy_models_into_profile
+    copy_telegram_into_profile
     deploy_ui
     configure_api_key
     verify_composition
