@@ -12,8 +12,8 @@
 - Покрывает: HTTP-контракты `/api/*` (method/path/auth/request/response/
   errors/notes) — сейчас `health`, `auth.login`, `auth.me`, `prompt`,
   `workspaces.list`, `workspaces.create`, `workspaces.delete`,
-  `workspaces.tree`, `workspaces.events`, `models.list`, `models.save`,
-  `models.delete`, `models.default`.
+  `workspaces.tree`, `workspaces.events`, `models.list`, `models.catalog`,
+  `models.save`, `models.delete`, `models.default`.
 - Вне scope: статика SPA (не API), внутренние сервисные интерфейсы Cordis,
   потоковая доставка ответов модели в чат (по-прежнему вне scope; новые
   каналы появятся здесь же по мере реализации).
@@ -139,8 +139,9 @@
 - errors: 401
 - notes: отдаёт состояние движка: роуты провайдеров (settings-секция
   `llm-pi-ai`); встроенный `deepseek-official` в списке всегда, его модели —
-  закреплённый официальный список каталога dsh 0.1.2-rc.1
-  (`deepseek-v4-flash`, `deepseek-v4-pro`), ре-синк при обновлении движка.
+  из рантайм-каталога движка dsh (`deepseek-v4-flash`, `deepseek-v4-pro`,
+  `deepseek-v4-flash-vision-exp`); pinned-список DeepSeek — только fallback
+  при недоступности рантайм-каталога, синхронизируется по движку.
   Пресеты (`kind: "preset"`) — подключения по каталоговым провайдерам
   движка dsh (pi-ai catalog): у `kind: "preset"` элемент несёт
   `providerId` (равен `routeId`) — каталоговый id провайдера (напр.
@@ -148,10 +149,31 @@
   `mistral`, `xai`, `together`, `cerebras`, `fireworks`,
   `opencode`); официальные URL/протокол движок берёт из каталога —
   в route config `baseURL`/`api` не пишутся; `baseURL` в ответе есть
-  только при override «свой URL»; модели — введённые владельцем (≥ 1).
-  `hasKey` — признак наличия ключа: значение секрета не возвращается
+  только при override «свой URL»; модели пресета — выбранные владельцем из
+  каталога провайдера (≥ 1; models.catalog — источник выбора, ручной ввод —
+  fallback); «Свой URL» (custom) каталога не имеет — модели вводятся
+  вручную. `hasKey` — признак наличия ключа: значение секрета не возвращается
   никогда; `isDefault` — derived (на этом подключении стоит дефолтная
   модель).
+
+### models.catalog — каталог моделей провайдера
+- method: POST
+- path: /api/models/catalog
+- auth: bearer
+- request: `{provider: string}` (`provider` — каталоговый провайдер:
+  `deepseek-official` или id пресета из каталога движка)
+- response: `{provider: string, models: [{id: string, name?: string}]}`
+- errors: 400 `invalid-provider` (провайдер вне каталога движка: не
+  `deepseek-official` и не один из 11 пресетов, в т.ч. custom), 401
+- notes: список моделей провайдера — из рантайм-каталога движка dsh (pi-ai
+  builtin + каталог dsh-llm-deepseek); модели в проекте не хардкодятся.
+  DeepSeek официальный — 3 модели каталога движка (`deepseek-v4-flash`,
+  `deepseek-v4-pro`, `deepseek-v4-flash-vision-exp`); пресеты (11
+  каталоговых провайдеров) — модели их builtin-каталога в движке. Ручка —
+  источник для выбора моделей при подключении/правке провайдера в UI
+  (ADMIN_UI.md); выбранные модели подключения (chosen) остаются источником
+  для дефолтной модели и карточек (models.list). «Свой URL» (custom)
+  каталога не имеет — модели вводятся вручную при save.
 
 ### models.save — создать/обновить подключение провайдера
 - method: POST
@@ -169,9 +191,10 @@
   дубль → 409 `route-exists`). С явным `routeId` — upsert: существующий
   роут обновляется, отсутствующий создаётся. Правка, убирающая модель,
   на которой стоит дефолт, → 409 `default-in-use`: владелец сначала меняет
-  дефолтную модель. Для deepseek сохраняется только ключ (baseURL/модели
-  фиксированы закреплённым официальным списком каталога dsh 0.1.2-rc.1,
-  ре-синк при обновлении движка). Валидация: baseURL — валидный http(s)-URL;
+  дефолтную модель. Для deepseek сохраняется только ключ (URL фиксирован;
+  модели — из рантайм-каталога движка dsh: `deepseek-v4-flash`,
+  `deepseek-v4-pro`, `deepseek-v4-flash-vision-exp`; pinned-список —
+  только fallback при недоступности каталога, синхронизируется по движку). Валидация: baseURL — валидный http(s)-URL;
   модели custom — ≥ 1 id без пробелов/запятых. `key` передан — пишет ref
   в `$DSH_HOME/.credentials.yaml`; `key: null` у custom — сбрасывает (unset).
   Секрет не логируется и в ответ не возвращается никогда.
@@ -183,7 +206,8 @@
   Создаётся официальный роут: `routeId` == каталоговый id, официальные
   URL/протокол движок подставляет из каталога (в route config не пишем
   `baseURL`/`api`), опциональный `baseURL` — override «свой URL»; ключ —
-  apiKeyEnv-реф (как у custom), модели вводит владелец (≥ 1). Официальный
+  apiKeyEnv-реф (как у custom), модели — выбранные владельцем из каталога
+  провайдера (≥ 1; ручной ввод — fallback). Официальный
   роут на каталоговый id может быть только один: повторное официальное
   подключение к тому же провайдеру делается через «Свой URL»
   (`kind: "custom"`).
