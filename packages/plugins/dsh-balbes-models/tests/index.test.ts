@@ -3,13 +3,27 @@ import { apply, name, inject } from "../src/index.js";
 
 interface Seat { path: string; auth: string; handler(req: unknown, res: unknown, body: unknown): Promise<void> | void; }
 
+/** Deep merge matching the engine's mergeLayers: objects merge recursively,
+ *  arrays/scalars replace, and keys already present are NEVER removed. */
+function mergeDeep(base: unknown, patch: unknown): unknown {
+  if (Array.isArray(base) || Array.isArray(patch)) return patch;
+  if (typeof base === "object" && base !== null && typeof patch === "object" && patch !== null) {
+    const out: Record<string, unknown> = { ...(base as Record<string, unknown>) };
+    for (const [key, value] of Object.entries(patch as Record<string, unknown>)) {
+      out[key] = mergeDeep(out[key], value);
+    }
+    return out;
+  }
+  return patch;
+}
+
 class FakeSettings {
   sections: Record<string, unknown> = {};
   get(ns: string): unknown { return this.sections[ns]; }
+  // Mirrors the engine: settings.update is a NON-DELETING deep merge, so dropping
+  // a stored key (e.g. a removed baseURL override) requires a settings.replace.
   async update(ns: string, patch: object): Promise<void> {
-    const cur = (this.sections[ns] ?? {}) as { providers?: Record<string, unknown> };
-    const p = patch as { providers?: Record<string, unknown> };
-    this.sections[ns] = { ...cur, providers: { ...(cur.providers ?? {}), ...(p.providers ?? {}) } };
+    this.sections[ns] = mergeDeep(this.sections[ns] ?? {}, patch) as Record<string, unknown>;
   }
   async replace(ns: string, section: object): Promise<void> { this.sections[ns] = section; }
 }
@@ -248,5 +262,43 @@ describe("balbes-models plugin", () => {
     expect(oc).toMatchObject({ routeId: "opencode", kind: "preset", providerId: "opencode", displayName: "OpenCode" });
     expect(oa).toMatchObject({ routeId: "openai", kind: "custom", displayName: "OpenAI Compatible", baseURL: "https://gateway.example/v1" });
     expect(oa).not.toHaveProperty("providerId");
+  });
+
+  it("preset edit without baseURL removes a stored override and replaces the models list", async () => {
+    apply(ctx as never, {});
+    await call("/api/models/save", {
+      kind: "preset", provider: "openai", baseURL: "https://custom.example/v1", key: "sk-o", models: ["gpt-4o-mini", "gpt-4o"]
+    });
+    const edit = await call("/api/models/save", { kind: "preset", provider: "openai", routeId: "openai", models: ["gpt-4o"] });
+    expect(edit.status).toBe(200);
+    const section = settings.get("llm-pi-ai") as { providers: Record<string, any> };
+    const route = section.providers["openai"] as Record<string, unknown>;
+    expect(route).not.toHaveProperty("baseURL");
+    expect(route).toMatchObject({ displayName: "OpenAI", apiKeyEnv: "BALBES_OPENAI_API_KEY", models: [{ id: "gpt-4o" }] });
+    expect(route).not.toHaveProperty("api");
+    const listed = await call("/api/models/list", {});
+    const conn = (listed.json as { connections: Array<Record<string, unknown>> }).connections.find((c) => c.routeId === "openai");
+    expect(conn?.baseURL).toBeUndefined();
+    expect((conn as { models: string[] }).models).toEqual(["gpt-4o"]);
+    expect(credentials.refs.get("BALBES_OPENAI_API_KEY")).toBe("sk-o");
+  });
+
+  it("custom edit without baseURL removes a stored override and replaces the models list", async () => {
+    apply(ctx as never, {});
+    await call("/api/models/save", {
+      kind: "custom", displayName: "My Gateway", baseURL: "https://x.example/v1", key: "k", models: ["m-1", "m-2"]
+    });
+    const edit = await call("/api/models/save", {
+      kind: "custom", routeId: "my-gateway", displayName: "My Gateway", key: "k2", models: ["m-2"]
+    });
+    expect(edit.status).toBe(200);
+    const section = settings.get("llm-pi-ai") as { providers: Record<string, any> };
+    const route = section.providers["my-gateway"] as Record<string, unknown>;
+    expect(route).not.toHaveProperty("baseURL");
+    expect(route).toMatchObject({ displayName: "My Gateway", api: "openai-completions", apiKeyEnv: "BALBES_MY_GATEWAY_API_KEY", models: [{ id: "m-2" }] });
+    const listed = await call("/api/models/list", {});
+    const conn = (listed.json as { connections: Array<Record<string, unknown>> }).connections.find((c) => c.routeId === "my-gateway");
+    expect(conn?.baseURL).toBeUndefined();
+    expect((conn as { models: string[] }).models).toEqual(["m-2"]);
   });
 });

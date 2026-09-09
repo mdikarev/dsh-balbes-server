@@ -53,6 +53,15 @@ function routeProviders(settings: SettingsLike): Record<string, unknown> {
   const section = settings.get(LLM_PI_AI_NS) as { providers?: Record<string, unknown> } | undefined;
   return section?.providers ?? {};
 }
+/** settings.update is a NON-DELETING deep merge (dsh mergeLayers never removes
+ *  keys), so a route save must fully replace the stored route entry — dropping
+ *  a removed baseURL override and replacing the models list. Write the whole
+ *  llm-pi-ai section via settings.replace like the delete handler does. */
+async function writeRouteConfig(settings: SettingsLike, route: string, routeConfig: Record<string, unknown>): Promise<void> {
+  const section = settings.get(LLM_PI_AI_NS) as Record<string, unknown> | undefined;
+  const providers = { ...((section?.providers ?? {}) as Record<string, unknown>) };
+  await settings.replace(LLM_PI_AI_NS, { ...(section ?? {}), providers: { ...providers, [route]: routeConfig } });
+}
 function modelIdsOf(entry: unknown): string[] {
   const models = (entry as { models?: Array<{ id?: string }> })?.models;
   if (!Array.isArray(models)) return [];
@@ -151,7 +160,7 @@ export function apply(ctx: { get(key: string): unknown; logger: { warn(m: string
           models: payload.models.map((id) => ({ id }))
         };
         if (payload.baseURL !== undefined) routeConfig.baseURL = payload.baseURL;
-        await settings.update(LLM_PI_AI_NS, { providers: { [route]: routeConfig } });
+        await writeRouteConfig(settings, route, routeConfig);
         if (payload.key === null) await credentials.unset(apiKeyEnv);
         else if (typeof payload.key === "string" && payload.key !== "") await credentials.set(apiKeyEnv, payload.key);
         const connection = (await readConnections(credentials, settings, defaultModel)).find((c) => c.routeId === route);
@@ -181,7 +190,7 @@ export function apply(ctx: { get(key: string): unknown; logger: { warn(m: string
         models: payload.models.map((id) => ({ id }))
       };
       if (payload.baseURL !== undefined) routeConfig.baseURL = payload.baseURL;
-      await settings.update(LLM_PI_AI_NS, { providers: { [route]: routeConfig } });
+      await writeRouteConfig(settings, route, routeConfig);
       if (payload.key === null) await credentials.unset(apiKeyEnv);
       else if (typeof payload.key === "string" && payload.key !== "") await credentials.set(apiKeyEnv, payload.key);
       const connection = (await readConnections(credentials, settings, defaultModel)).find((c) => c.routeId === route);

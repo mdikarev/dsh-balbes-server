@@ -367,6 +367,46 @@ describe.skipIf(!realEnabled)("REAL composition (models API)", () => {
       expect(unknown.status, JSON.stringify(unknown.json)).toBe(400);
       expect((unknown.json as { error: { code: string } }).error.code).toBe("invalid-provider");
 
+      // baseURL override (custom URL): edit-save WITH a custom URL stores it and
+      // the list exposes it on the preset connection
+      const withBase = await postJson(`${base}/api/models/save`, {
+        kind: "preset", provider: "openai", routeId: "openai", baseURL: "https://custom-openai.example/v1", models: ["gpt-4o-mini", "gpt-4o"]
+      }, token);
+      expect(withBase.status, JSON.stringify(withBase.json)).toBe(200);
+      const yamlWithBase = await readIfPresent(join(home, "settings.yaml"));
+      const openaiWithBase = yamlBlockForKey(yamlWithBase, "openai");
+      expect(openaiWithBase).toContain("baseURL: https://custom-openai.example/v1");
+      expect(openaiWithBase).toContain("gpt-4o");
+      const listedWithBase = (await postJson(`${base}/api/models/list`, {}, token)).json as ModelsListBody;
+      expect(listedWithBase.connections.find((c) => c.routeId === "openai")?.baseURL).toBe("https://custom-openai.example/v1");
+      expect(listedWithBase.connections.find((c) => c.routeId === "openai")?.models).toEqual(["gpt-4o-mini", "gpt-4o"]);
+
+      // edit-save WITHOUT baseURL (and a shorter models list): settings.replace
+      // must drop the stored override and the removed model — a non-deleting
+      // settings.update would silently keep both
+      const overrideRemoved = await postJson(`${base}/api/models/save`, {
+        kind: "preset", provider: "openai", routeId: "openai", models: ["gpt-4o-mini"]
+      }, token);
+      expect(overrideRemoved.status, JSON.stringify(overrideRemoved.json)).toBe(200);
+      const yamlAfterEdit = await readIfPresent(join(home, "settings.yaml"));
+      const openaiAfterEdit = yamlBlockForKey(yamlAfterEdit, "openai");
+      expect(openaiAfterEdit).not.toBe("");
+      // the engine serializes llm-pi-ai as a flow-style mapping, so the model
+      // list appears inline: models: [ { id: gpt-4o-mini } ]
+      expect(openaiAfterEdit).toContain("apiKeyEnv: BALBES_OPENAI_API_KEY");
+      expect(openaiAfterEdit).toContain("models: [ { id: gpt-4o-mini } ]");
+      expect(openaiAfterEdit).not.toContain("baseURL:");
+      expect(openaiAfterEdit).not.toContain("custom-openai.example");
+      // the removed gpt-4o entry (and the dropped override) must not linger
+      expect(openaiAfterEdit).not.toContain("gpt-4o }");
+      expect(openaiAfterEdit).not.toContain("gpt-4o,");
+      const listedAfterEdit = (await postJson(`${base}/api/models/list`, {}, token)).json as ModelsListBody;
+      const connAfterEdit = listedAfterEdit.connections.find((c) => c.routeId === "openai");
+      expect(connAfterEdit?.baseURL).toBeUndefined();
+      expect(connAfterEdit?.models).toEqual(["gpt-4o-mini"]);
+      // an absent key on the edits leaves the stored credential untouched
+      expect(connAfterEdit?.hasKey).toBe(true);
+
       // delete removes the openai route from settings.yaml and its key ref
       const deleted = await postJson(`${base}/api/models/delete`, { routeId: "openai" }, token);
       expect(deleted.status, JSON.stringify(deleted.json)).toBe(200);
