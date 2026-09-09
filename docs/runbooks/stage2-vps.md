@@ -271,6 +271,7 @@ curl -sS -X POST http://127.0.0.1:8080/api/models/list \
 #             "default":{"provider":"deepseek-official","model":"deepseek-v4-flash"}}
 ```
 
+```bash
 # models.catalog (JWT из входа; каталог движка по провайдеру)
 curl -sS -X POST http://127.0.0.1:8080/api/models/catalog \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
@@ -281,6 +282,7 @@ curl -sS -X POST http://127.0.0.1:8080/api/models/catalog \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"provider":"openai"}'
 # ожидается: непустой список models
+```
 
 Дерево и события (в сводку установщика не входят — их полный smoke — в
 REAL-тесте `dsh-balbes-workspaces`). Создайте проект `alpha` и проверьте
