@@ -21,7 +21,9 @@ import type {
   ModelsDeleteRequest,
   ModelsDeleteResponse,
   ModelsDefaultRequest,
-  ModelsDefaultResponse
+  ModelsDefaultResponse,
+  ModelsCatalogRequest,
+  ModelsCatalogResponse
 } from "dsh-balbes-contracts";
 import { createSseParser } from "./sse";
 
@@ -59,6 +61,8 @@ export interface AdminApi {
   saveModel(req: ModelsSaveRequest): Promise<ModelsSaveResponse>;
   deleteModel(routeId: string): Promise<ModelsDeleteResponse>;
   setDefaultModel(provider: string, model: string): Promise<ModelsDefaultResponse>;
+  /** Engine model catalog for a provider (deepseek route id or preset id). */
+  catalogModels(provider: string): Promise<ModelsCatalogResponse>;
   subscribeWorkspaceEvents(cb: (e: WorkspaceEvent) => void): () => void;
   onUnauthorized(cb: () => void): void;
 }
@@ -161,6 +165,8 @@ export function createApiClient(): AdminApi {
     saveModel: (req) => guard(request<ModelsSaveResponse>("/api/models/save", req satisfies ModelsSaveRequest)),
     deleteModel: (routeId) => guard(request<ModelsDeleteResponse>("/api/models/delete", { routeId } satisfies ModelsDeleteRequest)),
     setDefaultModel: (provider, model) => guard(request<ModelsDefaultResponse>("/api/models/default", { provider, model } satisfies ModelsDefaultRequest)),
+    catalogModels: (provider) =>
+      guard(request<ModelsCatalogResponse>("/api/models/catalog", { provider } satisfies ModelsCatalogRequest)),
     subscribeWorkspaceEvents: (cb) => {
       eventListeners.add(cb);
       openEventStream();

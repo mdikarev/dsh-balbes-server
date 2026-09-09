@@ -200,6 +200,21 @@ describe("api client", () => {
     expect(init.method).toBe("POST");
   });
 
+  it("catalogModels POSTs {provider} to /api/models/catalog with auth", async () => {
+    localStorage.setItem("balbes.authToken", "tok-1");
+    const body = { provider: "openai", models: [{ id: "gpt-4o-mini", name: "GPT-4o mini" }, { id: "gpt-4o" }] };
+    const fetchMock = mockFetchOnce(200, body);
+    vi.stubGlobal("fetch", fetchMock);
+    const api = createApiClient();
+    const res = await api.catalogModels("openai");
+    expect(res.models[0]?.id).toBe("gpt-4o-mini");
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/models/catalog");
+    expect(init.method).toBe("POST");
+    expect(init.headers).toMatchObject({ authorization: "Bearer tok-1" });
+    expect(JSON.parse(String(init.body))).toEqual({ provider: "openai" });
+  });
+
   it("saveModel/deleteModel/setDefaultModel post the right bodies", async () => {
     localStorage.setItem("balbes.authToken", "tok-1");
     const seen: Array<{ path: string; body: unknown }> = [];

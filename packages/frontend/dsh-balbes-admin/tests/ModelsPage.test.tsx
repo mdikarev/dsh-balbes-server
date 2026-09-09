@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor, cleanup, within } from "@testing-li
 import ModelsPage from "../src/pages/ModelsPage";
 import { ApiError, type AdminApi } from "../src/api/client";
 import { MODEL_PROVIDER_PRESETS } from "dsh-balbes-contracts";
-import type { ModelConnection, ModelsListResponse, ModelsSaveRequest } from "dsh-balbes-contracts";
+import type { ModelConnection, ModelsListResponse, ModelsSaveRequest, ModelOption, ModelsCatalogResponse } from "dsh-balbes-contracts";
 
 const DEEPSEEK: ModelConnection = {
   routeId: "deepseek-official",
@@ -134,6 +134,13 @@ function makeApi(
     return { default: { provider, model } };
   });
 
+  // By default the engine catalog is empty (manual fallback keeps v1/v2 preset
+  // flows intact); picker tests override it with a per-provider option list.
+  const catalogModels = vi.fn(async (provider: string): Promise<ModelsCatalogResponse> => ({
+    provider,
+    models: []
+  }));
+
   return {
     health: vi.fn(),
     login: vi.fn(),
@@ -149,6 +156,7 @@ function makeApi(
     saveModel,
     deleteModel,
     setDefaultModel,
+    catalogModels,
     ...overrides
   } as AdminApi;
 }
@@ -566,3 +574,148 @@ describe("ModelsPage provider presets", () => {
     expect(vi.mocked(api.saveModel)).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("ModelsPage catalog model picker", () => {
+  const OPTIONS: ModelOption[] = [
+    { id: "gpt-4o-mini", name: "GPT-4o mini" },
+    { id: "gpt-4o", name: "GPT-4o" },
+    { id: "o1-preview", name: "o1 preview" }
+  ];
+
+  /** An api whose catalogModels serves a fixed option list for every provider. */
+  function catalogApi(models: ModelOption[], seed: ModelConnection[] = []): AdminApi {
+    return makeApi(
+      {
+        catalogModels: vi.fn(async (provider: string): Promise<ModelsCatalogResponse> => ({
+          provider,
+          models
+        }))
+      },
+      seed
+    );
+  }
+
+  it("choosing a preset loads the catalog and swaps the manual input for a picker with options", async () => {
+    const api = catalogApi(OPTIONS);
+    render(<ModelsPage api={api} />);
+    fireEvent.click(await screen.findByTestId("models-add"));
+    fireEvent.change(screen.getByTestId("model-provider-select"), { target: { value: "openai" } });
+
+    expect(await screen.findByTestId("model-option:gpt-4o-mini")).toBeTruthy();
+    expect(vi.mocked(api.catalogModels)).toHaveBeenCalledWith("openai");
+    expect(screen.getByTestId("model-catalog-filter")).toBeTruthy();
+    // the picker replaces the manual chip input while a catalog is available
+    expect(screen.queryByTestId("model-models-input")).toBeNull();
+    // option rows expose the id and the engine-provided name
+    expect(screen.getByTestId("model-option:gpt-4o-mini").textContent).toContain("GPT-4o mini");
+  });
+
+  it("the picker filter narrows options by a case-insensitive query on id and name", async () => {
+    const api = catalogApi(OPTIONS);
+    render(<ModelsPage api={api} />);
+    fireEvent.click(await screen.findByTestId("models-add"));
+    fireEvent.change(screen.getByTestId("model-provider-select"), { target: { value: "openai" } });
+    await screen.findByTestId("model-option:o1-preview");
+
+    fireEvent.change(screen.getByTestId("model-catalog-filter"), { target: { value: "gpt-4o" } });
+    expect(screen.getByTestId("model-option:gpt-4o-mini")).toBeTruthy();
+    expect(screen.getByTestId("model-option:gpt-4o")).toBeTruthy();
+    expect(screen.queryByTestId("model-option:o1-preview")).toBeNull();
+
+    // a mixed-case query against the display name also matches
+    fireEvent.change(screen.getByTestId("model-catalog-filter"), { target: { value: "PREVIEW" } });
+    expect(screen.getByTestId("model-option:o1-preview")).toBeTruthy();
+    expect(screen.queryByTestId("model-option:gpt-4o")).toBeNull();
+  });
+
+  it("clicking an option adds a chip (no duplicates); chips stay removable; submit sends the model ids", async () => {
+    const api = catalogApi(OPTIONS);
+    render(<ModelsPage api={api} />);
+    fireEvent.click(await screen.findByTestId("models-add"));
+    fireEvent.change(screen.getByTestId("model-provider-select"), { target: { value: "openai" } });
+    await screen.findByTestId("model-option:gpt-4o-mini");
+
+    fireEvent.click(screen.getByTestId("model-option:gpt-4o-mini"));
+    fireEvent.click(screen.getByTestId("model-option:gpt-4o-mini")); // a repeated click must not duplicate
+    fireEvent.click(screen.getByTestId("model-option:gpt-4o"));
+    expect(screen.getByTestId("model-chip-remove-gpt-4o-mini")).toBeTruthy();
+    expect(screen.getByTestId("model-chip-remove-gpt-4o")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("model-chip-remove-gpt-4o"));
+    expect(screen.queryByTestId("model-chip-remove-gpt-4o")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("model-form-submit"));
+    await waitFor(() =>
+      expect(vi.mocked(api.saveModel)).toHaveBeenCalledWith({
+        kind: "preset",
+        provider: "openai",
+        models: ["gpt-4o-mini"]
+      })
+    );
+  });
+
+  it("an empty catalog falls back to the manual input with the hint", async () => {
+    const api = catalogApi([]);
+    render(<ModelsPage api={api} />);
+    fireEvent.click(await screen.findByTestId("models-add"));
+    fireEvent.change(screen.getByTestId("model-provider-select"), { target: { value: "openai" } });
+
+    const hint = await screen.findByText(/каталог недоступен/);
+    expect(hint.textContent).toContain("введите id вручную");
+    expect(screen.getByTestId("model-models-input")).toBeTruthy();
+    expect(screen.queryByTestId("model-option:gpt-4o-mini")).toBeNull();
+  });
+
+  it("a catalog failure falls back to the manual input and it stays usable", async () => {
+    const api = makeApi({
+      catalogModels: vi.fn(async (_provider: string): Promise<ModelsCatalogResponse> => {
+        throw new Error("catalog down");
+      })
+    });
+    render(<ModelsPage api={api} />);
+    fireEvent.click(await screen.findByTestId("models-add"));
+    fireEvent.change(screen.getByTestId("model-provider-select"), { target: { value: "openai" } });
+
+    expect(await screen.findByText(/каталог недоступен/)).toBeTruthy();
+    expect(screen.getByTestId("model-models-input")).toBeTruthy();
+    expect(screen.queryByTestId("model-catalog-filter")).toBeNull();
+
+    fireEvent.change(screen.getByTestId("model-models-input"), { target: { value: "gpt-4o-custom" } });
+    fireEvent.click(screen.getByTestId("model-models-add"));
+    expect(screen.getByTestId("model-chip-remove-gpt-4o-custom")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("model-form-submit"));
+    await waitFor(() =>
+      expect(vi.mocked(api.saveModel)).toHaveBeenCalledWith({
+        kind: "preset",
+        provider: "openai",
+        models: ["gpt-4o-custom"]
+      })
+    );
+  });
+
+  it("editing a preset preloads its catalog and keeps the stored chips next to the picker", async () => {
+    const api = catalogApi(OPTIONS, [OPENAI_PRESET]);
+    render(<ModelsPage api={api} />);
+    await screen.findByTestId("model-connection:openai");
+    fireEvent.click(screen.getByTestId("model-menu-openai"));
+    fireEvent.click(screen.getByTestId("model-menu-edit-openai"));
+
+    expect(await screen.findByTestId("model-option:gpt-4o-mini")).toBeTruthy();
+    expect(vi.mocked(api.catalogModels)).toHaveBeenCalledWith("openai");
+    expect(screen.queryByTestId("model-models-input")).toBeNull();
+    // stored connection models stay visible as removable chips
+    expect(screen.getByTestId("model-chip-remove-gpt-4o-mini")).toBeTruthy();
+    expect(screen.getByTestId("model-chip-remove-gpt-4o")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("model-form-submit"));
+    await waitFor(() =>
+      expect(vi.mocked(api.saveModel)).toHaveBeenCalledWith({
+        routeId: "openai",
+        kind: "preset",
+        provider: "openai",
+        models: ["gpt-4o-mini", "gpt-4o"]
+      })
+    );
+  });
+});
+

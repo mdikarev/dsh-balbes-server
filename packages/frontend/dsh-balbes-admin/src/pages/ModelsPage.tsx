@@ -3,6 +3,7 @@ import type { AdminApi } from "../api/client";
 import {
   MODEL_PROVIDER_PRESETS,
   type ModelConnection,
+  type ModelOption,
   type ModelsListResponse,
   type ModelsSaveRequest
 } from "dsh-balbes-contracts";
@@ -33,6 +34,13 @@ type Editor =
   | { mode: "edit"; connection: ModelConnection } // existing connection being edited
   | { mode: "key"; connection: ModelConnection }; // pinned deepseek key change
 
+/** Engine model-catalog fetch state for the preset branch of the editor form. */
+type CatalogState =
+  | { status: "none" } // not applicable (custom form, key editor, no editor)
+  | { status: "loading" } // catalog request in flight
+  | { status: "ready"; options: ModelOption[] } // catalog fetched: models picker
+  | { status: "unavailable" }; // error or empty catalog: manual id input fallback
+
 interface ModelsPageProps {
   api: AdminApi;
 }
@@ -61,6 +69,9 @@ export default function ModelsPage({ api }: ModelsPageProps) {
   const [clearKey, setClearKey] = useState(false);
   const [models, setModels] = useState<string[]>([]);
   const [modelDraft, setModelDraft] = useState("");
+  // engine model catalog (models picker) + its text filter, for the preset form
+  const [catalog, setCatalog] = useState<CatalogState>({ status: "none" });
+  const [catalogFilter, setCatalogFilter] = useState("");
 
   // delete confirmation
   const [confirming, setConfirming] = useState<ModelConnection | null>(null);
@@ -98,6 +109,48 @@ export default function ModelsPage({ api }: ModelsPageProps) {
     document.addEventListener("pointerdown", close);
     return () => document.removeEventListener("pointerdown", close);
   }, [menuFor]);
+
+  // Fetch the engine model catalog whenever the preset branch of the editor is
+  // shown with a concrete provider (add: chosen in the select; edit: prefill).
+  // On success the picker replaces the manual id input; on error or an empty
+  // catalog the manual input stays with an explanatory hint.
+  useEffect(() => {
+    if (editor === null || editor.mode === "key") {
+      setCatalog({ status: "none" });
+      setCatalogFilter("");
+      return;
+    }
+    const target =
+      editor.mode === "edit"
+        ? editor.connection.kind === "preset"
+          ? (editor.connection.providerId ?? editor.connection.routeId)
+          : null
+        : provider !== CUSTOM_PROVIDER
+          ? provider
+          : null;
+    if (target === null) {
+      setCatalog({ status: "none" });
+      setCatalogFilter("");
+      return;
+    }
+    let cancelled = false;
+    setCatalog({ status: "loading" });
+    setCatalogFilter("");
+    void api
+      .catalogModels(target)
+      .then((res) => {
+        if (cancelled) return;
+        setCatalog(
+          res.models.length > 0 ? { status: "ready", options: res.models } : { status: "unavailable" }
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setCatalog({ status: "unavailable" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, editor, provider]);
 
   function openAddEditor(): void {
     setMenuFor(null);
@@ -269,6 +322,20 @@ export default function ModelsPage({ api }: ModelsPageProps) {
   const editable = data?.connections.filter((c) => c.kind !== "deepseek") ?? [];
   const currentDefault = data === null ? "" : data.default.provider + DEFAULT_SEP + data.default.model;
   const presetForm = editorIsPreset();
+
+  // options shown by the models picker: catalog rows filtered by the query,
+  // case-insensitive over the model id and its display name
+  const catalogQuery = catalogFilter.trim().toLowerCase();
+  const filteredCatalogOptions =
+    catalog.status !== "ready"
+      ? []
+      : catalogQuery === ""
+        ? catalog.options
+        : catalog.options.filter(
+            (option) =>
+              option.id.toLowerCase().includes(catalogQuery) ||
+              (option.name ?? "").toLowerCase().includes(catalogQuery)
+          );
 
   const providerOptionItems = (
     <>
@@ -566,43 +633,117 @@ export default function ModelsPage({ api }: ModelsPageProps) {
                 )}
                 <div className="form-field">
                   <span>Модели (минимум одна)</span>
-                  <div className="mc-model-add">
-                    <input
-                      type="text"
-                      className="form-input"
-                      data-testid="model-models-input"
-                      value={modelDraft}
-                      onChange={(e) => setModelDraft(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          addModelDraft();
-                        }
-                      }}
-                      placeholder="id модели, например gpt-4o-mini"
-                      aria-label="Модель (id)"
-                    />
-                    <button type="button" className="btn-ghost" data-testid="model-models-add" onClick={addModelDraft}>
-                      Добавить
-                    </button>
-                  </div>
-                  {models.length > 0 && (
-                    <div className="mc-chips">
-                      {models.map((model) => (
-                        <span className="mc-chip removable" key={model}>
-                          {model}
-                          <button
-                            type="button"
-                            className="icon-btn mc-chip-remove"
-                            aria-label={"Убрать модель " + model}
-                            data-testid={"model-chip-remove-" + model}
-                            onClick={() => setModels(models.filter((m) => m !== model))}
-                          >
-                            ×
-                          </button>
-                        </span>
-                      ))}
-                    </div>
+                  {presetForm && catalog.status === "ready" ? (
+                    <>
+                      {models.length > 0 && (
+                        <div className="mc-chips">
+                          {models.map((model) => (
+                            <span className="mc-chip removable" key={model}>
+                              {model}
+                              <button
+                                type="button"
+                                className="icon-btn mc-chip-remove"
+                                aria-label={"Убрать модель " + model}
+                                data-testid={"model-chip-remove-" + model}
+                                onClick={() => setModels(models.filter((m) => m !== model))}
+                              >
+                                ×
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <div className="mc-catalog" data-testid="model-catalog-picker">
+                        <input
+                          type="text"
+                          className="form-input"
+                          data-testid="model-catalog-filter"
+                          value={catalogFilter}
+                          onChange={(e) => setCatalogFilter(e.target.value)}
+                          placeholder="Поиск по id или названию"
+                          aria-label="Поиск моделей в каталоге"
+                        />
+                        {filteredCatalogOptions.length === 0 ? (
+                          <p className="form-hint" data-testid="model-catalog-empty">
+                            Ничего не найдено
+                          </p>
+                        ) : (
+                          <div className="mc-catalog-options">
+                            {filteredCatalogOptions.map((option) => {
+                              const added = models.includes(option.id);
+                              return (
+                                <button
+                                  type="button"
+                                  key={option.id}
+                                  className={"mc-catalog-option" + (added ? " added" : "")}
+                                  data-testid={"model-option:" + option.id}
+                                  disabled={added}
+                                  onClick={() => {
+                                    if (!added) setModels([...models, option.id]);
+                                  }}
+                                >
+                                  <span className="mo-id">{option.id}</span>
+                                  {option.name !== undefined && option.name !== "" && (
+                                    <span className="mo-name">{option.name}</span>
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="mc-model-add">
+                        <input
+                          type="text"
+                          className="form-input"
+                          data-testid="model-models-input"
+                          value={modelDraft}
+                          onChange={(e) => setModelDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              addModelDraft();
+                            }
+                          }}
+                          placeholder="id модели, например gpt-4o-mini"
+                          aria-label="Модель (id)"
+                        />
+                        <button type="button" className="btn-ghost" data-testid="model-models-add" onClick={addModelDraft}>
+                          Добавить
+                        </button>
+                      </div>
+                      {presetForm && catalog.status === "loading" && (
+                        <p className="form-hint" data-testid="model-catalog-loading-hint">
+                          Загрузка каталога моделей…
+                        </p>
+                      )}
+                      {presetForm && catalog.status === "unavailable" && (
+                        <p className="form-hint" data-testid="model-catalog-fallback-hint">
+                          каталог недоступен — введите id вручную
+                        </p>
+                      )}
+                      {models.length > 0 && (
+                        <div className="mc-chips">
+                          {models.map((model) => (
+                            <span className="mc-chip removable" key={model}>
+                              {model}
+                              <button
+                                type="button"
+                                className="icon-btn mc-chip-remove"
+                                aria-label={"Убрать модель " + model}
+                                data-testid={"model-chip-remove-" + model}
+                                onClick={() => setModels(models.filter((m) => m !== model))}
+                              >
+                                ×
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               </>

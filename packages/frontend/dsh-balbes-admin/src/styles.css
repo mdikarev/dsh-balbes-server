@@ -349,6 +349,19 @@ button.ws-tree-row:hover { background: var(--surface); }
 }
 .mc-chip.removable { padding-right: 4px; }
 .mc-chip-remove { font-size: 13px; padding: 0 3px; }
+/* models picker: filter + engine catalog options inside the editor form */
+.mc-catalog { display: flex; flex-direction: column; gap: 8px; }
+.mc-catalog-options { display: flex; flex-wrap: wrap; gap: 6px; max-height: 170px; overflow-y: auto; }
+.mc-catalog-option {
+  display: inline-flex; align-items: baseline; gap: 6px;
+  font-family: var(--mono); font-size: 12px; color: var(--text);
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 3px 8px; cursor: pointer; text-align: left;
+}
+.mc-catalog-option:hover:not(:disabled) { border-color: var(--accent); }
+.mc-catalog-option:disabled { opacity: .55; cursor: default; }
+.mc-catalog-option .mo-name { font-family: system-ui, sans-serif; opacity: .75; }
+.mc-catalog-option .mo-id { font-weight: 600; }
 .mc-menu {
   position: absolute; right: 10px; top: 44px; z-index: 60;
   background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
