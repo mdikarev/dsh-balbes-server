@@ -174,4 +174,79 @@ describe("balbes-models plugin", () => {
     expect(section.providers["my-gateway"]).toMatchObject({ displayName: "My Gateway", baseURL: "https://y", apiKeyEnv: "BALBES_MY_GATEWAY_API_KEY", models: [{ id: "m-1" }, { id: "m-2" }] });
     expect((res.json as { connection: unknown }).connection).toBeDefined();
   });
+
+  it("preset save writes the catalog route without api/baseURL, the ref, and lists it as preset", async () => {
+    apply(ctx as never, {});
+    const saved = await call("/api/models/save", { kind: "preset", provider: "openai", key: "sk-o", models: ["gpt-4o-mini"] });
+    expect(saved.status).toBe(200);
+    const section = settings.get("llm-pi-ai") as { providers: Record<string, any> };
+    const route = section.providers["openai"] as Record<string, unknown>;
+    expect(route).toEqual({ displayName: "OpenAI", apiKeyEnv: "BALBES_OPENAI_API_KEY", models: [{ id: "gpt-4o-mini" }] });
+    expect(route).not.toHaveProperty("api");
+    expect(route).not.toHaveProperty("baseURL");
+    expect(credentials.refs.get("BALBES_OPENAI_API_KEY")).toBe("sk-o");
+    const listed = await call("/api/models/list", {});
+    const conn = (listed.json as { connections: Array<Record<string, unknown>> }).connections.find((c) => c.routeId === "openai");
+    expect(conn).toMatchObject({ routeId: "openai", kind: "preset", providerId: "openai", displayName: "OpenAI", hasKey: true, models: ["gpt-4o-mini"] });
+    expect(conn?.baseURL).toBeUndefined();
+  });
+
+  it("preset save with a baseURL override stores baseURL and still no api field", async () => {
+    apply(ctx as never, {});
+    const saved = await call("/api/models/save", {
+      kind: "preset", provider: "openai", baseURL: "https://custom.example/v1", key: "sk-o", models: ["gpt-4o-mini"]
+    });
+    expect(saved.status).toBe(200);
+    const section = settings.get("llm-pi-ai") as { providers: Record<string, any> };
+    const route = section.providers["openai"] as Record<string, unknown>;
+    expect(route).toMatchObject({ displayName: "OpenAI", baseURL: "https://custom.example/v1", apiKeyEnv: "BALBES_OPENAI_API_KEY", models: [{ id: "gpt-4o-mini" }] });
+    expect(route).not.toHaveProperty("api");
+    const listed = await call("/api/models/list", {});
+    const conn = (listed.json as { connections: Array<Record<string, unknown>> }).connections.find((c) => c.routeId === "openai");
+    expect(conn).toMatchObject({ kind: "preset", providerId: "openai", baseURL: "https://custom.example/v1" });
+  });
+
+  it("preset save with an unknown provider -> 400 invalid-provider before any write", async () => {
+    apply(ctx as never, {});
+    const res = await call("/api/models/save", { kind: "preset", provider: "nope", key: "sk", models: ["m"] });
+    expect(res.status).toBe(400);
+    expect((res.json as { error: { code: string } }).error.code).toBe("invalid-provider");
+    expect(settings.get("llm-pi-ai")).toBeUndefined();
+    expect(credentials.refs.size).toBe(0);
+  });
+
+  it("re-saving the same preset route without routeId -> 409 route-exists; explicit routeId == provider edits", async () => {
+    apply(ctx as never, {});
+    await call("/api/models/save", { kind: "preset", provider: "openai", key: "sk-o", models: ["gpt-4o-mini"] });
+    const dup = await call("/api/models/save", { kind: "preset", provider: "openai", key: "sk-2", models: ["gpt-4o-mini", "gpt-4o"] });
+    expect(dup.status).toBe(409);
+    expect((dup.json as { error: { code: string } }).error.code).toBe("route-exists");
+    const edit = await call("/api/models/save", { kind: "preset", provider: "openai", routeId: "openai", models: ["gpt-4o"] });
+    expect(edit.status).toBe(200);
+    const section = settings.get("llm-pi-ai") as { providers: Record<string, any> };
+    expect(section.providers["openai"]).toMatchObject({ displayName: "OpenAI", apiKeyEnv: "BALBES_OPENAI_API_KEY", models: [{ id: "gpt-4o" }] });
+    expect(section.providers["openai"]).not.toHaveProperty("api");
+    // an absent key on an edit leaves the stored credential untouched
+    expect(credentials.refs.get("BALBES_OPENAI_API_KEY")).toBe("sk-o");
+  });
+
+  it("list classifies seeded settings routes: api field -> custom, allowlisted id without api -> preset", async () => {
+    apply(ctx as never, {});
+    settings.sections["llm-pi-ai"] = {
+      providers: {
+        opencode: { displayName: "OpenCode", apiKeyEnv: "BALBES_OPENCODE_API_KEY", models: [{ id: "opencode-1" }] },
+        openai: {
+          displayName: "OpenAI Compatible", api: "openai-completions", apiKeyEnv: "BALBES_OPENAI_API_KEY",
+          baseURL: "https://gateway.example/v1", models: [{ id: "gpt-4o-mini" }]
+        }
+      }
+    };
+    const { json } = await call("/api/models/list", {});
+    const connections = (json as { connections: Array<Record<string, unknown>> }).connections;
+    const oc = connections.find((c) => c.routeId === "opencode");
+    const oa = connections.find((c) => c.routeId === "openai");
+    expect(oc).toMatchObject({ routeId: "opencode", kind: "preset", providerId: "opencode", displayName: "OpenCode" });
+    expect(oa).toMatchObject({ routeId: "openai", kind: "custom", displayName: "OpenAI Compatible", baseURL: "https://gateway.example/v1" });
+    expect(oa).not.toHaveProperty("providerId");
+  });
 });

@@ -1,4 +1,4 @@
-export type ModelKind = "deepseek" | "custom";
+export type ModelKind = "deepseek" | "preset" | "custom";
 
 export interface ModelOption {
   id: string;
@@ -8,6 +8,8 @@ export interface ModelOption {
 export interface ModelConnection {
   routeId: string;
   kind: ModelKind;
+  /** Present only for kind "preset"; equals the catalog provider id (== routeId). */
+  providerId?: string;
   displayName: string;
   baseURL?: string;
   hasKey: boolean;
@@ -83,5 +85,61 @@ export function validateCustomPayload(p: {
   // An explicit null key is a clear signal (route stays, credential ref removed);
   // preserve it so the save handler can unset instead of skipping.
   if (p.key === null) out.key = null;
+  return out;
+}
+
+/**
+ * Preset provider catalog (id + label). Display/validation copy of
+ * MODEL_PROVIDER_PRESETS in packages/contracts — keep both lists in sync; the
+ * engine pi-ai catalog provider ids (dsh 0.1.2-rc.1) are the ground truth and
+ * route ids of preset connections equal these provider ids.
+ */
+export const PROVIDER_PRESETS: ReadonlyArray<{ providerId: string; label: string }> = [
+  { providerId: "openai", label: "OpenAI" },
+  { providerId: "anthropic", label: "Anthropic (Claude)" },
+  { providerId: "openrouter", label: "OpenRouter" },
+  { providerId: "groq", label: "Groq" },
+  { providerId: "google", label: "Google (Gemini)" },
+  { providerId: "mistral", label: "Mistral" },
+  { providerId: "xai", label: "xAI (Grok)" },
+  { providerId: "together", label: "Together" },
+  { providerId: "cerebras", label: "Cerebras" },
+  { providerId: "fireworks", label: "Fireworks" },
+  { providerId: "opencode", label: "OpenCode" }
+];
+
+/** True when the id is one of the allowlisted catalog preset providers. */
+export function isPresetProviderId(id: string): boolean {
+  return PROVIDER_PRESETS.some((p) => p.providerId === id);
+}
+
+/**
+ * Validates a preset save payload. provider is required and must be allowlisted
+ * (else invalid-provider); displayName is optional and must be a non-empty
+ * string when given (the save handler falls back to the catalog label); baseURL optional
+ * http(s); key follows exactly the custom payload semantics (non-empty string
+ * sets, null clears, absent keeps); models >= 1 via parseModelIds.
+ */
+export function validatePresetPayload(p: {
+  provider?: unknown; displayName?: unknown; baseURL?: unknown; key?: unknown; models?: unknown;
+}): { providerId: string; displayName?: string; baseURL?: string; key?: string | null; models: string[] }
+  | { error: "invalid-provider" | "invalid-display-name" | "invalid-url" | "invalid-key" | "invalid-models" } {
+  if (typeof p.provider !== "string" || !isPresetProviderId(p.provider)) return { error: "invalid-provider" };
+  let displayName: string | undefined;
+  if (p.displayName !== undefined) {
+    if (typeof p.displayName !== "string" || p.displayName.trim() === "") return { error: "invalid-display-name" };
+    displayName = p.displayName.trim();
+  }
+  // baseURL/key/models reuse the custom payload rules wholesale; the placeholder
+  // displayName never triggers invalid-display-name here.
+  const rest = validateCustomPayload({ displayName: "_", baseURL: p.baseURL, key: p.key, models: p.models });
+  if ("error" in rest) return { error: rest.error };
+  const out: { providerId: string; displayName?: string; baseURL?: string; key?: string | null; models: string[] } = {
+    providerId: p.provider,
+    models: rest.models
+  };
+  if (displayName !== undefined) out.displayName = displayName;
+  if (rest.baseURL !== undefined) out.baseURL = rest.baseURL;
+  if (rest.key !== undefined) out.key = rest.key;
   return out;
 }

@@ -1,7 +1,8 @@
 import z from "@deepseek-ai/schemastery";
 import {
   ModelConnection, DEEPSEEK_OFFICIAL_ROUTE, DEEPSEEK_API_KEY_REF,
-  DEEPSEEK_OFFICIAL_MODELS, routeIdFromName, refNameForRoute, validateCustomPayload
+  DEEPSEEK_OFFICIAL_MODELS, routeIdFromName, refNameForRoute, validateCustomPayload,
+  PROVIDER_PRESETS, isPresetProviderId, validatePresetPayload
 } from "./models.js";
 
 export const name = "balbes-models";
@@ -76,11 +77,17 @@ async function readConnections(
   }];
   for (const [route, entry] of Object.entries(providers)) {
     if (route === DEEPSEEK_OFFICIAL_ROUTE) continue;
-    const e = entry as { displayName?: string; baseURL?: string; apiKeyEnv?: string };
+    const e = entry as { displayName?: string; baseURL?: string; apiKeyEnv?: string; api?: unknown };
     const hasKey = typeof e.apiKeyEnv === "string" && (await credentials.describe(e.apiKeyEnv)).configured;
+    // Kind classification: a route whose config carries an api field was written
+    // by the v1 custom writer -> custom. A preset route's config has no api
+    // field; when its id is an allowlisted catalog provider -> preset, otherwise
+    // an api-less unknown route is still shown as a custom connection.
+    const isPreset = e.api === undefined && isPresetProviderId(route);
     const connection: ModelConnection = {
       routeId: route,
-      kind: "custom",
+      kind: isPreset ? "preset" : "custom",
+      ...(isPreset ? { providerId: route } : {}),
       displayName: e.displayName ?? route,
       hasKey,
       models: modelIdsOf(entry),
@@ -112,14 +119,46 @@ export function apply(ctx: { get(key: string): unknown; logger: { warn(m: string
 
   http.post("/api/models/save", "bearer", async (_req, res, body) => {
     try {
-      const b = body as { routeId?: unknown; kind?: unknown; key?: unknown; displayName?: unknown; baseURL?: unknown; models?: unknown };
+      const b = body as { routeId?: unknown; kind?: unknown; provider?: unknown; key?: unknown; displayName?: unknown; baseURL?: unknown; models?: unknown };
       if (b.kind === "deepseek") {
         if (typeof b.key !== "string" || b.key.trim() === "") return fail(res, 400, "invalid-key", "key is required");
         await credentials.set(DEEPSEEK_API_KEY_REF, b.key.trim());
         send(res, 200, { connection: (await readConnections(credentials, settings, defaultModel)).find((c) => c.routeId === DEEPSEEK_OFFICIAL_ROUTE) });
         return;
       }
-      if (b.kind !== "custom") return fail(res, 400, "invalid-route", "kind must be deepseek or custom");
+      if (b.kind === "preset") {
+        const payload = validatePresetPayload({ provider: b.provider, displayName: b.displayName, baseURL: b.baseURL, key: b.key, models: b.models });
+        if ("error" in payload) return fail(res, 400, payload.error, "invalid preset payload");
+        const route = payload.providerId;
+        // A preset's route id IS the catalog provider id; an explicit routeId is
+        // accepted only for editing the same provider (routeId == provider).
+        const rawRouteId = b.routeId;
+        const editing = typeof rawRouteId === "string" && rawRouteId !== "" && rawRouteId !== DEEPSEEK_OFFICIAL_ROUTE;
+        if (editing && rawRouteId !== route) return fail(res, 400, "invalid-route", "routeId must match the preset provider");
+        const providers = routeProviders(settings);
+        if (!editing && providers[route] !== undefined) return fail(res, 409, "route-exists", "route " + route + " already exists");
+        const selection = defaultModel.currentSelection();
+        if (editing && selection.provider === route && !payload.models.includes(selection.model)) {
+          return fail(res, 409, "default-in-use", "the default model " + selection.model + " would no longer be offered by this connection; change the default model first");
+        }
+        const label = PROVIDER_PRESETS.find((p) => p.providerId === route)?.label ?? route;
+        const apiKeyEnv = refNameForRoute(route);
+        // Preset route config: no api field (the engine picks the official wire
+        // protocol for the catalog provider); baseURL only on explicit override.
+        const routeConfig: Record<string, unknown> = {
+          displayName: payload.displayName ?? label,
+          apiKeyEnv,
+          models: payload.models.map((id) => ({ id }))
+        };
+        if (payload.baseURL !== undefined) routeConfig.baseURL = payload.baseURL;
+        await settings.update(LLM_PI_AI_NS, { providers: { [route]: routeConfig } });
+        if (payload.key === null) await credentials.unset(apiKeyEnv);
+        else if (typeof payload.key === "string" && payload.key !== "") await credentials.set(apiKeyEnv, payload.key);
+        const connection = (await readConnections(credentials, settings, defaultModel)).find((c) => c.routeId === route);
+        send(res, 200, { connection });
+        return;
+      }
+      if (b.kind !== "custom") return fail(res, 400, "invalid-route", "kind must be deepseek, preset or custom");
       const payload = validateCustomPayload({ displayName: b.displayName, baseURL: b.baseURL, key: b.key, models: b.models });
       if ("error" in payload) return fail(res, 400, payload.error, "invalid custom connection payload");
       const rawRouteId = b.routeId;
