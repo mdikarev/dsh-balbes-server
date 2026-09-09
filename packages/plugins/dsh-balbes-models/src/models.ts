@@ -60,21 +60,31 @@ function toModelOptions(raw: unknown): ModelOption[] | null {
   return out;
 }
 
-/** Creates an engine catalog reader. The module is required lazily on the
- *  first list() call: through requireFn when given (unit tests), otherwise
- *  through the ambient CommonJS require the dsh loader provides at runtime.
- *  Any load or shape failure, plus an empty engine result, falls back to the
- *  pinned DEEPSEEK_OFFICIAL_MODELS for the "deepseek" key and to [] for any
- *  other key. */
-export function createEngineCatalogReader(requireFn?: (id: string) => unknown): ModelCatalogReader {
-  const load = requireFn ?? ((id: string) => {
-    if (typeof require === "function") return require(id);
-    throw new Error("engine catalog require is unavailable in this module context");
-  });
+/** Loads the engine catalog module (default: a dynamic ESM import). pi-ai
+ *  ships an ESM-only export map — "./providers/*" declares only an "import"
+ *  condition — and plugin modules run as ESM with no ambient require, so a
+ *  CommonJS require (even createRequire(import.meta.url)) throws
+ *  ERR_PACKAGE_PATH_NOT_EXPORTED for this specifier. Only a dynamic import()
+ *  resolves it: at runtime that resolution walks up to the dsh profile mirror
+ *  ($DSH_HOME/profiles/node_modules), where @earendil-works/pi-ai is linked.
+ *  Evidence: live dsh probe — typeof require === "undefined" in plugin scope,
+ *  createRequire load fails ERR_PACKAGE_PATH_NOT_EXPORTED, import() succeeds
+ *  and getBuiltinModels("openai") returns 38 models. */
+export type EngineCatalogLoader = (specifier: string) => unknown | Promise<unknown>;
+
+/** Creates an engine catalog reader. The module is loaded lazily on the
+ *  first list() call: through load when given (unit tests inject fakes),
+ *  otherwise through a dynamic ESM import of the specifier (the ESM-safe path
+ *  that resolves under the dsh loader / profile mirror). Any load or shape
+ *  failure, plus an empty engine result, falls back to the pinned
+ *  DEEPSEEK_OFFICIAL_MODELS for the "deepseek" key and to [] for any other
+ *  key. */
+export function createEngineCatalogReader(load?: EngineCatalogLoader): ModelCatalogReader {
+  const loadModule = load ?? ((specifier: string) => import(specifier));
   return {
-    list(providerKey: string): ModelOption[] {
+    async list(providerKey: string): Promise<ModelOption[]> {
       try {
-        const mod = load(ENGINE_CATALOG_MODULE) as CatalogModuleLike | undefined;
+        const mod = (await loadModule(ENGINE_CATALOG_MODULE)) as CatalogModuleLike | undefined;
         const models = toModelOptions(mod?.getBuiltinModels?.(providerKey));
         if (models !== null && models.length > 0) return models;
       } catch {
