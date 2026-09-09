@@ -245,6 +245,17 @@ curl -sS -X POST http://127.0.0.1:8080/api/models/list \
 #             "default":{"provider":"deepseek-official","model":"deepseek-v4-flash"}}
 ```
 
+# models.catalog (JWT из входа; каталог движка по провайдеру)
+curl -sS -X POST http://127.0.0.1:8080/api/models/catalog \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"provider":"deepseek-official"}'
+# ожидается: models содержит deepseek-v4-flash, deepseek-v4-pro,
+#             deepseek-v4-flash-vision-exp (3)
+curl -sS -X POST http://127.0.0.1:8080/api/models/catalog \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"provider":"openai"}'
+# ожидается: непустой список models
+
 Дерево и события (в сводку установщика не входят — их полный smoke — в
 REAL-тесте `dsh-balbes-workspaces`). Создайте проект `alpha` и проверьте
 чтение каталогов (`/api/workspaces/tree`) и защиту каналов:
