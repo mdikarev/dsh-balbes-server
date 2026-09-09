@@ -418,4 +418,64 @@ describe.skipIf(!realEnabled)("REAL composition (models API)", () => {
       await stopServer();
     }
   }, 240_000);
+
+  it("models.catalog serves the engine runtime catalog: 401 unauthenticated; deepseek-official + openai 200 with models; custom route / unknown provider 400 invalid-provider; models.list deepseek models from the runtime catalog", async () => {
+    if (home === undefined) throw new Error("home not initialized");
+    const base = `http://127.0.0.1:${port}`;
+    try {
+      const token = await bootServer();
+
+      // 401 without a token on the catalog route
+      expect((await postJson(`${base}/api/models/catalog`, { provider: "deepseek-official" })).status).toBe(401);
+      expect((await postJson(`${base}/api/models/catalog`, { provider: "openai" })).status).toBe(401);
+
+      // THE discriminating live-engine check: the runtime require/import of
+      // @earendil-works/pi-ai/providers/all resolves under the dsh loader
+      // (profile mirror) and getBuiltinModels("openai") returns a non-empty
+      // catalog. openai has NO pinned fallback, so [] here would mean the
+      // runtime read failed.
+      const openai = await postJson(`${base}/api/models/catalog`, { provider: "openai" }, token);
+      expect(openai.status, JSON.stringify(openai.json)).toBe(200);
+      const openaiBody = openai.json as { provider: string; models: Array<{ id: string; name?: string }> };
+      expect(openaiBody.provider).toBe("openai");
+      expect(openaiBody.models.length, `openai catalog came back empty — runtime engine catalog read failed: ${JSON.stringify(openai.json)}`).toBeGreaterThan(0);
+
+      // deepseek-official -> the engine deepseek catalog (3 ids incl vision-exp)
+      const ds = await postJson(`${base}/api/models/catalog`, { provider: "deepseek-official" }, token);
+      expect(ds.status, JSON.stringify(ds.json)).toBe(200);
+      const dsBody = ds.json as { provider: string; models: Array<{ id: string; name?: string }> };
+      expect(dsBody.provider).toBe("deepseek-official");
+      expect(dsBody.models.map((m) => m.id)).toEqual(expect.arrayContaining([
+        "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"
+      ]));
+
+      // a custom connection's route id has no engine catalog -> 400
+      const saved = await postJson(`${base}/api/models/save`, {
+        kind: "custom", displayName: "My GW", baseURL: "https://gw.example/v1", key: "sk-abc", models: ["m-1"]
+      }, token);
+      expect(saved.status, JSON.stringify(saved.json)).toBe(200);
+      const custom = await postJson(`${base}/api/models/catalog`, { provider: "my-gw" }, token);
+      expect(custom.status, JSON.stringify(custom.json)).toBe(400);
+      expect((custom.json as { error: { code: string } }).error.code).toBe("invalid-provider");
+      // a totally unknown provider id -> 400 too
+      const unknown = await postJson(`${base}/api/models/catalog`, { provider: "totally-unknown" }, token);
+      expect(unknown.status, JSON.stringify(unknown.json)).toBe(400);
+      expect((unknown.json as { error: { code: string } }).error.code).toBe("invalid-provider");
+
+      // models.list: the deepseek connection's models come from the runtime
+      // engine catalog -> all three ids incl. deepseek-v4-flash-vision-exp
+      const listed = await postJson(`${base}/api/models/list`, {}, token);
+      expect(listed.status, JSON.stringify(listed.json)).toBe(200);
+      const dsConn = (listed.json as ModelsListBody).connections.find((c) => c.routeId === "deepseek-official");
+      expect(dsConn?.models).toEqual(expect.arrayContaining([
+        "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"
+      ]));
+
+      // cleanup: remove the custom route so the shared home stays clean
+      const deleted = await postJson(`${base}/api/models/delete`, { routeId: "my-gw" }, token);
+      expect(deleted.status, JSON.stringify(deleted.json)).toBe(200);
+    } finally {
+      await stopServer();
+    }
+  }, 240_000);
 });
