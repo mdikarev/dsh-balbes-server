@@ -121,7 +121,7 @@ export const MODEL_PROVIDER_PRESETS: ReadonlyArray<{ providerId: string; label: 
 export interface ModelConnection {
   routeId: string;
   kind: ModelKind;
-  /** Только для kind "preset"; равен routeId. */
+  /** Only for kind "preset"; equals routeId. */
   providerId?: string;
   displayName: string;
   baseURL?: string;
@@ -139,7 +139,7 @@ export interface ModelsListResponse {
 export interface ModelsSaveRequest {
   routeId?: string;
   kind: ModelKind;
-  /** Только для kind "preset"; == routeId каталогового провайдера. */
+  /** Only for kind "preset"; catalog provider route id (== routeId). */
   provider?: string;
   displayName?: string;
   baseURL?: string;
