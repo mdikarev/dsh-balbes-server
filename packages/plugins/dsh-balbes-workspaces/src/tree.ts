@@ -26,7 +26,8 @@ export function isValidRelPath(relPath: string): boolean {
   return relPath.split("/").every((seg) => seg !== "" && seg !== "." && seg !== "..");
 }
 
-async function isWithin(root: string, target: string): Promise<boolean> {
+/** Realpath containment: true when the resolved target sits at or under the resolved root. */
+export async function isRealWithin(root: string, target: string): Promise<boolean> {
   const realRoot = await realpath(root);
   const realTarget = await realpath(target);
   return realTarget === realRoot || realTarget.startsWith(realRoot + sep);
@@ -75,7 +76,7 @@ export async function readWorkspaceDir(
   // realpath containment: refuse to read dirs reached through an escaping symlink
   let realOk = false;
   try {
-    realOk = await isWithin(base, target);
+    realOk = await isRealWithin(base, target);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       throw workspaceError("not-found", `directory not found: ${relPath}`);

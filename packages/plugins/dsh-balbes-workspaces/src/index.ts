@@ -2,6 +2,7 @@ import z from "@deepseek-ai/schemastery";
 import { join } from "node:path";
 import { ensureHome, listWorkspaces, createProject, deleteProject, WorkspaceError } from "./workspaces.js";
 import { readWorkspaceDir, type WorkspaceScope } from "./tree.js";
+import { createWorkspacesService } from "./service.js";
 import { createChangeHub } from "./events.js";
 
 export const name = "balbes-workspaces";
@@ -31,6 +32,7 @@ function send(res: ResLike, status: number, body: unknown): void {
 
 export function apply(ctx: {
   get(key: string): unknown;
+  provide(key: string, value: unknown): void;
   logger: { warn(m: string): void };
 }, config: { dshHome?: string }): void {
   const http = ctx.get("balbesHttp") as HttpSeatLike | undefined;
@@ -45,6 +47,10 @@ export function apply(ctx: {
   ensureHome(dshHome).catch((error: unknown) => {
     ctx.logger.warn(`balbes-workspaces: ensureHome failed: ${error instanceof Error ? error.message : String(error)}`);
   });
+
+  // Facade for later stages (telegram chat, admin, agentTask): list/root/read
+  // workspaces without an HTTP loopback. Independent of the route seats below.
+  ctx.provide("balbesWorkspaces", createWorkspacesService(dshHome));
 
   http.post("/api/workspaces/list", "bearer", async (_req, res) => {
     try {

@@ -35,14 +35,18 @@ describe("balbes-workspaces plugin", () => {
     expect(typeof apply).toBe("function");
   });
 
-  it("registers the five bearer routes and ensures the home at apply time", async () => {
+  it("registers the five bearer routes, ensures the home and provides balbesWorkspaces", async () => {
+    const provided = new Map<string, unknown>();
     const ctx = {
       get(key: string): unknown {
         return key === "balbesHttp" ? http : undefined;
       },
+      provide(key: string, value: unknown): void {
+        provided.set(key, value);
+      },
       logger: { warn(_m: string): void {} }
     };
-    apply(ctx as never, { dshHome: home });
+    apply(ctx, { dshHome: home });
     expect(seats.map((s) => s.path).sort()).toEqual([
       "/api/workspaces/create",
       "/api/workspaces/delete",
@@ -51,5 +55,9 @@ describe("balbes-workspaces plugin", () => {
       "/api/workspaces/tree"
     ]);
     for (const seat of seats) expect(seat.auth).toBe("bearer");
+    const service = provided.get("balbesWorkspaces");
+    expect(service).toBeDefined();
+    expect(typeof (service as { list?: unknown }).list).toBe("function");
+    expect(typeof (service as { readFile?: unknown }).readFile).toBe("function");
   });
 });
