@@ -97,11 +97,32 @@ export interface WorkspaceListEvent {
   kind: "list";
 }
 export type WorkspaceEvent = WorkspaceFsEvent | WorkspaceListEvent;
-export type ModelKind = "deepseek" | "custom";
+export type ModelKind = "deepseek" | "preset" | "custom";
+
+/**
+ * Display data mirroring the engine pi-ai catalog provider ids (dsh 0.1.2-rc.1);
+ * server keeps its own copy for validation (packages/plugins/dsh-balbes-models);
+ * re-sync on engine upgrades.
+ */
+export const MODEL_PROVIDER_PRESETS: ReadonlyArray<{ providerId: string; label: string }> = [
+  { providerId: "openai", label: "OpenAI" },
+  { providerId: "anthropic", label: "Anthropic (Claude)" },
+  { providerId: "openrouter", label: "OpenRouter" },
+  { providerId: "groq", label: "Groq" },
+  { providerId: "google", label: "Google (Gemini)" },
+  { providerId: "mistral", label: "Mistral" },
+  { providerId: "xai", label: "xAI (Grok)" },
+  { providerId: "together", label: "Together" },
+  { providerId: "cerebras", label: "Cerebras" },
+  { providerId: "fireworks", label: "Fireworks" },
+  { providerId: "opencode", label: "OpenCode" },
+];
 
 export interface ModelConnection {
   routeId: string;
   kind: ModelKind;
+  /** Только для kind "preset"; равен routeId. */
+  providerId?: string;
   displayName: string;
   baseURL?: string;
   hasKey: boolean;
@@ -118,6 +139,8 @@ export interface ModelsListResponse {
 export interface ModelsSaveRequest {
   routeId?: string;
   kind: ModelKind;
+  /** Только для kind "preset"; == routeId каталогового провайдера. */
+  provider?: string;
   displayName?: string;
   baseURL?: string;
   /** null clears the stored key; absent keeps it unchanged. */
