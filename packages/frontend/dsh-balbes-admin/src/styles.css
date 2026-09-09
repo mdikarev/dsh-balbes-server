@@ -373,3 +373,10 @@ button.ws-tree-row:hover { background: var(--surface); }
 .form-check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); cursor: pointer; }
 .mc-model-add { display: flex; gap: 8px; align-items: center; }
 .mc-model-add .form-input { flex: 1; }
+.form-select {
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  border-radius: var(--radius); padding: 8px 11px; font: inherit; outline: none; width: 100%;
+}
+.form-select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(77, 141, 255, .22); }
+.form-select:disabled { opacity: .65; }
+.form-note { margin: 0; font-size: 13px; color: var(--text-dim); }

@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, cleanup, within } from "@testing-library/react";
 import ModelsPage from "../src/pages/ModelsPage";
 import { ApiError, type AdminApi } from "../src/api/client";
+import { MODEL_PROVIDER_PRESETS } from "dsh-balbes-contracts";
 import type { ModelConnection, ModelsListResponse, ModelsSaveRequest } from "dsh-balbes-contracts";
 
 const DEEPSEEK: ModelConnection = {
@@ -20,6 +21,17 @@ const GATEWAY: ModelConnection = {
   baseURL: "https://gw.example/v1",
   hasKey: true,
   models: ["gw-1"],
+  isDefault: false
+};
+
+/** A catalog preset connection (kind "preset"); its route id equals the provider id. */
+const OPENAI_PRESET: ModelConnection = {
+  routeId: "openai",
+  kind: "preset",
+  providerId: "openai",
+  displayName: "OpenAI",
+  hasKey: true,
+  models: ["gpt-4o-mini", "gpt-4o"],
   isDefault: false
 };
 
@@ -57,6 +69,36 @@ function makeApi(
       const ds = connections.find((c) => c.routeId === DEEPSEEK.routeId);
       if (ds !== undefined) ds.hasKey = typeof req.key === "string" && req.key.trim() !== "";
       return { connection: { ...(ds ?? DEEPSEEK) } };
+    }
+    if (req.kind === "preset") {
+      const providerId = req.provider ?? "";
+      const catalog = MODEL_PROVIDER_PRESETS.find((p) => p.providerId === providerId);
+      // allowlist validation mirrors the server: an unknown provider is a 400 invalid-provider
+      if (catalog === undefined) throw new ApiError(400, "invalid-provider", "invalid provider: " + providerId);
+      const routeId = req.routeId ?? providerId;
+      const existing = connections.find((c) => c.routeId === routeId);
+      if (existing !== undefined && req.routeId === undefined) {
+        throw new ApiError(409, "route-exists", "route " + routeId + " already exists");
+      }
+      const next: ModelConnection = {
+        routeId,
+        kind: "preset",
+        providerId,
+        displayName: catalog.label, // server default: the catalog label (SPA never sends displayName)
+        hasKey:
+          req.key === null
+            ? false
+            : typeof req.key === "string" && req.key.trim() !== ""
+              ? true
+              : existing?.hasKey ?? false,
+        models: req.models !== undefined && req.models.length > 0 ? [...req.models] : existing?.models ?? [],
+        isDefault: def.provider === routeId
+      };
+      const base = req.baseURL !== undefined && req.baseURL !== "" ? req.baseURL : existing?.baseURL;
+      if (base !== undefined) next.baseURL = base;
+      if (existing === undefined) connections.push(next);
+      else Object.assign(existing, next);
+      return { connection: { ...next } };
     }
     const name = (req.displayName ?? "").trim();
     const routeId = req.routeId ?? slug(name);
@@ -365,5 +407,162 @@ describe("ModelsPage initial load", () => {
     fireEvent.click(screen.getByTestId("models-retry"));
     expect(await screen.findByTestId("model-connection:deepseek-official")).toBeTruthy();
     expect(vi.mocked(api.listModels)).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("ModelsPage provider presets", () => {
+  it("lists the 11 preset providers plus «Свой URL» (the default) in the add modal", async () => {
+    render(<ModelsPage api={makeApi()} />);
+    fireEvent.click(await screen.findByTestId("models-add"));
+
+    // default selection keeps v1 behavior: the custom («Свой URL») form opens
+    const select = screen.getByTestId("model-provider-select") as HTMLSelectElement;
+    expect(select.value).toBe("custom");
+    const labels = Array.from(select.options).map((o) => o.text.trim());
+    expect(labels).toEqual([...MODEL_PROVIDER_PRESETS.map((p) => p.label), "Свой URL"]);
+    expect(screen.getByTestId("model-name-input")).toBeTruthy();
+    expect(screen.getByTestId("model-url-input")).toBeTruthy();
+  });
+
+  it("choosing a preset provider swaps to the preset form; «свой URL» reveals the base URL", async () => {
+    render(<ModelsPage api={makeApi()} />);
+    fireEvent.click(await screen.findByTestId("models-add"));
+    const select = screen.getByTestId("model-provider-select") as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "openai" } });
+
+    // the custom-only name field is gone; preset fields are present
+    expect(screen.queryByTestId("model-name-input")).toBeNull();
+    expect(screen.getByTestId("key-input")).toBeTruthy();
+    expect(screen.getByTestId("model-models-input")).toBeTruthy();
+    expect(screen.getByTestId("preset-official-url")).toBeTruthy();
+    // official URL by default: the base URL field stays hidden until toggled
+    expect(screen.queryByTestId("model-url-input")).toBeNull();
+    fireEvent.click(screen.getByTestId("preset-custom-url"));
+    expect(screen.getByTestId("model-url-input")).toBeTruthy();
+
+    // back to «Свой URL» restores the v1 custom form
+    fireEvent.change(select, { target: { value: "custom" } });
+    expect(screen.getByTestId("model-name-input")).toBeTruthy();
+    expect(screen.getByTestId("model-url-input")).toBeTruthy();
+    expect(screen.queryByTestId("preset-official-url")).toBeNull();
+  });
+
+  it("saves a preset as {kind preset, provider, key, models} and renders the preset card", async () => {
+    const api = makeApi();
+    render(<ModelsPage api={api} />);
+    fireEvent.click(await screen.findByTestId("models-add"));
+    const select = screen.getByTestId("model-provider-select") as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "openai" } });
+    fireEvent.change(screen.getByTestId("key-input"), { target: { value: "sk-oai" } });
+    fireEvent.change(screen.getByTestId("model-models-input"), { target: { value: "gpt-4o-mini" } });
+    fireEvent.click(screen.getByTestId("model-models-add"));
+    expect(within(screen.getByTestId("model-form")).getByText("gpt-4o-mini")).toBeTruthy();
+    await waitFor(() => expect((screen.getByTestId("model-form-submit") as HTMLButtonElement).disabled).toBe(false));
+
+    fireEvent.click(screen.getByTestId("model-form-submit"));
+    await waitFor(() =>
+      expect(vi.mocked(api.saveModel)).toHaveBeenCalledWith({
+        kind: "preset",
+        provider: "openai",
+        key: "sk-oai",
+        models: ["gpt-4o-mini"]
+      })
+    );
+
+    // the card shows the provider label, the official-URL subtitle and model chips
+    const card = await screen.findByTestId("model-connection:openai");
+    expect(within(card).getByText("OpenAI")).toBeTruthy();
+    expect(within(card).getByText("Официальный URL (по умолчанию)")).toBeTruthy();
+    expect(within(card).getByText("gpt-4o-mini")).toBeTruthy();
+    expect(screen.queryByText("Добавьте провайдера с ключом")).toBeNull();
+    // the default-model select groups the preset under its provider label
+    const group = screen.getByRole("group", { name: "OpenAI" });
+    expect(within(group).getByRole("option", { name: "gpt-4o-mini" })).toBeTruthy();
+  });
+
+  it("editing a preset with an empty key keeps the stored key (no key in the request)", async () => {
+    const api = makeApi({}, [OPENAI_PRESET]);
+    render(<ModelsPage api={api} />);
+    await screen.findByTestId("model-connection:openai");
+    fireEvent.click(screen.getByTestId("model-menu-openai"));
+    fireEvent.click(screen.getByTestId("model-menu-edit-openai"));
+
+    // preset form prefilled from the connection; the provider cannot be changed
+    const select = screen.getByTestId("model-provider-select") as HTMLSelectElement;
+    expect(select.value).toBe("openai");
+    expect(select.disabled).toBe(true);
+    expect(screen.queryByTestId("model-name-input")).toBeNull();
+    expect((screen.getByTestId("key-input") as HTMLInputElement).value).toBe("");
+    expect(within(screen.getByTestId("model-form")).getByText("gpt-4o-mini")).toBeTruthy();
+    expect(screen.getByTestId("preset-official-url")).toBeTruthy();
+    expect(screen.queryByTestId("model-url-input")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("model-form-submit"));
+    await waitFor(() =>
+      expect(vi.mocked(api.saveModel)).toHaveBeenCalledWith({
+        routeId: "openai",
+        kind: "preset",
+        provider: "openai",
+        models: ["gpt-4o-mini", "gpt-4o"]
+      })
+    );
+    await waitFor(() => expect(screen.queryByTestId("model-form-submit")).toBeNull());
+    // the stored key survived the edit
+    expect(within(screen.getByTestId("model-connection:openai")).getByText("••••")).toBeTruthy();
+  });
+
+  it("editing a preset with a base-URL override prefills it with «свой URL» already on", async () => {
+    const overridden = {
+      ...OPENAI_PRESET,
+      baseURL: "https://openai.example/v1",
+      models: ["gpt-4o-mini"]
+    };
+    const api = makeApi({}, [overridden]);
+    render(<ModelsPage api={api} />);
+    await screen.findByTestId("model-connection:openai");
+    fireEvent.click(screen.getByTestId("model-menu-openai"));
+    fireEvent.click(screen.getByTestId("model-menu-edit-openai"));
+
+    const toggle = screen.getByTestId("preset-custom-url") as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+    expect((screen.getByTestId("model-url-input") as HTMLInputElement).value).toBe("https://openai.example/v1");
+
+    fireEvent.click(screen.getByTestId("model-form-submit"));
+    await waitFor(() =>
+      expect(vi.mocked(api.saveModel)).toHaveBeenCalledWith({
+        routeId: "openai",
+        kind: "preset",
+        provider: "openai",
+        baseURL: "https://openai.example/v1",
+        models: ["gpt-4o-mini"]
+      })
+    );
+  });
+
+  it("surfaces a server invalid-provider error in connection-errors", async () => {
+    const api = makeApi();
+    vi.mocked(api.saveModel).mockRejectedValueOnce(
+      new ApiError(400, "invalid-provider", "invalid provider: nope")
+    );
+    render(<ModelsPage api={api} />);
+    fireEvent.click(await screen.findByTestId("models-add"));
+    const select = screen.getByTestId("model-provider-select") as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "openai" } });
+    fireEvent.change(screen.getByTestId("key-input"), { target: { value: "sk-oai" } });
+    fireEvent.change(screen.getByTestId("model-models-input"), { target: { value: "gpt-4o-mini" } });
+    fireEvent.click(screen.getByTestId("model-models-add"));
+    fireEvent.click(screen.getByTestId("model-form-submit"));
+
+    const errors = await screen.findByTestId("connection-errors");
+    expect(errors.textContent).toContain("invalid provider");
+    // nothing was saved; the modal stays open for a retry
+    expect(screen.getByText("Добавить подключение")).toBeTruthy();
+    expect(screen.queryByTestId("model-connection:openai")).toBeNull();
+    await waitFor(() => expect((screen.getByTestId("model-form-submit") as HTMLButtonElement).disabled).toBe(false));
+
+    fireEvent.click(screen.getByTestId("model-form-submit"));
+    expect(await screen.findByTestId("model-connection:openai")).toBeTruthy();
+    expect(screen.queryByTestId("connection-errors")).toBeNull();
+    expect(vi.mocked(api.saveModel)).toHaveBeenCalledTimes(2);
   });
 });

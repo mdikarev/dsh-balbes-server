@@ -1,17 +1,36 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AdminApi } from "../api/client";
-import type { ModelConnection, ModelsListResponse, ModelsSaveRequest } from "dsh-balbes-contracts";
+import {
+  MODEL_PROVIDER_PRESETS,
+  type ModelConnection,
+  type ModelsListResponse,
+  type ModelsSaveRequest
+} from "dsh-balbes-contracts";
 import Modal from "../components/Modal";
 
 const DEFAULT_SEP = "|";
+
+/** «Свой URL» sentinel option value of the provider select (the custom flow). */
+const CUSTOM_PROVIDER = "custom";
 
 function errMessage(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback;
 }
 
+/** Catalog label for a preset connection; falls back to its route id. */
+function presetLabel(connection: ModelConnection): string {
+  const providerId = connection.providerId ?? connection.routeId;
+  return MODEL_PROVIDER_PRESETS.find((p) => p.providerId === providerId)?.label ?? connection.routeId;
+}
+
+/** User-facing connection name: presets show the catalog provider label. */
+function connectionName(connection: ModelConnection): string {
+  return connection.kind === "preset" ? presetLabel(connection) : connection.displayName;
+}
+
 type Editor =
-  | { mode: "add" } // new OpenAI-compatible connection (custom kind)
-  | { mode: "edit"; connection: ModelConnection } // custom connection being edited
+  | { mode: "add" } // new connection: preset provider or custom («Свой URL»)
+  | { mode: "edit"; connection: ModelConnection } // existing connection being edited
   | { mode: "key"; connection: ModelConnection }; // pinned deepseek key change
 
 interface ModelsPageProps {
@@ -19,9 +38,10 @@ interface ModelsPageProps {
 }
 
 /**
- * «Модели» page: model provider connections (pinned DeepSeek + OpenAI-compatible
- * custom routes), their API keys, and the global default model. Layout mirrors
- * WorkspacesPage: same modal/banner/error idioms, Russian copy, data-testids.
+ * «Модели» page: model provider connections (pinned DeepSeek + catalog preset
+ * providers + OpenAI-compatible custom routes), their API keys, and the global
+ * default model. Layout mirrors WorkspacesPage: same modal/banner/error idioms,
+ * Russian copy, data-testids.
  */
 export default function ModelsPage({ api }: ModelsPageProps) {
   const [data, setData] = useState<ModelsListResponse | null>(null);
@@ -31,8 +51,12 @@ export default function ModelsPage({ api }: ModelsPageProps) {
   // connection add/edit/key editor + its form state
   const [editor, setEditor] = useState<Editor | null>(null);
   const [editorError, setEditorError] = useState<string | null>(null);
+  // provider select value: a catalog provider id, or CUSTOM_PROVIDER for «Свой URL»
+  const [provider, setProvider] = useState<string>(CUSTOM_PROVIDER);
   const [name, setName] = useState("");
   const [baseURL, setBaseURL] = useState("");
+  // preset override toggle: when on, the base URL field is shown and sent
+  const [ownUrl, setOwnUrl] = useState(false);
   const [key, setKey] = useState("");
   const [clearKey, setClearKey] = useState(false);
   const [models, setModels] = useState<string[]>([]);
@@ -42,7 +66,7 @@ export default function ModelsPage({ api }: ModelsPageProps) {
   const [confirming, setConfirming] = useState<ModelConnection | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
-  // per-card ⋮ menu (custom connections only)
+  // per-card ⋮ menu
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const cardsRef = useRef<HTMLDivElement>(null);
 
@@ -77,8 +101,10 @@ export default function ModelsPage({ api }: ModelsPageProps) {
 
   function openAddEditor(): void {
     setMenuFor(null);
+    setProvider(CUSTOM_PROVIDER);
     setName("");
     setBaseURL("");
+    setOwnUrl(false);
     setKey("");
     setClearKey(false);
     setModels([]);
@@ -88,8 +114,11 @@ export default function ModelsPage({ api }: ModelsPageProps) {
   }
 
   function openEditEditor(connection: ModelConnection): void {
+    setProvider(connection.kind === "preset" ? connection.providerId ?? connection.routeId : CUSTOM_PROVIDER);
     setName(connection.displayName);
     setBaseURL(connection.baseURL ?? "");
+    // an existing override means «свой URL» is on, so saving does not drop it
+    setOwnUrl(connection.baseURL !== undefined && connection.baseURL !== "");
     setKey("");
     setClearKey(false);
     setModels([...connection.models]);
@@ -130,18 +159,37 @@ export default function ModelsPage({ api }: ModelsPageProps) {
     setModelDraft("");
   }
 
+  /** True when the visible non-key form is the preset branch (provider chosen). */
+  function editorIsPreset(): boolean {
+    if (editor === null || editor.mode === "key") return false;
+    if (editor.mode === "edit") return editor.connection.kind === "preset";
+    return provider !== CUSTOM_PROVIDER;
+  }
+
   function formValid(): boolean {
     if (editor === null) return false;
     if (editor.mode === "key") return key.trim() !== "";
+    if (editorIsPreset()) return models.length > 0;
     return name.trim() !== "" && baseURL.trim() !== "" && models.length > 0;
   }
 
   /** Assemble the save request; key semantics mirror the API contract:
-   *  absent = keep the stored key, string = set it, explicit null = clear it. */
+   *  absent = keep the stored key, string = set it, explicit null = clear it.
+   *  Custom sends displayName/baseURL; presets send the provider id and only
+   *  a baseURL when «свой URL» is toggled on. */
   function buildSaveRequest(): ModelsSaveRequest {
     if (editor === null) throw new Error("no editor");
     if (editor.mode === "key") {
       return { kind: "deepseek", key: key.trim() };
+    }
+    if (editorIsPreset()) {
+      const providerId = provider === CUSTOM_PROVIDER ? "" : provider;
+      const req: ModelsSaveRequest = { kind: "preset", provider: providerId, models: [...models] };
+      if (editor.mode === "edit") req.routeId = editor.connection.routeId;
+      if (editor.mode === "edit" && clearKey) req.key = null;
+      else if (key.trim() !== "") req.key = key.trim();
+      if (ownUrl && baseURL.trim() !== "") req.baseURL = baseURL.trim();
+      return req;
     }
     const req: ModelsSaveRequest = {
       kind: "custom",
@@ -178,12 +226,12 @@ export default function ModelsPage({ api }: ModelsPageProps) {
     if (busy) return;
     const sep = value.indexOf(DEFAULT_SEP);
     if (sep <= 0 || sep === value.length - 1) return;
-    const provider = value.slice(0, sep);
+    const providerId = value.slice(0, sep);
     const model = value.slice(sep + 1);
     setBusy(true);
     setError(null);
     try {
-      await api.setDefaultModel(provider, model);
+      await api.setDefaultModel(providerId, model);
       try {
         await refresh();
       } catch (err) {
@@ -217,8 +265,21 @@ export default function ModelsPage({ api }: ModelsPageProps) {
   }
 
   const deepseek = data?.connections.find((c) => c.routeId === "deepseek-official");
-  const customs = data?.connections.filter((c) => c.kind === "custom") ?? [];
+  // custom + preset connections share the editable-card list (deepseek is pinned)
+  const editable = data?.connections.filter((c) => c.kind !== "deepseek") ?? [];
   const currentDefault = data === null ? "" : data.default.provider + DEFAULT_SEP + data.default.model;
+  const presetForm = editorIsPreset();
+
+  const providerOptionItems = (
+    <>
+      {MODEL_PROVIDER_PRESETS.map((p) => (
+        <option key={p.providerId} value={p.providerId}>
+          {p.label}
+        </option>
+      ))}
+      <option value={CUSTOM_PROVIDER}>Свой URL</option>
+    </>
+  );
 
   const editorTitle =
     editor === null
@@ -267,7 +328,7 @@ export default function ModelsPage({ api }: ModelsPageProps) {
                 onChange={(e) => void handleDefaultChange(e.target.value)}
               >
                 {data.connections.map((connection) => (
-                  <optgroup key={connection.routeId} label={connection.displayName}>
+                  <optgroup key={connection.routeId} label={connectionName(connection)}>
                     {connection.models.map((model) => (
                       <option key={model} value={connection.routeId + DEFAULT_SEP + model}>
                         {model}
@@ -299,24 +360,26 @@ export default function ModelsPage({ api }: ModelsPageProps) {
                 </div>
               </div>
             )}
-            {customs.length === 0 ? (
+            {editable.length === 0 ? (
               <p className="models-empty" data-testid="models-empty">
                 Добавьте провайдера с ключом
               </p>
             ) : (
-              customs.map((connection) => {
+              editable.map((connection) => {
+                const isPreset = connection.kind === "preset";
+                const label = connectionName(connection);
                 const menuOpen = menuFor === connection.routeId;
                 return (
                   <div className="models-card" key={connection.routeId} data-testid={"model-connection:" + connection.routeId}>
                     <div className="mc-head">
                       <div className="mc-id">
-                        <b className="mc-name">{connection.displayName}</b>
-                        <code className="mc-route">{connection.routeId}</code>
+                        <b className="mc-name">{label}</b>
+                        {!isPreset && <code className="mc-route">{connection.routeId}</code>}
                       </div>
                       <button
                         type="button"
                         className="icon-btn mc-menu-btn"
-                        aria-label={"Действия для «" + connection.displayName + "»"}
+                        aria-label={"Действия для «" + label + "»"}
                         aria-expanded={menuOpen}
                         data-testid={"model-menu-" + connection.routeId}
                         onClick={() => setMenuFor(menuOpen ? null : connection.routeId)}
@@ -325,11 +388,19 @@ export default function ModelsPage({ api }: ModelsPageProps) {
                         ⋮
                       </button>
                     </div>
-                    {connection.baseURL !== undefined && (
+                    {isPreset ? (
+                      connection.baseURL !== undefined && connection.baseURL !== "" ? (
+                        <p className="mc-line">
+                          Base URL: <code>{connection.baseURL}</code>
+                        </p>
+                      ) : (
+                        <p className="mc-line">Официальный URL (по умолчанию)</p>
+                      )
+                    ) : connection.baseURL !== undefined ? (
                       <p className="mc-line">
                         Base URL: <code>{connection.baseURL}</code>
                       </p>
-                    )}
+                    ) : null}
                     <p className="mc-line">
                       Ключ API: <code>{connection.hasKey ? "••••" : "не задан"}</code>
                     </p>
@@ -401,28 +472,72 @@ export default function ModelsPage({ api }: ModelsPageProps) {
             ) : (
               <>
                 <label className="form-field">
-                  <span>Отображаемое имя</span>
-                  <input
-                    type="text"
-                    className="form-input"
-                    data-testid="model-name-input"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="например, My Gateway"
-                    autoFocus
-                  />
+                  <span>Провайдер</span>
+                  <select
+                    className="form-select"
+                    data-testid="model-provider-select"
+                    value={provider}
+                    disabled={editor.mode === "edit"}
+                    onChange={(e) => setProvider(e.target.value)}
+                  >
+                    {providerOptionItems}
+                  </select>
                 </label>
-                <label className="form-field">
-                  <span>Base URL</span>
-                  <input
-                    type="text"
-                    className="form-input"
-                    data-testid="model-url-input"
-                    value={baseURL}
-                    onChange={(e) => setBaseURL(e.target.value)}
-                    placeholder="https://api.example.com/v1"
-                  />
-                </label>
+                {presetForm ? (
+                  <>
+                    <p className="form-note" data-testid="preset-official-url">
+                      Официальный URL (по умолчанию)
+                    </p>
+                    <label className="form-check">
+                      <input
+                        type="checkbox"
+                        data-testid="preset-custom-url"
+                        checked={ownUrl}
+                        onChange={(e) => setOwnUrl(e.target.checked)}
+                      />
+                      <span>Свой URL</span>
+                    </label>
+                    {ownUrl && (
+                      <label className="form-field">
+                        <span>Base URL</span>
+                        <input
+                          type="text"
+                          className="form-input"
+                          data-testid="model-url-input"
+                          value={baseURL}
+                          onChange={(e) => setBaseURL(e.target.value)}
+                          placeholder="https://api.example.com/v1"
+                        />
+                      </label>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <label className="form-field">
+                      <span>Отображаемое имя</span>
+                      <input
+                        type="text"
+                        className="form-input"
+                        data-testid="model-name-input"
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        placeholder="например, My Gateway"
+                        autoFocus
+                      />
+                    </label>
+                    <label className="form-field">
+                      <span>Base URL</span>
+                      <input
+                        type="text"
+                        className="form-input"
+                        data-testid="model-url-input"
+                        value={baseURL}
+                        onChange={(e) => setBaseURL(e.target.value)}
+                        placeholder="https://api.example.com/v1"
+                      />
+                    </label>
+                  </>
+                )}
                 <label className="form-field">
                   <span>Ключ API</span>
                   <input
@@ -513,7 +628,7 @@ export default function ModelsPage({ api }: ModelsPageProps) {
               </p>
             )}
             <p className="ws-modal-text">
-              Удалить подключение <b>{confirming.displayName}</b> (роут <code>{confirming.routeId}</code>)? Его модели станут
+              Удалить подключение <b>{connectionName(confirming)}</b> (роут <code>{confirming.routeId}</code>)? Его модели станут
               недоступны для запросов.
             </p>
             <div className="modal-actions">
