@@ -164,3 +164,19 @@ export interface ModelsDefaultResponse {
   default: { provider: string; model: string };
 }
 
+/** Catalog model entry. */
+export interface ModelOption {
+  id: string;
+  name?: string;
+}
+
+/** Connection route id: "deepseek-official" or a preset catalog id. */
+export interface ModelsCatalogRequest {
+  provider: string;
+}
+
+export interface ModelsCatalogResponse {
+  provider: string;
+  models: ModelOption[];
+}
+
