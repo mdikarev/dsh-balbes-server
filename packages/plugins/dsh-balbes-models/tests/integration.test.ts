@@ -16,7 +16,9 @@ const fixtureProfile = join(here, "fixtures", "balbes-models-profile");
 
 interface ModelConnection {
   routeId: string;
-  kind: "deepseek" | "custom";
+  kind: "deepseek" | "preset" | "custom";
+  /** Present only for kind "preset"; equals the catalog provider id (== routeId). */
+  providerId?: string;
   displayName: string;
   baseURL?: string;
   hasKey: boolean;
@@ -110,6 +112,30 @@ async function readIfPresent(path: string): Promise<string> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
     throw error;
   }
+}
+
+/**
+ * Indented text of one YAML block whose key starts a line on its own
+ * (indent-insensitive), e.g. the openai route under llm-pi-ai providers.
+ * Returns "" when no such key exists. The settings store indentation is a
+ * serializer detail, so extraction never depends on a specific column.
+ */
+function yamlBlockForKey(yaml: string, key: string): string {
+  const lines = yaml.split("\n");
+  const start = lines.findIndex((line) => line.trim() === key + ":");
+  if (start === -1) return "";
+  const keyIndent = lines[start]!.length - lines[start]!.trimStart().length;
+  const out = [lines[start]!];
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line.trim() === "") {
+      out.push(line);
+      continue;
+    }
+    if (line.length - line.trimStart().length <= keyIndent) break;
+    out.push(line);
+  }
+  return out.join("\n");
 }
 
 const runReal = (process.env.RUN_REAL ?? "").trim() !== "";
@@ -281,6 +307,73 @@ describe.skipIf(!realEnabled)("REAL composition (models API)", () => {
       expect(cleanup.status, JSON.stringify(cleanup.json)).toBe(200);
       const credsFinal = await readIfPresent(join(home, ".credentials.yaml"));
       expect(credsFinal).not.toContain("BALBES_EDIT_CREATED_API_KEY");
+    } finally {
+      await stopServer();
+    }
+  }, 240_000);
+
+  it("models API: catalog preset route (openai) is accepted by the engine without api/baseURL and round-trips save/list/duplicate/unknown/delete", async () => {
+    if (home === undefined) throw new Error("home not initialized");
+    const base = `http://127.0.0.1:${port}`;
+    try {
+      const token = await bootServer();
+
+      // 401 on a preset save without a token
+      const unauth = await postJson(`${base}/api/models/save`, { kind: "preset", provider: "openai", key: "sk-abc", models: ["gpt-4o-mini"] });
+      expect(unauth.status).toBe(401);
+
+      // save an api-less preset route named by the engine catalog provider id.
+      // The engine (dsh-llm-pi-ai) validates llm-pi-ai where it is written, so
+      // a 200 here is the acceptance proof that the api-less route config shape
+      // is serviceable; an engine refusal would surface its exact text below.
+      const saved = await postJson(`${base}/api/models/save`, {
+        kind: "preset", provider: "openai", key: "sk-abc", models: ["gpt-4o-mini"]
+      }, token);
+      expect(saved.status, JSON.stringify(saved.json)).toBe(200);
+
+      // disk: llm-pi-ai carries the openai route with apiKeyEnv + models and no
+      // api/baseURL keys; the key value lives in the credentials file
+      const settingsYaml = await readFile(join(home, "settings.yaml"), "utf8");
+      const openaiBlock = yamlBlockForKey(settingsYaml, "openai");
+      expect(openaiBlock).not.toBe("");
+      expect(openaiBlock).toContain("apiKeyEnv: BALBES_OPENAI_API_KEY");
+      expect(openaiBlock).toContain("gpt-4o-mini");
+      expect(openaiBlock).not.toContain("api:");
+      expect(openaiBlock).not.toContain("baseURL:");
+      const credsYaml = await readFile(join(home, ".credentials.yaml"), "utf8");
+      expect(credsYaml).toContain("BALBES_OPENAI_API_KEY: sk-abc");
+
+      // list reflects the api-less openai connection as a preset
+      const listed = await postJson(`${base}/api/models/list`, {}, token);
+      expect(listed.status, JSON.stringify(listed.json)).toBe(200);
+      const conn = (listed.json as ModelsListBody).connections.find((c) => c.routeId === "openai");
+      expect(conn?.kind).toBe("preset");
+      expect(conn?.providerId).toBe("openai");
+      expect(conn?.displayName).toBe("OpenAI");
+      expect(conn?.hasKey).toBe(true);
+      expect(conn?.models).toEqual(["gpt-4o-mini"]);
+      expect(conn?.baseURL).toBeUndefined();
+
+      // duplicate preset save without routeId -> 409 route-exists
+      const dup = await postJson(`${base}/api/models/save`, { kind: "preset", provider: "openai", key: "sk-2", models: ["gpt-4o-mini"] }, token);
+      expect(dup.status, JSON.stringify(dup.json)).toBe(409);
+      expect((dup.json as { error: { code: string } }).error.code).toBe("route-exists");
+
+      // unknown provider -> 400 invalid-provider (server-side allowlist; the
+      // engine is not consulted, so the catalog drift guard stays local)
+      const unknown = await postJson(`${base}/api/models/save`, {
+        kind: "preset", provider: "totally-unknown-id", key: "sk-x", models: ["m-1"]
+      }, token);
+      expect(unknown.status, JSON.stringify(unknown.json)).toBe(400);
+      expect((unknown.json as { error: { code: string } }).error.code).toBe("invalid-provider");
+
+      // delete removes the openai route from settings.yaml and its key ref
+      const deleted = await postJson(`${base}/api/models/delete`, { routeId: "openai" }, token);
+      expect(deleted.status, JSON.stringify(deleted.json)).toBe(200);
+      const settingsAfter = await readIfPresent(join(home, "settings.yaml"));
+      expect(yamlBlockForKey(settingsAfter, "openai")).toBe("");
+      const credsAfter = await readIfPresent(join(home, ".credentials.yaml"));
+      expect(credsAfter).not.toContain("BALBES_OPENAI_API_KEY");
     } finally {
       await stopServer();
     }
