@@ -1,5 +1,7 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
-import { apply, name, inject } from "../src/index.js";
+import { apply, name, inject, registerModelsCatalogRoute } from "../src/index.js";
+import type { ModelCatalogReader } from "../src/models.js";
+import type { HttpSeatLike, ResLike } from "../src/index.js";
 
 interface Seat { path: string; auth: string; handler(req: unknown, res: unknown, body: unknown): Promise<void> | void; }
 
@@ -68,6 +70,30 @@ async function call(route: string, body: unknown): Promise<{ status: number; jso
   return { status: res.status, json: JSON.parse(res.payload) };
 }
 
+/** Invoke the pure /api/models/catalog registration with an injected reader. */
+async function callCatalog(reader: ModelCatalogReader, body: unknown): Promise<{ status: number; json: unknown }> {
+  const registered: Seat[] = [];
+  const localHttp: HttpSeatLike = {
+    post(path: string, auth: string, handler: (req: unknown, res: ResLike, body: unknown) => Promise<void> | void) {
+      registered.push({ path, auth, handler: handler as Seat["handler"] });
+    }
+  };
+  registerModelsCatalogRoute(localHttp, reader);
+  const seat = registered.find((s) => s.path === "/api/models/catalog");
+  if (!seat) throw new Error("no catalog seat");
+  const res = { status: 0, payload: "" };
+  await seat.handler({}, {
+    writeHead(status: number) { res.status = status; },
+    end(body?: string) { res.payload = String(body ?? ""); },
+    write() { return true; }, on() {}, destroyed: false, writableEnded: false
+  }, body);
+  return { status: res.status, json: JSON.parse(res.payload) };
+}
+
+function fakeCatalogReader(models: Record<string, Array<{ id: string; name?: string }>>): ModelCatalogReader {
+  return { list: (key: string) => models[key] ?? [] };
+}
+
 describe("balbes-models plugin", () => {
   beforeEach(() => {
     seats = [];
@@ -76,24 +102,30 @@ describe("balbes-models plugin", () => {
     agentDefaultModel = new FakeDefaultModel();
   });
 
-  it("exposes name/inject/apply contract and registers four bearer routes", () => {
+  it("exposes name/inject/apply contract and registers five bearer routes", () => {
     expect(name).toBe("balbes-models");
     expect(inject).toEqual(["balbesHttp", "settings", "credentials", "agentDefaultModel"]);
     apply(ctx as never, {});
     expect(seats.map((s) => s.path).sort()).toEqual([
-      "/api/models/default", "/api/models/delete", "/api/models/list", "/api/models/save"
+      "/api/models/catalog", "/api/models/default", "/api/models/delete", "/api/models/list", "/api/models/save"
     ]);
     for (const s of seats) expect(s.auth).toBe("bearer");
   });
 
-  it("list returns the pinned deepseek connection as default without a key", async () => {
+  it("list returns the deepseek connection as default without a key", async () => {
     apply(ctx as never, {});
     const { status, json } = await call("/api/models/list", {});
     expect(status).toBe(200);
     const body = json as { connections: Array<{ routeId: string; kind: string; hasKey: boolean; models: string[]; isDefault: boolean }> };
     expect(body.connections).toHaveLength(1);
     expect(body.connections[0]).toMatchObject({ routeId: "deepseek-official", kind: "deepseek", hasKey: false, isDefault: true });
-    expect(body.connections[0]!.models).toContain("deepseek-v4-flash");
+  });
+
+  it("deepseek connection in models.list carries the runtime catalog (3 models incl vision-exp)", async () => {
+    apply(ctx as never, {});
+    const { json } = await call("/api/models/list", {});
+    const models = (json as { connections: Array<{ routeId: string; models: string[] }> }).connections.find((c) => c.routeId === "deepseek-official")!.models;
+    expect(models).toEqual(["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"]);
   });
 
   it("save custom writes the pi-ai route and the key ref", async () => {
@@ -300,5 +332,57 @@ describe("balbes-models plugin", () => {
     const conn = (listed.json as { connections: Array<Record<string, unknown>> }).connections.find((c) => c.routeId === "my-gateway");
     expect(conn?.baseURL).toBeUndefined();
     expect((conn as { models: string[] }).models).toEqual(["m-2"]);
+  });
+});
+
+describe("models.catalog route", () => {
+  // Engine builtin-catalog fixture for the injected fake reader: the same
+  // shapes getBuiltinModels returns ({id} and {id,name} entries).
+  const engineFixture: Record<string, Array<{ id: string; name?: string }>> = {
+    deepseek: [
+      { id: "deepseek-v4-flash" },
+      { id: "deepseek-v4-pro" },
+      { id: "deepseek-v4-flash-vision-exp", name: "Vision Exp" }
+    ],
+    openai: [{ id: "gpt-4o-mini" }, { id: "gpt-4o", name: "GPT-4o" }]
+  };
+
+  it("200: deepseek-official returns the engine deepseek catalog (3 ids incl vision-exp)", async () => {
+    const { status, json } = await callCatalog(fakeCatalogReader(engineFixture), { provider: "deepseek-official" });
+    expect(status).toBe(200);
+    expect(json).toEqual({ provider: "deepseek-official", models: engineFixture.deepseek });
+  });
+
+  it("200: a preset provider returns its non-empty engine catalog", async () => {
+    const { status, json } = await callCatalog(fakeCatalogReader(engineFixture), { provider: "openai" });
+    expect(status).toBe(200);
+    const body = json as { provider: string; models: Array<{ id: string; name?: string }> };
+    expect(body.provider).toBe("openai");
+    expect(body.models.length).toBeGreaterThan(0);
+    expect(body.models.map((m) => m.id)).toEqual(["gpt-4o-mini", "gpt-4o"]);
+  });
+
+  it("400 invalid-provider for a custom route id (no engine catalog)", async () => {
+    const { status, json } = await callCatalog(fakeCatalogReader(engineFixture), { provider: "my-gateway" });
+    expect(status).toBe(400);
+    expect((json as { error: { code: string } }).error.code).toBe("invalid-provider");
+  });
+
+  it("400 invalid-provider for a totally unknown provider", async () => {
+    const { status, json } = await callCatalog(fakeCatalogReader(engineFixture), { provider: "totally-unknown" });
+    expect(status).toBe(400);
+    expect((json as { error: { code: string } }).error.code).toBe("invalid-provider");
+  });
+
+  it("400 invalid-provider when provider is missing or not a string", async () => {
+    expect((await callCatalog(fakeCatalogReader(engineFixture), {})).status).toBe(400);
+    expect((await callCatalog(fakeCatalogReader(engineFixture), { provider: 7 })).status).toBe(400);
+  });
+
+  it("500 internal when the reader fails", async () => {
+    const failing: ModelCatalogReader = { list: () => { throw new Error("catalog module exploded"); } };
+    const { status, json } = await callCatalog(failing, { provider: "deepseek-official" });
+    expect(status).toBe(500);
+    expect((json as { error: { code: string } }).error.code).toBe("internal");
   });
 });

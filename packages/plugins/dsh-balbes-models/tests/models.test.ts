@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   routeIdFromName, refNameForRoute, validateBaseUrl, parseModelIds,
-  validateCustomPayload, DEEPSEEK_OFFICIAL_MODELS, PROVIDER_PRESETS,
-  isPresetProviderId, validatePresetPayload
+  validateCustomPayload, DEEPSEEK_OFFICIAL_MODELS, DEEPSEEK_OFFICIAL_ROUTE,
+  PROVIDER_PRESETS, isPresetProviderId, validatePresetPayload,
+  createEngineCatalogReader, catalogKeyForRoute, isCatalogProvider
 } from "../src/models.js";
 
 describe("models domain", () => {
@@ -48,9 +49,13 @@ describe("models domain", () => {
     expect(cleared).toEqual({ displayName: "X", baseURL: "https://x", key: null, models: ["m1"] });
   });
 
-  it("exposes the pinned official DeepSeek catalog (dsh 0.1.2-rc.1)", () => {
-    expect(DEEPSEEK_OFFICIAL_MODELS.map((m) => m.id)).toContain("deepseek-v4-flash");
-    expect(DEEPSEEK_OFFICIAL_MODELS.map((m) => m.id)).toContain("deepseek-v4-pro");
+  it("pins the 3-model official DeepSeek fallback catalog (mirror of dsh-llm-deepseek)", () => {
+    expect(DEEPSEEK_OFFICIAL_MODELS.map((m) => m.id)).toEqual([
+      "deepseek-v4-flash",
+      "deepseek-v4-pro",
+      "deepseek-v4-flash-vision-exp"
+    ]);
+    expect(DEEPSEEK_OFFICIAL_MODELS.find((m) => m.id === "deepseek-v4-flash-vision-exp")?.name).toBe("DeepSeek-V4-Flash-Vision-Exp");
   });
 
   it("mirrors the 11 engine-catalog preset providers from contracts MODEL_PROVIDER_PRESETS", () => {
@@ -98,5 +103,86 @@ describe("models domain", () => {
     expect(validatePresetPayload({ provider: "openai", baseURL: "ftp://x", models: ["m"] })).toEqual({ error: "invalid-url" });
     expect(validatePresetPayload({ provider: "openai", key: 42, models: ["m"] })).toEqual({ error: "invalid-key" });
     expect(validatePresetPayload({ provider: "openai", models: [] })).toEqual({ error: "invalid-models" });
+  });
+});
+
+describe("engine catalog reader", () => {
+  // Fake mirror of @earendil-works/pi-ai/providers/all: getBuiltinModels(key)
+  // returns entries {id, name?} and [] for an unknown key.
+  const fakeCatalogModule = {
+    getBuiltinModels(key: string): Array<{ id: string; name?: string }> {
+      if (key === "deepseek") {
+        return [
+          { id: "deepseek-v4-flash" },
+          { id: "deepseek-v4-pro" },
+          { id: "deepseek-v4-flash-vision-exp", name: "Vision Exp" }
+        ];
+      }
+      if (key === "openai") return [{ id: "gpt-4o-mini" }, { id: "gpt-4o", name: "GPT-4o" }];
+      return [];
+    }
+  };
+
+  it("lazily requires the engine catalog module and reads getBuiltinModels(provider)", async () => {
+    const seen: string[] = [];
+    const reader = createEngineCatalogReader((id) => { seen.push(id); return fakeCatalogModule; });
+    const models = await reader.list("deepseek");
+    expect(seen).toEqual(["@earendil-works/pi-ai/providers/all"]);
+    expect(models).toEqual([
+      { id: "deepseek-v4-flash" },
+      { id: "deepseek-v4-pro" },
+      { id: "deepseek-v4-flash-vision-exp", name: "Vision Exp" }
+    ]);
+  });
+
+  it("reads a non-empty catalog for an allowlisted preset (openai)", async () => {
+    const reader = createEngineCatalogReader(() => fakeCatalogModule);
+    const models = await reader.list("openai");
+    expect(models.length).toBeGreaterThan(0);
+    expect(models.map((m) => m.id)).toEqual(["gpt-4o-mini", "gpt-4o"]);
+    expect(models[1]?.name).toBe("GPT-4o");
+  });
+
+  it("returns [] for an unknown provider key (engine empty result has no fallback)", async () => {
+    const reader = createEngineCatalogReader(() => fakeCatalogModule);
+    expect(await reader.list("totally-unknown")).toEqual([]);
+    expect(await reader.list("deepseek-official")).toEqual([]);
+  });
+
+  it("falls back to the pinned DeepSeek catalog (3 incl vision-exp) when require fails for deepseek", async () => {
+    const reader = createEngineCatalogReader(() => { throw new Error("module not found"); });
+    const models = await reader.list("deepseek");
+    expect(models.map((m) => m.id)).toEqual([
+      "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"
+    ]);
+  });
+
+  it("returns [] for a non-deepseek key when require fails", async () => {
+    const reader = createEngineCatalogReader(() => { throw new Error("module not found"); });
+    expect(await reader.list("openai")).toEqual([]);
+  });
+});
+
+describe("catalog route mapping", () => {
+  it("maps the deepseek-official route to the engine deepseek catalog key", () => {
+    expect(catalogKeyForRoute(DEEPSEEK_OFFICIAL_ROUTE)).toBe("deepseek");
+  });
+
+  it("keeps preset provider ids as their own catalog key", () => {
+    expect(catalogKeyForRoute("openai")).toBe("openai");
+    expect(catalogKeyForRoute("opencode")).toBe("opencode");
+  });
+
+  it("passes unknown/custom route ids through to the reader (which returns [])", () => {
+    expect(catalogKeyForRoute("my-gateway")).toBe("my-gateway");
+    expect(catalogKeyForRoute("totally-unknown")).toBe("totally-unknown");
+  });
+
+  it("allowlists deepseek-official and the preset providers as catalog providers", () => {
+    expect(isCatalogProvider(DEEPSEEK_OFFICIAL_ROUTE)).toBe(true);
+    expect(isCatalogProvider("openai")).toBe(true);
+    expect(isCatalogProvider("opencode")).toBe(true);
+    expect(isCatalogProvider("my-gateway")).toBe(false);
+    expect(isCatalogProvider("totally-unknown")).toBe(false);
   });
 });

@@ -20,13 +20,86 @@ export interface ModelConnection {
 export const DEEPSEEK_OFFICIAL_ROUTE = "deepseek-official";
 export const DEEPSEEK_API_KEY_REF = "DEEPSEEK_API_KEY";
 
-/** Official DeepSeek catalog pinned to dsh 0.1.2-rc.1 (dsh-llm-deepseek).
- *  The engine exposes no in-process list for this fixed route; sync this
- *  constant with the engine catalog on a dsh upgrade. */
+/** Pinned fallback mirror of the dsh-llm-deepseek catalog (3 models), synced
+ *  on engine upgrade. The primary source of the official DeepSeek list is the
+ *  runtime engine catalog read through createEngineCatalogReader(); this
+ *  constant is only used when that catalog is unavailable. */
 export const DEEPSEEK_OFFICIAL_MODELS: ModelOption[] = [
   { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash" },
-  { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" }
+  { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" },
+  { id: "deepseek-v4-flash-vision-exp", name: "DeepSeek-V4-Flash-Vision-Exp" }
 ];
+
+/** Reads the builtin model catalog of one engine provider. The primary source
+ *  is the engine runtime catalog; the pinned DEEPSEEK_OFFICIAL_MODELS list is
+ *  only the fallback used by createEngineCatalogReader when the runtime
+ *  catalog cannot be read. */
+export interface ModelCatalogReader {
+  list(providerKey: string): Promise<ModelOption[]> | ModelOption[];
+}
+
+/** The engine module exposing getBuiltinModels(provider). */
+const ENGINE_CATALOG_MODULE = "@earendil-works/pi-ai/providers/all";
+
+interface CatalogModuleLike {
+  getBuiltinModels?(providerKey: string): unknown;
+}
+
+/** Keeps only {id} / {id, name} entries of an engine catalog result. */
+function toModelOptions(raw: unknown): ModelOption[] | null {
+  if (!Array.isArray(raw)) return null;
+  const out: ModelOption[] = [];
+  for (const item of raw) {
+    if (typeof item !== "object" || item === null) return null;
+    const entry = item as { id?: unknown; name?: unknown };
+    if (typeof entry.id !== "string" || entry.id === "") return null;
+    const model: ModelOption = { id: entry.id };
+    if (typeof entry.name === "string" && entry.name !== "") model.name = entry.name;
+    out.push(model);
+  }
+  return out;
+}
+
+/** Creates an engine catalog reader. The module is required lazily on the
+ *  first list() call: through requireFn when given (unit tests), otherwise
+ *  through the ambient CommonJS require the dsh loader provides at runtime.
+ *  Any load or shape failure, plus an empty engine result, falls back to the
+ *  pinned DEEPSEEK_OFFICIAL_MODELS for the "deepseek" key and to [] for any
+ *  other key. */
+export function createEngineCatalogReader(requireFn?: (id: string) => unknown): ModelCatalogReader {
+  const load = requireFn ?? ((id: string) => {
+    if (typeof require === "function") return require(id);
+    throw new Error("engine catalog require is unavailable in this module context");
+  });
+  return {
+    list(providerKey: string): ModelOption[] {
+      try {
+        const mod = load(ENGINE_CATALOG_MODULE) as CatalogModuleLike | undefined;
+        const models = toModelOptions(mod?.getBuiltinModels?.(providerKey));
+        if (models !== null && models.length > 0) return models;
+      } catch {
+        // fall through to the pinned/empty fallback
+      }
+      return providerKey === "deepseek" ? DEEPSEEK_OFFICIAL_MODELS : [];
+    }
+  };
+}
+
+/** Maps a connection route id to the engine catalog provider key: the reserved
+ *  "deepseek-official" route reads the engine "deepseek" catalog (the
+ *  dsh-llm-deepseek mirror); a preset connection's route id already equals its
+ *  provider id; any other (custom/unknown) route id passes through untouched,
+ *  which the reader answers with [] (no engine catalog for it). */
+export function catalogKeyForRoute(route: string): string {
+  if (route === DEEPSEEK_OFFICIAL_ROUTE) return "deepseek";
+  return route;
+}
+
+/** True when the route has an engine catalog: the deepseek route or a preset
+ *  provider id from PROVIDER_PRESETS. Custom/unknown routes have no catalog. */
+export function isCatalogProvider(route: string): boolean {
+  return route === DEEPSEEK_OFFICIAL_ROUTE || isPresetProviderId(route);
+}
 
 const ROUTE_ID_RE = /^[a-z][a-z0-9-]*$/;
 

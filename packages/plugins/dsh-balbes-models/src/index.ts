@@ -1,15 +1,16 @@
 import z from "@deepseek-ai/schemastery";
 import {
   ModelConnection, DEEPSEEK_OFFICIAL_ROUTE, DEEPSEEK_API_KEY_REF,
-  DEEPSEEK_OFFICIAL_MODELS, routeIdFromName, refNameForRoute, validateCustomPayload,
-  PROVIDER_PRESETS, isPresetProviderId, validatePresetPayload
+  routeIdFromName, refNameForRoute, validateCustomPayload,
+  PROVIDER_PRESETS, isPresetProviderId, validatePresetPayload,
+  ModelCatalogReader, createEngineCatalogReader, catalogKeyForRoute, isCatalogProvider
 } from "./models.js";
 
 export const name = "balbes-models";
 export const inject = ["balbesHttp", "settings", "credentials", "agentDefaultModel"];
 export const Config = z.object({});
 
-interface HttpSeatLike {
+export interface HttpSeatLike {
   post(path: string, auth: "public" | "bearer", handler: (req: unknown, res: ResLike, body: unknown) => Promise<void> | void): void;
 }
 interface SettingsLike {
@@ -26,7 +27,7 @@ interface AgentDefaultModelLike {
   currentSelection(): { provider: string; model: string };
   saveSelection(next: { provider: string; model: string }): Promise<void>;
 }
-interface ResLike {
+export interface ResLike {
   writeHead(status: number, headers?: Record<string, string>): void;
   end(body?: string): void;
   write(chunk: string): boolean;
@@ -37,6 +38,9 @@ interface ResLike {
 
 const LLM_PI_AI_NS = "llm-pi-ai";
 const CUSTOM_WIRE_API = "openai-completions"; // pi-ai wire protocol for OpenAI-compatible routes
+
+/** Engine catalog reader shared by every route (one per plugin instance). */
+const engineCatalogReader = createEngineCatalogReader();
 
 function send(res: ResLike, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
@@ -72,16 +76,20 @@ function modelIdsOf(entry: unknown): string[] {
 async function readConnections(
   credentials: CredentialsLike,
   settings: SettingsLike,
-  defaultModel: AgentDefaultModelLike
+  defaultModel: AgentDefaultModelLike,
+  reader: ModelCatalogReader = engineCatalogReader
 ): Promise<ModelConnection[]> {
   const selection = defaultModel.currentSelection();
   const providers = routeProviders(settings);
+  // The deepseek connection's models come from the runtime engine catalog
+  // (primary) with the pinned DEEPSEEK_OFFICIAL_MODELS list as its fallback.
+  const deepseekModels = (await reader.list(catalogKeyForRoute(DEEPSEEK_OFFICIAL_ROUTE))).map((m) => m.id);
   const out: ModelConnection[] = [{
     routeId: DEEPSEEK_OFFICIAL_ROUTE,
     kind: "deepseek",
     displayName: "DeepSeek (официальный)",
     hasKey: (await credentials.describe(DEEPSEEK_API_KEY_REF)).configured,
-    models: DEEPSEEK_OFFICIAL_MODELS.map((m) => m.id),
+    models: deepseekModels,
     isDefault: selection.provider === DEEPSEEK_OFFICIAL_ROUTE
   }];
   for (const [route, entry] of Object.entries(providers)) {
@@ -108,6 +116,25 @@ async function readConnections(
   return out;
 }
 
+/** Registers the bearer POST /api/models/catalog route (models.catalog): a
+ *  provider catalog query returning {provider, models} for catalog providers
+ *  (the deepseek route and preset ids); custom/unknown providers get 400
+ *  invalid-provider. Registration is kept pure and separate from apply so unit
+ *  tests can inject a fake reader. */
+export function registerModelsCatalogRoute(http: HttpSeatLike, reader: ModelCatalogReader): void {
+  http.post("/api/models/catalog", "bearer", async (_req, res, body) => {
+    try {
+      const rawProvider = (body as { provider?: unknown } | null | undefined)?.provider;
+      const provider = typeof rawProvider === "string" ? rawProvider : "";
+      if (!isCatalogProvider(provider)) return fail(res, 400, "invalid-provider", "provider " + provider + " has no engine catalog");
+      const models = await reader.list(catalogKeyForRoute(provider));
+      send(res, 200, { provider, models });
+    } catch (error) {
+      fail(res, 500, "internal", error instanceof Error ? error.message : String(error));
+    }
+  });
+}
+
 export function apply(ctx: { get(key: string): unknown; logger: { warn(m: string): void } }, _config: unknown): void {
   const http = ctx.get("balbesHttp") as HttpSeatLike | undefined;
   if (http === undefined) {
@@ -117,6 +144,8 @@ export function apply(ctx: { get(key: string): unknown; logger: { warn(m: string
   const settings = ctx.get("settings") as SettingsLike;
   const credentials = ctx.get("credentials") as CredentialsLike;
   const defaultModel = ctx.get("agentDefaultModel") as AgentDefaultModelLike;
+
+  registerModelsCatalogRoute(http, engineCatalogReader);
 
   http.post("/api/models/list", "bearer", async (_req, res) => {
     try {
