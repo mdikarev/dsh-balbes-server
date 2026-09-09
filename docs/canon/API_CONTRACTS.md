@@ -135,12 +135,19 @@
 - path: /api/models/list
 - auth: bearer
 - request: `{}`
-- response: `{connections: [{routeId: string, kind: "deepseek"|"custom", displayName: string, baseURL?: string, hasKey: boolean, models: string[], isDefault: boolean}], default: {provider: string, model: string}}`
+- response: `{connections: [{routeId: string, kind: "deepseek"|"preset"|"custom", displayName: string, baseURL?: string, hasKey: boolean, models: string[], isDefault: boolean}], default: {provider: string, model: string}}`
 - errors: 401
 - notes: отдаёт состояние движка: роуты провайдеров (settings-секция
   `llm-pi-ai`); встроенный `deepseek-official` в списке всегда, его модели —
   закреплённый официальный список каталога dsh 0.1.2-rc.1
   (`deepseek-v4-flash`, `deepseek-v4-pro`), ре-синк при обновлении движка.
+  Пресеты (`kind: "preset"`) — подключения по каталоговым провайдерам
+  движка dsh (pi-ai catalog): `routeId` == каталоговый id провайдера
+  (напр. `openai`, `anthropic`, `openrouter`, `groq`, `google`,
+  `mistral`, `xai`, `together`, `cerebras`, `fireworks`,
+  `opencode`); официальные URL/протокол движок берёт из каталога —
+  в route config `baseURL`/`api` не пишутся; `baseURL` в ответе есть
+  только при override «свой URL»; модели — введённые владельцем (≥ 1).
   `hasKey` — признак наличия ключа: значение секрета не возвращается
   никогда; `isDefault` — derived (на этом подключении стоит дефолтная
   модель).
@@ -149,10 +156,12 @@
 - method: POST
 - path: /api/models/save
 - auth: bearer
-- request: `{routeId?, kind: "deepseek"|"custom", displayName?, baseURL?, key?: string|null, models?: string[]}`
+- request: `{routeId?, kind: "deepseek"|"preset"|"custom", provider?: string, displayName?, baseURL?, key?: string|null, models?: string[]}` (`provider` — для `kind: "preset"`: каталоговый id провайдера, он же `routeId` роута)
 - response: `{connection: {...}}` (форма элемента — как в models.list)
-- errors: 400 `invalid-*` (имя/routeId/baseURL/модели), 409 `route-exists`, 409
-  `default-in-use` (правка убрала бы дефолтную модель), 401
+- errors: 400 `invalid-*` (имя/routeId/baseURL/модели), 400 `invalid-provider`
+  (preset: `provider` вне списка пресетов каталога движка), 409
+  `route-exists`, 409 `default-in-use` (правка убрала бы дефолтную модель),
+  401
 - notes: `routeId` — id роута движка: `deepseek-official` (зарезервирован,
   существует всегда) или lower-hyphen custom. Без `routeId` — создание
   (routeId генерируется из displayName, `^[a-z][a-z0-9-]*$`, уникален;
@@ -165,6 +174,17 @@
   модели custom — ≥ 1 id без пробелов/запятых. `key` передан — пишет ref
   в `$DSH_HOME/.credentials.yaml`; `key: null` у custom — сбрасывает (unset).
   Секрет не логируется и в ответ не возвращается никогда.
+  Для `kind: "preset"` обязателен `provider` — каталоговый id провайдера
+  движка dsh (pi-ai catalog); список selectable пресетов (id + русские
+  названия) — отображаемые данные в `dsh-balbes-contracts`, сервер
+  валидирует `provider` по нему: вне списка — 400 `invalid-provider`.
+  Создаётся официальный роут: `routeId` == каталоговый id, официальные
+  URL/протокол движок подставляет из каталога (в route config не пишем
+  `baseURL`/`api`), опциональный `baseURL` — override «свой URL»; ключ —
+  apiKeyEnv-реф (как у custom), модели вводит владелец (≥ 1). Официальный
+  роут на каталоговый id может быть только один: повторное официальное
+  подключение к тому же провайдеру делается через «Свой URL»
+  (`kind: "custom"`).
 
 ### models.delete — удалить подключение провайдера
 - method: POST
@@ -175,9 +195,10 @@
 - errors: 400 `reserved` (попытка удалить `deepseek-official`), 404 `not-found`
   (роута нет), 409 `default-in-use` (на подключении стоит дефолтная модель),
   401
-- notes: удаляет только custom-подключения (роут в `llm-pi-ai`);
-  закреплённый `deepseek-official` не удаляется. При `default-in-use`
-  владелец сначала меняет дефолтную модель. Подтверждение — на стороне UI.
+- notes: удаляет только пользовательские подключения — пресеты
+  (`kind: "preset"`) и `custom` — роуты в `llm-pi-ai`; закреплённый
+  `deepseek-official` не удаляется. При `default-in-use` владелец сначала
+  меняет дефолтную модель. Подтверждение — на стороне UI.
 
 ### models.default — глобальная дефолтная модель
 - method: POST
