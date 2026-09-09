@@ -82,3 +82,27 @@ describe("workspace tree/events contracts", () => {
     void e;
   });
 });
+
+import type {
+  TelegramClearTokenRequest, TelegramClearTokenResponse, TelegramDisableRequest,
+  TelegramDisableResponse, TelegramSaveRequest, TelegramSaveResponse,
+  TelegramSettingsStatus, TelegramState, TelegramStatusRequest,
+  TelegramStatusResponse, TelegramTestRequest, TelegramTestResponse
+} from "../src/index.js";
+
+describe("telegram contracts", () => {
+  it("status carries no token, only tokenConfigured", () => {
+    const status: TelegramSettingsStatus = { state: "connected", tokenConfigured: true, enabled: true, allowedUserId: 12345, botUsername: "balbes_bot", lastPollAt: "2026-09-10T00:00:00.000Z" };
+    const statusRes: TelegramStatusResponse = { status };
+    const saveRes: TelegramSaveResponse = { status: { state: "disabled", tokenConfigured: true, enabled: false, allowedUserId: 12345 } };
+    const saveReq: TelegramSaveRequest = { allowedUserId: 12345, enabled: true }; // token absent = keep
+    const disableReq: TelegramDisableRequest = {};
+    const disableRes: TelegramDisableResponse = { status: { state: "disabled", tokenConfigured: true, enabled: false } };
+    const clearReq: TelegramClearTokenRequest = {};
+    const clearRes: TelegramClearTokenResponse = { status: { state: "not-configured", tokenConfigured: false, enabled: false } };
+    const testReq: TelegramTestRequest = {};
+    const testRes: TelegramTestResponse = { username: "balbes_bot" };
+    const states: TelegramState[] = ["not-configured", "disabled", "connected", "error"];
+    expect([status, statusRes, saveReq, saveRes, disableReq, disableRes, clearReq, clearRes, testReq, testRes, states]).toBeTruthy();
+  });
+});

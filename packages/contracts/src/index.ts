@@ -180,3 +180,49 @@ export interface ModelsCatalogResponse {
   models: ModelOption[];
 }
 
+// Telegram settings surface — no secret ever leaves the server, tokenConfigured only
+export type TelegramState = "not-configured" | "disabled" | "connected" | "error";
+
+export interface TelegramSettingsStatus {
+  state: TelegramState;
+  /** Token presence is reported as a boolean; the token itself never appears in responses. */
+  tokenConfigured: boolean;
+  enabled: boolean;
+  /** Allowed Telegram user id; absent = no allowlist. */
+  allowedUserId?: number;
+  botUsername?: string;
+  lastPollAt?: string; // ISO 8601
+  /** R-API-1 error envelope shape; present only when state === "error". */
+  error?: { code: string; message: string };
+}
+
+export interface TelegramStatusRequest {}
+export interface TelegramStatusResponse {
+  status: TelegramSettingsStatus;
+}
+
+export interface TelegramSaveRequest {
+  /** Bot token to store; absent = keep unchanged (never echoed back). */
+  token?: string;
+  allowedUserId?: number;
+  enabled?: boolean;
+}
+export interface TelegramSaveResponse {
+  status: TelegramSettingsStatus;
+}
+
+export interface TelegramDisableRequest {}
+export interface TelegramDisableResponse {
+  status: TelegramSettingsStatus;
+}
+
+export interface TelegramClearTokenRequest {}
+export interface TelegramClearTokenResponse {
+  status: TelegramSettingsStatus;
+}
+
+export interface TelegramTestRequest {}
+export interface TelegramTestResponse {
+  username: string;
+}
+
