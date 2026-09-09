@@ -167,7 +167,9 @@
 - errors: 400 `invalid-provider` (провайдер вне каталога движка: не
   `deepseek-official` и не один из 11 пресетов, в т.ч. custom), 401
 - notes: список моделей провайдера — из рантайм-каталога движка dsh (pi-ai
-  builtin + каталог dsh-llm-deepseek); модели в проекте не хардкодятся.
+  builtin + каталог dsh-llm-deepseek); модели не хардкодятся как основной
+  источник (pinned-список DeepSeek — только fallback при недоступности
+  рантайм-каталога).
   DeepSeek официальный — 3 модели каталога движка (`deepseek-v4-flash`,
   `deepseek-v4-pro`, `deepseek-v4-flash-vision-exp`); пресеты (11
   каталоговых провайдеров) — модели их builtin-каталога в движке. Ручка —
