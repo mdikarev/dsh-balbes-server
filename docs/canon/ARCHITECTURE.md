@@ -11,9 +11,11 @@ Cordis-процессе; оркестрации нескольких проце�
 собственный host-бандл `dsh-balbes-host` вместо headless; сервер-демон
 под systemd с HTTP-админкой (JWT-авторизация, SPA «одна кнопка»). Поверх
 этапа 2 — воркспейсы на сервере (дом агента и проекты с реестром-индексом,
-API `/api/workspaces/*`, страница админки) и раздел «Модели»: плагин
-`dsh-balbes-models` управляет подключениями провайдеров, ключами и
-дефолтной моделью поверх сервисов движка (см. Building blocks / Key flows).
+API `/api/workspaces/*`, страница админки), раздел «Модели» и Telegram-канал:
+плагин `dsh-balbes-models` управляет подключениями провайдеров, ключами и
+дефолтной моделью поверх сервисов движка, а Telegram-плагин даёт владельцу
+long polling, выбор воркспейса, persistent dsh-сессии, задачи agent loop и
+просмотр файлов (см. Building blocks / Key flows).
 Штатная веб-морда dsh не используется.
 
 ## System context
@@ -31,6 +33,9 @@ API `/api/workspaces/*`, страница админки) и раздел «Мо
   GitHub Actions — CI.
 - API DeepSeek: модель для промптов; ключ приходит из
   `$DSH_HOME/.credentials.yaml` (env `DEEPSEEK_API_KEY`).
+- Telegram Bot API: внешний HTTPS API, который сервер вызывает через long
+  polling и sendMessage; телефон владельца — обычный Telegram-клиент, прямого
+  соединения сервера с телефоном нет. Bot token хранится через credentials.
 - dsh как установленный движок: его mirror (`$DSH_HOME/profiles/node_modules`)
   резолвит базовые бандлы; наш host копируется в `node_modules` профиля.
 
@@ -39,9 +44,9 @@ API `/api/workspaces/*`, страница админки) и раздел «Мо
 - `profiles/balbes/` — профиль-манифест: `package.json` с
   `dsh.profile.bundles = ["@deepseek-ai/dsh-base", "dsh-balbes-host"]` и
   `patchReload: startup`; профильный слой патчей `cordis.patch.yml` —
-  insert-запись `balbes-workspaces` (внешний плагин воркспейсов; профильный
-  слой применяется последним, после патчей бандлов). В репозитории профиль
-  живёт без `node_modules`.
+  insert-записи `balbes-workspaces`, `balbes-telegram` и других внешних
+  плагинов; профильный слой применяется последним, после патчей бандлов. В
+  репозитории профиль живёт без `node_modules`.
 - `@deepseek-ai/dsh-base` — бандл ядра: полный стандартный агентский набор
   (агентский цикл, тулы bash/fs/web/workflow/subagent/skill, скиллы, сессии,
   credentials, политики).
@@ -56,6 +61,9 @@ API `/api/workspaces/*`, страница админки) и раздел «Мо
   `index.html` только на ENOENT-семейство), `api` (`/api/health`,
   `/api/prompt`; runner повторяет шов headless: `agents.create` →
   `followup` → `whenIdle` → `sessions.flush` → `AgentHandle.dispose` в finally).
+  Workspace-aware задачи проходят через общий `AgentTaskService`, который
+  использует штатный dsh agent loop, передаёт безопасный `cwd`, удерживает
+  отдельный session context на workspace и сериализует задачи одного корня.
 - `packages/contracts/` — `dsh-balbes-contracts`: чистые TS-типы
   запросов/ответов API (импортируются SPA-клиентом; host держит структурные
   формы, соответствие проверяется REAL-тестами и typecheck).
@@ -78,6 +86,13 @@ API `/api/workspaces/*`, страница админки) и раздел «Мо
   без правок установленных `@deepseek-ai/*`. Подключается insert-записью
   в патч профиля; собранный пакет копируется в `node_modules` профиля
   установщиком и CI.
+- `packages/plugins/dsh-balbes-telegram/` — функциональный Telegram-плагин:
+  long polling Bot API, private-chat и allowlist-проверки, настройка token и
+  user ID через админку, inline-выбор workspace, task dispatch в общий
+  `AgentTaskService`, ленивое дерево и ограниченное чтение text-файлов.
+  Состояние offset, active workspace и session mapping хранится атомарно в
+  `$DSH_HOME`; polling останавливается через Cordis dispose. Плагин не
+  обращается к файловой системе напрямую и не вызывает собственный HTTP API.
 - `packages/frontend/dsh-balbes-admin/` — React SPA (Vite): типизированный
   api-клиент (JWT в localStorage, 401 → logout), экраны Login/Main.
 - `scripts/install.sh` — одно-командный установщик (`curl | bash`):
@@ -132,6 +147,16 @@ API `/api/workspaces/*`, страница админки) и раздел «Мо
   scoped-ручки API (границы — корень воркспейса); изменения каталогов извне
   (агент/владелец) приходят в SPA событиями push-канала, дерево инвалидирует
   и перечитывает затронутые узлы.
+- Telegram: владелец в админке сохраняет token и Telegram user ID через
+  `/api/telegram/save`, проверяет `getMe` и включает polling без рестарта.
+  Плагин принимает только update из private chat от allowlisted user, отдаёт
+  inline-список `home`/projects и сохраняет active workspace. Текстовая задача
+  проходит в `AgentTaskService`: workspace разрешается по containment, dsh
+  agent loop создаётся/возобновляется с `meta.cwd`, сообщение отправляется
+  через `followup`, агент ждёт `whenIdle`, session flush-ится, а ответ делится
+  на допустимые сообщения Telegram. Callback файлов лениво читает каталог или
+  ограниченное text-содержимое через `balbesWorkspaces`; старые/чужие paths
+  повторно валидируются.
 - Настройка моделей (раздел «Модели», ручки `/api/models/*`): чтение/
   запись идут штатными сервисами движка — `ctx.settings` (роуты
   провайдеров, settings-секция `llm-pi-ai`), `ctx.credentials` (refs-ключи
@@ -156,14 +181,11 @@ API `/api/workspaces/*`, страница админки) и раздел «Мо
   установленного dsh (линковка в корневой workspace через `link-core` и копия
   host в `node_modules` профиля); pnpm link/абсолютные пути не используются.
 - Не входит (следующие этапы): git (импорт/клонирование, ключи и токены),
-  список сессий и чат с удержанием `sessionId` и привязкой к воркспейсу,
-  исполнение задач агентом внутри воркспейса, наполнение дома сверх
-  стартового набора (`notes/`, применение файлов дома и глобальных правил
-  в контексте агента — включая пользователь-глобальный `$DSH_HOME/AGENTS.md`
-  dsh), управление runs/скиллами в UI (ключи/модели — раздел
-  «Модели»), HTTPS/TLS и домен, потоковая доставка ответов модели (SSE/WS),
-  каналы (telegram/A2A), память (Qdrant), самообучение, мультиюзерность,
-  замена драйвера цикла, граф-конфиг.
+  список сессий в админке, управление runs/скиллами в UI (ключи/модели —
+  раздел «Модели»), HTTPS/TLS и домен, потоковая доставка ответов модели
+  (SSE/WS), скачивание бинарных файлов через Telegram, другие каналы (A2A),
+  память (Qdrant), самообучение, мультиюзерность, замена драйвера цикла,
+  граф-конфиг.
 - Секреты не попадают в git; CI работает без ключей; автотесты в модель не
   ходят (R-TEST-1).
 
@@ -194,6 +216,11 @@ API `/api/workspaces/*`, страница админки) и раздел «Мо
   `ProtectSystem=full` + `ReadWritePaths`, `RestrictSUIDSGID`,
   `ProtectKernel*` (без `ProtectHome=read-only`/`SystemCallFilter` — ломают
   тулы агента).
+- Telegram: token хранится через `ctx.credentials` в `$DSH_HOME/.credentials.yaml`,
+  user ID и enabled — в settings; polling — один loop на процесс, только
+  private chat, временные ошибки повторяются с backoff, token не логируется.
+  Настройки применяются без рестарта через админку; при отсутствии настроек
+  Telegram-плагин не мешает запуску HTTP/API.
 - Профиль в репо — источник правды; синхронизация в `$DSH_HOME/profiles/balbes`
   выполняется заменой каталога целиком, после чего в его `node_modules`
   копируется собранный host (порядок: синк → копия).

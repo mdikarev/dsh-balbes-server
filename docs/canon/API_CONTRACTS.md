@@ -13,10 +13,11 @@
   errors/notes) — сейчас `health`, `auth.login`, `auth.me`, `prompt`,
   `workspaces.list`, `workspaces.create`, `workspaces.delete`,
   `workspaces.tree`, `workspaces.events`, `models.list`, `models.catalog`,
-  `models.save`, `models.delete`, `models.default`.
+  `models.save`, `models.delete`, `models.default`, `telegram.status`,
+  `telegram.save`, `telegram.test`, `telegram.disable`, `telegram.clear-token`.
 - Вне scope: статика SPA (не API), внутренние сервисные интерфейсы Cordis,
-  потоковая доставка ответов модели в чат (по-прежнему вне scope; новые
-  каналы появятся здесь же по мере реализации).
+  streaming-доставка ответов модели (Telegram MVP отправляет финальные
+  сообщения; SSE/WS остаются отдельным этапом).
 - При расхождении реестра и типов побеждают типы (компилятор); реестр
   правится в том же изменении, что и типы/поведение.
 
@@ -236,6 +237,54 @@
 - notes: пишет settings-секцию `agent-default-model`; применяется к следующим
   запросам `/api/prompt` — runner читает selection на каждый запрос, рестарт
   сервера не нужен.
+
+### telegram.status — состояние интеграции
+- method: POST
+- path: /api/telegram/status
+- auth: bearer
+- request: `{}`
+- response: `{enabled: boolean, configured: boolean, connected: boolean, botUsername?: string, allowedUserId?: number, lastPollAt?: string(ISO), error?: string}`
+- errors: 401
+- notes: token никогда не возвращается; `error` — безопасное сообщение без token
+  и stack trace.
+
+### telegram.save — сохранить настройки
+- method: POST
+- path: /api/telegram/save
+- auth: bearer
+- request: `{token?: string, allowedUserId: number, enabled: boolean}`
+- response: `{status: TelegramStatus}` (форма как в `telegram.status`)
+- errors: 400 (невалидный user ID; enabled без token/user ID; ошибка Bot API), 401
+- notes: отсутствующий token оставляет прежний; token записывается через
+  `ctx.credentials`, значение не возвращается. При enabled=true сервер вызывает
+  `getMe` и запускает/restarts polling без рестарта процесса.
+
+### telegram.test — проверить token
+- method: POST
+- path: /api/telegram/test
+- auth: bearer
+- request: `{}`
+- response: `{ok: true, botUsername: string}`
+- errors: 401, 409 `not-configured`, 502 `telegram-unavailable`
+- notes: не включает polling и не изменяет настройки.
+
+### telegram.disable — выключить polling
+- method: POST
+- path: /api/telegram/disable
+- auth: bearer
+- request: `{}`
+- response: `{status: TelegramStatus}`
+- errors: 401
+- notes: останавливает polling, token сохраняет.
+
+### telegram.clear-token — удалить token
+- method: POST
+- path: /api/telegram/clear-token
+- auth: bearer
+- request: `{}`
+- response: `{status: TelegramStatus}`
+- errors: 401
+- notes: удаляет secret через credentials и автоматически выключает polling.
 
 ## Rules & invariants
 
