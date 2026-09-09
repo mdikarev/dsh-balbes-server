@@ -135,15 +135,16 @@
 - path: /api/models/list
 - auth: bearer
 - request: `{}`
-- response: `{connections: [{routeId: string, kind: "deepseek"|"preset"|"custom", displayName: string, baseURL?: string, hasKey: boolean, models: string[], isDefault: boolean}], default: {provider: string, model: string}}`
+- response: `{connections: [{routeId: string, kind: "deepseek"|"preset"|"custom", providerId?: string, displayName: string, baseURL?: string, hasKey: boolean, models: string[], isDefault: boolean}], default: {provider: string, model: string}}`
 - errors: 401
 - notes: отдаёт состояние движка: роуты провайдеров (settings-секция
   `llm-pi-ai`); встроенный `deepseek-official` в списке всегда, его модели —
   закреплённый официальный список каталога dsh 0.1.2-rc.1
   (`deepseek-v4-flash`, `deepseek-v4-pro`), ре-синк при обновлении движка.
   Пресеты (`kind: "preset"`) — подключения по каталоговым провайдерам
-  движка dsh (pi-ai catalog): `routeId` == каталоговый id провайдера
-  (напр. `openai`, `anthropic`, `openrouter`, `groq`, `google`,
+  движка dsh (pi-ai catalog): у `kind: "preset"` элемент несёт
+  `providerId` (равен `routeId`) — каталоговый id провайдера (напр.
+  `openai`, `anthropic`, `openrouter`, `groq`, `google`,
   `mistral`, `xai`, `together`, `cerebras`, `fireworks`,
   `opencode`); официальные URL/протокол движок берёт из каталога —
   в route config `baseURL`/`api` не пишутся; `baseURL` в ответе есть
@@ -175,9 +176,10 @@
   в `$DSH_HOME/.credentials.yaml`; `key: null` у custom — сбрасывает (unset).
   Секрет не логируется и в ответ не возвращается никогда.
   Для `kind: "preset"` обязателен `provider` — каталоговый id провайдера
-  движка dsh (pi-ai catalog); список selectable пресетов (id + русские
-  названия) — отображаемые данные в `dsh-balbes-contracts`, сервер
-  валидирует `provider` по нему: вне списка — 400 `invalid-provider`.
+  движка dsh (pi-ai catalog); список selectable пресетов —
+  `MODEL_PROVIDER_PRESETS` в `dsh-balbes-contracts` (провайдер id +
+  отображаемое название; названия — бренды, англ.); сервер зеркалит его
+  для валидации: вне списка — 400 `invalid-provider`.
   Создаётся официальный роут: `routeId` == каталоговый id, официальные
   URL/протокол движок подставляет из каталога (в route config не пишем
   `baseURL`/`api`), опциональный `baseURL` — override «свой URL»; ключ —
