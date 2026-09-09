@@ -628,6 +628,36 @@ describe("ModelsPage catalog model picker", () => {
     expect(screen.queryByTestId("model-option:gpt-4o")).toBeNull();
   });
 
+  it("pressing Enter in the catalog filter must not submit the form (regression for the Enter guard); typing still filters", async () => {
+    const api = catalogApi(OPTIONS);
+    render(<ModelsPage api={api} />);
+    fireEvent.click(await screen.findByTestId("models-add"));
+    fireEvent.change(screen.getByTestId("model-provider-select"), { target: { value: "openai" } });
+    await screen.findByTestId("model-option:gpt-4o-mini");
+
+    // make the preset form valid (a chip added) so an accidental submit would
+    // otherwise reach the api: saveModel must stay uncalled for Enter in the filter
+    fireEvent.click(screen.getByTestId("model-option:gpt-4o-mini"));
+    await waitFor(() => expect((screen.getByTestId("model-form-submit") as HTMLButtonElement).disabled).toBe(false));
+
+    const filter = screen.getByTestId("model-catalog-filter");
+    const submit = screen.getByTestId("model-form-submit") as HTMLButtonElement;
+    // jsdom does not run the implicit form submission a browser performs on
+    // Enter inside a text input, so emulate it: the browser clicks the default
+    // submit button only when the keydown default action was not prevented.
+    const keydownNotPrevented = fireEvent.keyDown(filter, { key: "Enter" });
+    if (keydownNotPrevented) {
+      fireEvent.click(submit);
+    }
+    expect(vi.mocked(api.saveModel)).not.toHaveBeenCalled();
+
+    // the editor stays open and the filter keeps working after the Enter keypress
+    fireEvent.change(filter, { target: { value: "o1" } });
+    expect(screen.getByTestId("model-option:o1-preview")).toBeTruthy();
+    expect(screen.queryByTestId("model-option:gpt-4o-mini")).toBeNull();
+    expect(vi.mocked(api.saveModel)).not.toHaveBeenCalled();
+  });
+
   it("clicking an option adds a chip (no duplicates); chips stay removable; submit sends the model ids", async () => {
     const api = catalogApi(OPTIONS);
     render(<ModelsPage api={api} />);
