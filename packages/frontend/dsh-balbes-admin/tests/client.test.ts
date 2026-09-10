@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { createApiClient, ApiError, TOKEN_KEY } from "../src/api/client";
-import type { ModelsSaveRequest } from "dsh-balbes-contracts";
+import type { ModelsSaveRequest, TelegramSaveRequest } from "dsh-balbes-contracts";
 
 function mockFetchOnce(status: number, body: unknown) {
   return vi.fn().mockResolvedValue({
@@ -231,6 +231,65 @@ describe("api client", () => {
       { path: "/api/models/save", body: req },
       { path: "/api/models/delete", body: { routeId: "gw" } },
       { path: "/api/models/default", body: { provider: "gw", model: "m" } }
+    ]);
+  });
+
+  it("telegramStatus POSTs to /api/telegram/status with the Bearer header", async () => {
+    localStorage.setItem(TOKEN_KEY, "tok-1");
+    const body = {
+      status: {
+        state: "connected",
+        tokenConfigured: true,
+        enabled: true,
+        allowedUserId: 7,
+        botUsername: "balbes_bot",
+        lastPollAt: "2026-09-10T10:00:00.000Z"
+      }
+    };
+    const fetchMock = mockFetchOnce(200, body);
+    vi.stubGlobal("fetch", fetchMock);
+    const api = createApiClient();
+    const res = await api.telegramStatus();
+    expect(res.status.state).toBe("connected");
+    expect(res.status.botUsername).toBe("balbes_bot");
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/telegram/status");
+    expect(init.method).toBe("POST");
+    expect(init.headers).toMatchObject({ authorization: "Bearer tok-1" });
+  });
+
+  it("telegramSave POSTs the request body to /api/telegram/save", async () => {
+    localStorage.setItem(TOKEN_KEY, "tok-1");
+    const fetchMock = mockFetchOnce(200, { status: { state: "disabled", tokenConfigured: true, enabled: false } });
+    vi.stubGlobal("fetch", fetchMock);
+    const api = createApiClient();
+    const req: TelegramSaveRequest = { token: "123:abc", allowedUserId: 7, enabled: false };
+    const res = await api.telegramSave(req);
+    expect(res.status.tokenConfigured).toBe(true);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/telegram/save");
+    expect(init.method).toBe("POST");
+    expect(init.headers).toMatchObject({ authorization: "Bearer tok-1" });
+    expect(JSON.parse(String(init.body))).toEqual(req);
+  });
+
+  it("telegramTest / telegramDisable / telegramClearToken hit their routes", async () => {
+    localStorage.setItem(TOKEN_KEY, "tok-1");
+    const seen: Array<{ path: string; body: unknown }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      seen.push({ path: String(_url), body: JSON.parse(String(init?.body)) });
+      return { ok: true, status: 200, json: async () => ({ username: "balbes_bot", status: { state: "not-configured" } }) };
+    }));
+    const api = createApiClient();
+    const tested = await api.telegramTest();
+    expect(tested.username).toBe("balbes_bot");
+    const disabled = await api.telegramDisable();
+    expect(disabled.status.state).toBe("not-configured");
+    await api.telegramClearToken();
+    expect(seen).toEqual([
+      { path: "/api/telegram/test", body: {} },
+      { path: "/api/telegram/disable", body: {} },
+      { path: "/api/telegram/clear-token", body: {} }
     ]);
   });
 });

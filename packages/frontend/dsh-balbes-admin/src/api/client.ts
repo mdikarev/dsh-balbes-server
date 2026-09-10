@@ -23,7 +23,13 @@ import type {
   ModelsDefaultRequest,
   ModelsDefaultResponse,
   ModelsCatalogRequest,
-  ModelsCatalogResponse
+  ModelsCatalogResponse,
+  TelegramStatusResponse,
+  TelegramSaveRequest,
+  TelegramSaveResponse,
+  TelegramTestResponse,
+  TelegramDisableResponse,
+  TelegramClearTokenResponse
 } from "dsh-balbes-contracts";
 import { createSseParser } from "./sse";
 
@@ -63,6 +69,13 @@ export interface AdminApi {
   setDefaultModel(provider: string, model: string): Promise<ModelsDefaultResponse>;
   /** Engine model catalog for a provider (deepseek route id or preset id). */
   catalogModels(provider: string): Promise<ModelsCatalogResponse>;
+  /** Telegram bot settings; the token is only ever reported as tokenConfigured. */
+  telegramStatus(): Promise<TelegramStatusResponse>;
+  telegramSave(req: TelegramSaveRequest): Promise<TelegramSaveResponse>;
+  /** Live getMe check; throws (400 not-configured / 502 telegram-error) on failure. */
+  telegramTest(): Promise<TelegramTestResponse>;
+  telegramDisable(): Promise<TelegramDisableResponse>;
+  telegramClearToken(): Promise<TelegramClearTokenResponse>;
   subscribeWorkspaceEvents(cb: (e: WorkspaceEvent) => void): () => void;
   onUnauthorized(cb: () => void): void;
 }
@@ -167,6 +180,11 @@ export function createApiClient(): AdminApi {
     setDefaultModel: (provider, model) => guard(request<ModelsDefaultResponse>("/api/models/default", { provider, model } satisfies ModelsDefaultRequest)),
     catalogModels: (provider) =>
       guard(request<ModelsCatalogResponse>("/api/models/catalog", { provider } satisfies ModelsCatalogRequest)),
+    telegramStatus: () => guard(request<TelegramStatusResponse>("/api/telegram/status", {})),
+    telegramSave: (req) => guard(request<TelegramSaveResponse>("/api/telegram/save", req satisfies TelegramSaveRequest)),
+    telegramTest: () => guard(request<TelegramTestResponse>("/api/telegram/test", {})),
+    telegramDisable: () => guard(request<TelegramDisableResponse>("/api/telegram/disable", {})),
+    telegramClearToken: () => guard(request<TelegramClearTokenResponse>("/api/telegram/clear-token", {})),
     subscribeWorkspaceEvents: (cb) => {
       eventListeners.add(cb);
       openEventStream();

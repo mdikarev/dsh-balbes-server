@@ -101,4 +101,34 @@ describe("App", () => {
     const crumb = screen.getByText("balbes /");
     expect(crumb.querySelector("b")?.textContent).toBe("Модели");
   });
+
+  it("переходит на страницу Telegram по клику в сайдбаре", async () => {
+    // Only me() (App mount) and telegramStatus() (TelegramPage mount) fetch here:
+    // Topbar's useHealth deliberately polls on a 20s interval, not on mount.
+    vi.stubGlobal("fetch", mockFetchSequence(
+      { status: 200, body: { login: "balbes-x" } },
+      {
+        status: 200,
+        body: {
+          status: {
+            state: "connected",
+            tokenConfigured: true,
+            enabled: true,
+            allowedUserId: 7,
+            botUsername: "balbes_bot",
+            lastPollAt: "2026-09-10T10:00:00.000Z"
+          }
+        }
+      }
+    ));
+    localStorage.setItem("balbes.authToken", "t");
+    render(<App api={createApiClient()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Telegram" }));
+    expect(await screen.findByTestId("telegram-page")).toBeTruthy();
+    expect((await screen.findByTestId("telegram-state")).textContent).toBe("подключено");
+    expect(screen.getByTestId("telegram-bot").textContent).toContain("@balbes_bot");
+    // the top bar breadcrumb shows the page title
+    const crumb = screen.getByText("balbes /");
+    expect(crumb.querySelector("b")?.textContent).toBe("Telegram");
+  });
 });

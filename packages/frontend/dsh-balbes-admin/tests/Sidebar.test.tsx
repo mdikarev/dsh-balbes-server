@@ -45,4 +45,26 @@ describe("Sidebar", () => {
     fireEvent.click(screen.getByText("Проекты"));
     expect(onNavigate).toHaveBeenCalledWith("workspaces");
   });
+
+  it("«Telegram» sits next to «Модели» as a live item without the «скоро» pill", () => {
+    const onNavigate = vi.fn();
+    render(<Sidebar active="models" onNavigate={onNavigate} />);
+
+    const models = screen.getByRole("button", { name: "Модели" });
+    const telegram = screen.getByRole("button", { name: "Telegram" });
+    expect(telegram.className).not.toContain("ghost");
+    expect(telegram.textContent).not.toContain("скоро");
+    expect(models.compareDocumentPosition(telegram) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+
+    fireEvent.click(telegram);
+    expect(onNavigate).toHaveBeenCalledWith("telegram");
+  });
+
+  it("marks «Telegram» active without turning the ghost items live", () => {
+    render(<Sidebar active="telegram" onNavigate={() => {}} />);
+    const telegram = screen.getByRole("button", { name: "Telegram" });
+    expect(telegram.className).toContain("active");
+    expect(telegram.getAttribute("aria-current")).toBe("page");
+    expect(screen.getAllByText("скоро")).toHaveLength(4);
+  });
 });

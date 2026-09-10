@@ -393,3 +393,30 @@ button.ws-tree-row:hover { background: var(--surface); }
 .form-select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(77, 141, 255, .22); }
 .form-select:disabled { opacity: .65; }
 .form-note { margin: 0; font-size: 13px; color: var(--text-dim); }
+
+/* ── telegram page (Telegram) ────────────────────────────── */
+.telegram-page {
+  flex: 1; min-width: 0; overflow-y: auto; background: var(--bg);
+  padding: 20px 24px 28px; display: flex; flex-direction: column; gap: 14px;
+}
+.telegram-banner { margin: 0; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.telegram-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 7px; max-width: 640px;
+}
+.tg-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.tg-title { font-size: 14px; }
+.telegram-badge {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .6px; color: var(--text-dim);
+  border: 1px solid var(--border); border-radius: 99px; padding: 1px 8px; white-space: nowrap;
+}
+.telegram-badge.state-connected { color: var(--ok); border-color: var(--ok); }
+.telegram-badge.state-error { color: var(--danger); border-color: var(--danger); }
+.telegram-badge.state-disabled { color: var(--text-dim); }
+.telegram-form {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 14px; display: flex; flex-direction: column; gap: 12px; max-width: 640px;
+}
+.telegram-hint { color: var(--danger); }
+.telegram-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.telegram-test-ok { margin: 0; color: var(--ok); font-size: 13px; }

@@ -6,14 +6,16 @@ import Login from "./pages/Login";
 import TestPage from "./pages/TestPage";
 import WorkspacesPage from "./pages/WorkspacesPage";
 import ModelsPage from "./pages/ModelsPage";
+import TelegramPage from "./pages/TelegramPage";
 
 type View = "loading" | "login" | "main";
-type Page = "test" | "workspaces" | "models";
+type Page = "test" | "workspaces" | "models" | "telegram";
 
 const PAGE_TITLES: Record<Page, string> = {
   test: "Тестовая страница",
   workspaces: "Проекты",
-  models: "Модели"
+  models: "Модели",
+  telegram: "Telegram"
 };
 
 export default function App({ api }: { api: AdminApi }) {
@@ -52,8 +54,10 @@ export default function App({ api }: { api: AdminApi }) {
           <TestPage api={api} />
         ) : page === "workspaces" ? (
           <WorkspacesPage api={api} />
-        ) : (
+        ) : page === "models" ? (
           <ModelsPage api={api} />
+        ) : (
+          <TelegramPage api={api} />
         )}
       </main>
     </div>
