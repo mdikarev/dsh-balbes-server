@@ -1335,22 +1335,22 @@ import { readdir, stat as statFile } from "node:fs/promises";
    * каталоге проекта, а id находится сканированием $DSH_HOME/sessions.
    */
   it("lists a real session with the title and creation time from the engine", async () => {
-    const stubUrl = new URL("./helpers/stub-llm.mjs", import.meta.url).href;
-    const { startStubServer } = (await import(stubUrl)) as {
-      startStubServer(options: { replies: Array<{ text?: string }> }): Promise<{ port: number; close(): Promise<void> }>;
-    };
-    const stub = await startStubServer({ replies: [{ text: "ok from stub" }] });
     const home = await prepareHome();
     try {
-      // default model -> deepseek-official, adapter -> stub (как в telegram REAL)
+      // Каталог проекта создаётся заранее: сервер поднимается ИМЕННО в нём, чтобы
+      // cwd сессии из /api/prompt совпал с корнем воркспейса. Ручная папка —
+      // валидный проект (каталог — источник правды), поэтому /api/workspaces/create
+      // здесь не нужен.
+      const projectDir = join(home, "projects", "alpha");
+      await mkdir(projectDir, { recursive: true });
+      // default model -> deepseek-official, adapter -> stub (ключ даёт env, как в telegram REAL)
       await writeFile(
         join(home, "settings.yaml"),
         `agent-default-model:\n  provider: deepseek-official\n  model: deepseek-v4-flash\nllm-deepseek:\n  baseURL: http://127.0.0.1:${stub.port}\n`
       );
       const base = `http://127.0.0.1:${port}`;
-      const token = await bootServerWithCwd(home, join(home, "projects", "alpha"));
+      const token = await bootServerWithCwd(home, projectDir);
 
-      await postJson(`${base}/api/workspaces/create`, { name: "alpha" }, token);
       const prompt = await postJson(`${base}/api/prompt`, { prompt: "Reply with exactly: ok from stub" }, token);
       expect(prompt.status, prompt.raw).toBe(200);
 
@@ -1386,7 +1386,14 @@ import { readdir, stat as statFile } from "node:fs/promises";
   /** Сервер, поднятый в каталоге проекта: cwd сессии из /api/prompt = этот каталог. */
   async function bootServerWithCwd(home: string, cwd: string): Promise<string> {
     child = spawn("dsh", ["--profile", PROFILE], {
-      env: { ...process.env, DSH_HOME: home, BALBES_PORT: String(port), DSH_TELEMETRY_DISABLED: "1" },
+      env: {
+        ...process.env,
+        DSH_HOME: home,
+        BALBES_PORT: String(port),
+        DSH_TELEMETRY_DISABLED: "1",
+        // адаптер deepseek-official требует ключ даже против стаба (как в telegram REAL)
+        DEEPSEEK_API_KEY: "test-key"
+      },
       cwd,
       stdio: "ignore"
     });
@@ -1444,60 +1451,79 @@ git commit -m "test(sessions): prove titles and creation times come from the eng
 
 - [ ] **Step 1: Написать падающий тест**
 
-Добавить в `packages/plugins/dsh-balbes-telegram/tests/index.test.ts` (структура `apply`-харнесса там уже есть — использовать её же; ниже — целевые кейсы):
+В `packages/plugins/dsh-balbes-telegram/tests/index.test.ts` уже есть харнесс: `makeCtx()` раздаёт сервисы по `ctx.get(key)` (цепочка `balbesHttp`/`settings`/`credentials`/`balbesWorkspaces`/`agents`/`sessions`/`agentDefaultModel`), а состояние пишется в temp-дом (`home`/`stateFile`). Расширить харнесс и добавить два кейса.
+
+1) В объявления уровня файла (рядом с `workspaces`, `warns`, `disposers`) добавить:
+
+```ts
+let registered: Array<{ ref: unknown; sessionId: string; channel: string }>;
+```
+
+2) В `beforeEach` — инициализация (рядом с `workspaces = new FakeWorkspaces();`):
+
+```ts
+  registered = [];
+```
+
+3) В цепочку `makeCtx().get(key)` — новую ветку (перед `"agents"`):
+
+```ts
+        : key === "balbesSessions" ? {
+            register: async (ref: unknown, sessionId: string, channel: string) => {
+              registered.push({ ref, sessionId, channel });
+            }
+          }
+```
+
+4) Кейсы в `describe("balbes-telegram plugin")`:
 
 ```ts
   it("declares balbesSessions as a dependency", () => {
     expect(inject).toContain("balbesSessions");
   });
 
-  it("registers every session it runs for a workspace", async () => {
-    const registered: Array<{ ref: unknown; sessionId: string; channel: string }> = [];
-    // harness(ctx) — тот же, что в существующих тестах пакета; в него добавляется
-    // заглушка сервиса реестра:
-    const h = harness({
-      balbesSessions: {
-        register: async (ref: unknown, sessionId: string, channel: string) => {
-          registered.push({ ref, sessionId, channel });
-        }
-      },
-      // прогон одной успешной задачи воркспейса project/alpha, возвращающий sessionId
-      taskResult: { ok: true, text: "ok", sessionId: "session-1" }
-    });
+  it("syncs the persisted session map into the workspace registry on apply", async () => {
+    // Состояние до старта: так выглядит уже работавший сервер после обновления.
+    await writeFile(
+      stateFile,
+      JSON.stringify({
+        version: 1,
+        sessions: { home: "session-home", "project:alpha": "session-alpha" },
+        activeWorkspace: "project:alpha"
+      }),
+      "utf8"
+    );
 
-    await h.runTask({ scope: "project", name: "alpha" }, "hello");
+    apply(makeCtx(), { dshHome: home });
 
-    expect(registered).toEqual([
-      { ref: { scope: "project", name: "alpha" }, sessionId: "session-1", channel: "telegram" }
-    ]);
-  });
-
-  it("syncs the persisted session map into the registry on apply", async () => {
-    const registered: Array<{ ref: unknown; sessionId: string; channel: string }> = [];
-    const h = harness({
-      balbesSessions: {
-        register: async (ref: unknown, sessionId: string, channel: string) => {
-          registered.push({ ref, sessionId, channel });
-        }
-      },
-      persistedSessions: { home: "session-home", "project:alpha": "session-alpha" }
-    });
-
-    await h.settleApply();
-
-    expect(registered.sort((a, b) => a.sessionId.localeCompare(b.sessionId))).toEqual([
+    // Синк идёт в продолжении загрузки состояния — ждём эффект, а не тайминг.
+    await vi.waitFor(() => expect(registered).toHaveLength(2), { timeout: 5000 });
+    expect([...registered].sort((a, b) => a.sessionId.localeCompare(b.sessionId))).toEqual([
       { ref: { scope: "project", name: "alpha" }, sessionId: "session-alpha", channel: "telegram" },
       { ref: { scope: "home" }, sessionId: "session-home", channel: "telegram" }
     ]);
   });
+
+  it("ignores an unmappable state key and warns instead of inventing a workspace", async () => {
+    await writeFile(
+      stateFile,
+      JSON.stringify({ version: 1, sessions: { "weird:key": "session-weird" } }),
+      "utf8"
+    );
+
+    apply(makeCtx(), { dshHome: home });
+
+    await vi.waitFor(() => expect(warns.some((w) => w.includes("weird:key"))).toBe(true), { timeout: 5000 });
+    expect(registered).toEqual([]);
+  });
 ```
 
-Точные имена харнесс-хелперов (`harness(opts)`, `h.runTask`, `h.settleApply`, опции `balbesSessions`/`taskResult`/`persistedSessions`) ввести в этом шаге, расширив существующий харнесс файла: он уже строит фейковые `agents`/`sessions`/`balbesWorkspaces` и пишет состояние в temp-дом; новые опции прокидывают заглушку реестра, заранее записанный `telegram-state.json` и результат прогона.
+Путь прогона задачи (регистрация после `result.ok`) в юнит-тесте не поднимается: он требует живого агента и Bot API. Его проверяет REAL-набор telegram на шаге 5 — там уже гоняется настоящая задача через фейковый Bot API и стаб LLM.
 
 - [ ] **Step 2: Запустить — убедиться, что падает**
 
 Run: `cd packages/plugins/dsh-balbes-telegram && pnpm vitest run tests/index.test.ts`
-Expected: FAIL — `inject` не содержит `balbesSessions`, регистраций нет.
+Expected: FAIL — `inject` не содержит `balbesSessions`, синка нет (`registered` пуст).
 
 - [ ] **Step 3: Реализовать интеграцию**
 
@@ -1563,7 +1589,7 @@ function refFromStateKey(key: string): WorkspaceRef | undefined {
 }
 ```
 
-и сам синк (идемпотентный upsert — повторный запуск ничего не дублирует):
+и сам синк (идемпотентный upsert — повторный запуск ничего не дублирует). Он ставится внутри уже существующего продолжения загрузки состояния — в `booted.then((outcome) => { live = outcome.data; ... })`, сразу после присваивания `live`:
 
 ```ts
   if (sessionsRegistry !== undefined) {
@@ -1583,6 +1609,8 @@ function refFromStateKey(key: string): WorkspaceRef | undefined {
     }
   }
 ```
+
+Из-за `await` внутри `booted.then` цепочка остаётся разрешимой (ошибки каждого `register` уже поглощены `.catch`), поэтому `booted` продолжает быть безопасным для тех, кто его ждёт.
 
 - [ ] **Step 4: Добавить плагин сессий в тестовый профиль telegram**
 
@@ -1610,12 +1638,34 @@ function refFromStateKey(key: string): WorkspaceRef | undefined {
 
 с объявлением `const sessionsPkgRoot = join(pkgRoot, "..", "dsh-balbes-sessions");` рядом с `workspacesPkgRoot`.
 
-- [ ] **Step 5: Запустить тесты и типы пакета**
+- [ ] **Step 5: Доказать путь прогона задачи в REAL-наборе telegram**
+
+В `packages/plugins/dsh-balbes-telegram/tests/integration.test.ts`, в сценарии, который ставит задачу через фейковый Bot API и стаб LLM, после успешного хода добавить проверку реестра (импорт `readFile` там уже есть):
+
+```ts
+      // Инвариант «сессия воркспейса попала в реестр»: id берём из состояния
+      // telegram (там он записан тем же ходом), а не из внутренних структур.
+      const stateRaw = await readFile(join(home, "telegram-state.json"), "utf8");
+      const state = JSON.parse(stateRaw) as { sessions: Record<string, string> };
+      const sessionId = state.sessions["project:demo"];
+      expect(sessionId).toBeTruthy();
+
+      const registry = JSON.parse(await readFile(join(home, "workspace-sessions.json"), "utf8")) as {
+        version: number;
+        workspaces: Record<string, Array<{ sessionId: string; channel: string }>>;
+      };
+      expect(registry.version).toBe(1);
+      expect(registry.workspaces["project:demo"]).toEqual([{ sessionId, channel: "telegram" }]);
+```
+
+Если сценарий работает с воркспейсом не `demo`, а другим — подставить его фактический ключ. Задача 7 Step 6 коммитит вместе с этим изменением.
+
+- [ ] **Step 6: Запустить тесты и типы пакета**
 
 Run: `cd packages/plugins/dsh-balbes-telegram && pnpm run typecheck && pnpm test`
-Expected: exit 0. Затем REAL-набор (если есть `dsh`): `RUN_REAL=1 pnpm vitest run tests/integration.test.ts` → PASS (композиция telegram теперь включает плагин сессий).
+Expected: exit 0. Затем REAL-набор (если есть `dsh`): `RUN_REAL=1 pnpm vitest run tests/integration.test.ts` → PASS, включая проверку `workspace-sessions.json` (композиция telegram теперь включает плагин сессий).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add packages/plugins/dsh-balbes-telegram
@@ -1916,8 +1966,8 @@ interface SessionsTabProps {
 }
 
 /** Таб «Сессии»: список сессий воркспейса (наполняется в задаче 10). */
-export default function SessionsTab({ reloadKey }: SessionsTabProps) {
-  return <p className="ws-placeholder" data-testid="sessions-loading">Загрузка… {reloadKey}</p>;
+export default function SessionsTab(_props: SessionsTabProps) {
+  return <p className="ws-placeholder" data-testid="sessions-loading">Загрузка…</p>;
 }
 ```
 
@@ -2215,14 +2265,14 @@ Expected: PASS (6 кейсов).
 ```tsx
   it("loads sessions for the selected workspace", async () => {
     render(<WorkspacesPage api={api} />);
-    await waitFor(() => expect(screen.getByTestId("workspace-row-alpha")).toBeDefined());
-    fireEvent.click(screen.getByTestId("workspace-row-alpha"));
+    await waitFor(() => expect(screen.getByTestId("ws-row-alpha")).toBeDefined());
+    fireEvent.click(screen.getByTestId("ws-row-alpha"));
     await waitFor(() => expect(api.listSessions).toHaveBeenCalledWith("project", "alpha"));
     expect(screen.getByTestId("ws-tabs")).toBeDefined();
   });
 ```
 
-(`workspace-row-alpha` — существующий testid строки проекта; если в файле он назван иначе, использовать фактический.)
+`ws-row-alpha` — существующий testid строки проекта в `WorkspaceList.tsx` (`ws-row-${key}`, где ключ проекта — его имя, у дома — `home`).
 
 - [ ] **Step 6: Полный прогон фронтенда**
 
