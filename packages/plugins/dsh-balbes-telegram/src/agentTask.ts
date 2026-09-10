@@ -459,6 +459,19 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
     return { handle, sessionId };
   }
 
+  /**
+   * Dispose one owned handle, never letting a teardown failure escape: the
+   * caller has already decided the handle is doomed, and a throwing dispose
+   * must not replace the run's real outcome with its own error.
+   */
+  async function disposeQuietly(handle: AgentHandleLike, what: string): Promise<void> {
+    try {
+      await handle.dispose();
+    } catch (error) {
+      deps.logger?.warn(`dsh-balbes-telegram: ${what}: ${errorMessage(error)}`);
+    }
+  }
+
   /** One serialized turn: root check, handle acquisition, followup, flush. */
   async function executeTurn(
     key: string,
@@ -483,6 +496,15 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
         const acquired = await acquireHandle(root, opts);
         handle = acquired.handle;
         sessionId = acquired.sessionId;
+        // reset() may have landed while create/resume was still resolving. The
+        // entry it retired had no handle yet, so nobody else can dispose this
+        // one — settle the run AND dispose it here, or a registered agent leaks
+        // until restart. Never reached twice: the return below skips the
+        // error-path disposal, and that path also checks `entry.retired`.
+        if (entry.retired) {
+          await disposeQuietly(acquired.handle, "disposing the agent orphaned by a mid-create reset failed");
+          return { ok: false, code: "agent-error", message: RESET_ABORT_MESSAGE };
+        }
         entry.handle = handle;
         entry.sessionId = sessionId;
       } else {
@@ -534,13 +556,7 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
         const doomed = entry.handle;
         entry.handle = undefined;
         entry.sessionId = undefined;
-        try {
-          await doomed.dispose();
-        } catch (disposeError) {
-          deps.logger?.warn(
-            `dsh-balbes-telegram: disposing the wedged task agent failed: ${errorMessage(disposeError)}`
-          );
-        }
+        await disposeQuietly(doomed, "disposing the wedged task agent failed");
       }
       return { ok: false, code: "agent-error", message: errorMessage(error, AGENT_ERROR_MESSAGE) };
     }
@@ -619,11 +635,7 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
       }
       cache.delete(key);
       if (entry.handle !== undefined) {
-        try {
-          await entry.handle.dispose();
-        } catch (error) {
-          deps.logger?.warn(`dsh-balbes-telegram: reset dispose failed: ${errorMessage(error)}`);
-        }
+        await disposeQuietly(entry.handle, "reset dispose failed");
       }
     },
 

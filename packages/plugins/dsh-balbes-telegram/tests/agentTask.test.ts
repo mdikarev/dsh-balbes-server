@@ -448,6 +448,77 @@ describe("agentTask runner (fake deps)", () => {
     expect(agents.created[1]!.dispose).not.toHaveBeenCalled();
   });
 
+  /**
+   * The reset/create race the whole-branch review found: reset() retires the
+   * entry while `agents.create` (or `agents.resume`) is still resolving. The
+   * entry it retired owned NO handle yet, so the handle that resolves afterwards
+   * would never be disposed — a registered agent leaking until restart. Both
+   * halves are asserted: the orphan is disposed exactly once, and run() settles
+   * with the reset outcome instead of driving a discarded agent.
+   */
+  for (const kind of ["create", "resume"] as const) {
+    it(`reset landing while ${kind} is still resolving disposes the orphaned handle exactly once`, async () => {
+      const base = await mkdtemp(join(tmpdir(), "agenttask-"));
+      const warn = vi.fn();
+      const orphan = makeHandle({ answers: ["must never be used"] });
+      let acquireStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        acquireStarted = resolve;
+      });
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const acquire = async (): Promise<FakeHandle> => {
+        acquireStarted();
+        await gate;
+        return orphan;
+      };
+      const deps: AgentTaskDeps = {
+        agents: {
+          create: acquire,
+          resume: acquire
+        } as unknown as AgentTaskDeps["agents"],
+        sessions: { flush: vi.fn(async () => {}) },
+        defaultModel: { currentSelection: () => SELECTION },
+        workspaces: makeWorkspaces(base) as unknown as AgentTaskDeps["workspaces"],
+        logger: { warn }
+      };
+      const runner = createAgentTaskRunner(deps);
+      const opts = kind === "resume" ? { sessionId: "session-in-flight" } : undefined;
+      const pending = runner.run(PROJECT_ALPHA, `task during ${kind}`, opts);
+      // The entry exists and is busy, but its handle is still unresolved.
+      await started;
+      expect(runner.sessionIdOf(PROJECT_ALPHA)).toBeUndefined();
+
+      // The reset lands mid-acquire: there is no handle to dispose yet.
+      await runner.reset(PROJECT_ALPHA);
+      expect(runner.snapshot()).toEqual([]);
+
+      // The acquire now resolves with a live handle nobody owns any more.
+      release();
+      const result = await withTimeout(
+        pending,
+        2000,
+        `run() never settled after a reset during ${kind}`
+      );
+      expect(result).toEqual({
+        ok: false,
+        code: "agent-error",
+        message: "task aborted because the workspace context was reset"
+      });
+      // Disposed exactly once, by the post-acquire check (reset had nothing to
+      // dispose, and the error path skips retired entries), and never driven.
+      expect(orphan.dispose).toHaveBeenCalledTimes(1);
+      expect(orphan.agent.followup).not.toHaveBeenCalled();
+      expect(orphan.agent.whenIdle).not.toHaveBeenCalled();
+      expect(runner.sessionIdOf(PROJECT_ALPHA)).toBeUndefined();
+      expect(runner.snapshot()).toEqual([]);
+      // The runner stays usable, and the next turn acquires a fresh handle.
+      expect(warn).not.toHaveBeenCalled();
+    });
+  }
+
   it("workspace-gone: a workspaces.root throw maps to a safe result and never creates an agent", async () => {
     const { agents, runner } = await makeRunner();
     const result = await runner.run({ scope: "project", name: "gone" }, "anything");
