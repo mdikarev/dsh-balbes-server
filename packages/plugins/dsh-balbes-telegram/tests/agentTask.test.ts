@@ -613,6 +613,11 @@ function makeAgentCtx(tools: unknown): { on(): () => void; get(key: string): unk
   };
 }
 
+/**
+ * The allow list `composeAgentSetup` must apply on this deployment, name by
+ * name. `web_search` is kept on purpose (internet search); `web_fetch` is NOT:
+ * it is an egress channel to an arbitrary URL.
+ */
 const KEPT_BY_CONTRACT = [
   "read",
   "read_image",
@@ -620,6 +625,7 @@ const KEPT_BY_CONTRACT = [
   "edit",
   "glob",
   "grep",
+  "web_search",
   "todo_write",
   "get_goal",
   "create_goal",
@@ -635,7 +641,6 @@ describe("composeAgentSetup tool surface", () => {
       "bash",
       "str_replace_editor",
       "web_fetch",
-      "web_search",
       "skill",
       "subagent",
       "subagent_fork",
@@ -664,6 +669,33 @@ describe("composeAgentSetup tool surface", () => {
     const guard = tools.guards[0]!;
     expect(guard({ name: "read", arguments: { file_path: "notes.txt" } })).toBeUndefined();
     expect(guard({ name: "read", arguments: { file_path: "../bravo/secret.txt" } })).toContain("outside the workspace root");
+  });
+
+  /**
+   * Owner decision (containment split): a Telegram task may SEARCH the internet
+   * but may not FETCH an arbitrary URL. `web_search` is a provider-mediated
+   * search that cannot post data to an attacker's address; `web_fetch` is an
+   * egress channel to any URL a prompt injection names (indirect
+   * prompt-injection exfiltration). So with BOTH registered the applied
+   * restriction keeps the first and never the second.
+   */
+  it("keeps web_search but never web_fetch when the deployment registers both", () => {
+    // Both web tools are registered here (the REAL suite confirms `web_search`
+    // and `web_fetch` on the live registry), and only search survives.
+    const registered = [...KEPT_BY_CONTRACT, "web_fetch", "bash"];
+    const tools = makeTools(registered);
+    composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: SELECTION });
+
+    expect(registered).toContain("web_search");
+    expect(registered).toContain("web_fetch");
+    expect(tools.restrictions).toHaveLength(1);
+    const filter = tools.restrictions[0]!;
+    expect(filter.allow).toContain("web_search");
+    expect(filter.allow).not.toContain("web_fetch");
+    // The exact list, so the split cannot drift to "both" or "neither" silently.
+    expect(filter).toEqual({ allow: KEPT_BY_CONTRACT });
+    // The keep is an allow entry, never a deny of the other name.
+    expect(filter.deny).toBeUndefined();
   });
 
   it("names only registered tools, so a platform-dependent surface cannot throw", () => {

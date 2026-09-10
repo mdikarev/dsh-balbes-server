@@ -211,15 +211,23 @@ function summarizeTurn(session: AgentLike["session"], firstSeq: number): TurnOut
  *    path-argument guard can never cover that, nor `str_replace_editor`'s
  *    `view` command, nor the delegation/network/job/channel tools. The only
  *    boundary that holds on every host is the surface itself: this setup
- *    narrows the agent to {@link KEPT_TOOL_NAMES} (workspace file work plus
- *    benign bookkeeping) through the agent-scope `tools.restrict({ allow })`
- *    seam. Everything else the deployment registers — `bash`, `pwsh`,
- *    `str_replace_editor`, `subagent`, `subagent_fork`, `workflow`, `ralph`,
- *    `web_fetch`, `web_search`, `skill`, the `job_*` tools, `send_message`,
- *    `interrupt_agent`, `list_agents`, `exit_plan_mode` — is invisible to the
- *    model, and it is an allow filter (not a deny list) on purpose: a tool a
- *    future dsh registers is excluded by default instead of leaking in
- *    unnamed.
+ *    narrows the agent to {@link KEPT_TOOL_NAMES} (workspace file work,
+ *    internet search plus benign bookkeeping) through the agent-scope
+ *    `tools.restrict({ allow })` seam. Everything else the deployment
+ *    registers — `bash`, `pwsh`, `str_replace_editor`, `subagent`,
+ *    `subagent_fork`, `workflow`, `ralph`, `web_fetch`, `skill`, the `job_*`
+ *    tools, `send_message`, `interrupt_agent`, `list_agents`,
+ *    `exit_plan_mode` — is invisible to the model, and it is an allow filter
+ *    (not a deny list) on purpose: a tool a future dsh registers is excluded
+ *    by default instead of leaking in unnamed.
+ *
+ *    Internet SEARCH is on that surface; arbitrary URL FETCHING is not. A
+ *    task may call `web_search`, which is provider-mediated: the query goes
+ *    to the configured search provider and no bytes can be posted to an
+ *    address the model chooses. `web_fetch` stays excluded because it IS
+ *    such an egress channel — fetching an arbitrary URL is exactly what an
+ *    indirect prompt injection needs to send workspace content out to an
+ *    attacker's server; a search cannot address that server, a fetch can.
  * 2. Read paths inside that surface. The per-agent `tools.guard` denies fs
  *    reads whose resolved path leaves the workspace root, so `read`,
  *    `read_image`, `glob` and `grep` cannot walk out of the workspace by `../`,
@@ -240,9 +248,11 @@ function summarizeTurn(session: AgentLike["session"], firstSeq: number): TurnOut
  *   no longer ASK for anything outside the workspace — not an OS sandbox: the
  *   dsh process itself still holds the server's file permissions.
  * - {@link restrictToolSurface}'s fallback path (see there): when a
- *   composition registers none of the kept tools, the filter degrades to
- *   naming the read-capable tools it can see, which is narrower than the
- *   allow filter. The REAL suite asserts the allow path.
+ *   composition registers none of the kept tools, the filter degrades to a
+ *   deny list of the tools it knows it must remove. That path is deliberately
+ *   conservative and is intentionally left as it was when `web_search` moved
+ *   to the kept side: it only ever REMOVES tools, so it is narrower than the
+ *   allow path, never wider. The REAL suite asserts the allow path.
  */
 export interface AgentSetupOptions {
   /** The workspace root the session cwd resolves under (meta.cwd seed). */
@@ -252,12 +262,14 @@ export interface AgentSetupOptions {
 }
 
 /**
- * The model-facing tools a Telegram task session keeps: workspace file work
- * plus harmless bookkeeping. Registered identifiers verified against the
- * installed `@deepseek-ai/dsh-tool-fs` (`read`, `read_image`, `write`, `edit`),
- * `dsh-tool-fs-search` (`glob`, `grep`), `dsh-tool-todo` (`todo_write`) and
- * `dsh-tool-goal` (`create_goal`, `get_goal`, `update_goal`) packages, and
- * asserted name-by-name by the REAL suite's agent-visible surface dump.
+ * The model-facing tools a Telegram task session keeps: workspace file work,
+ * internet search, plus harmless bookkeeping. Registered identifiers verified
+ * against the installed `@deepseek-ai/dsh-tool-fs` (`read`, `read_image`,
+ * `write`, `edit`), `dsh-tool-fs-search` (`glob`, `grep`), `dsh-tool-web`
+ * (`web_search`; the same package registers the excluded `web_fetch`),
+ * `dsh-tool-todo` (`todo_write`) and `dsh-tool-goal` (`create_goal`,
+ * `get_goal`, `update_goal`) packages, and asserted name-by-name by the REAL
+ * suite's agent-visible surface dump.
  */
 const KEPT_TOOL_NAMES = [
   "read",
@@ -266,6 +278,9 @@ const KEPT_TOOL_NAMES = [
   "edit",
   "glob",
   "grep",
+  // Internet SEARCH is kept; `web_fetch` is deliberately NOT kept, because it
+  // is an egress channel to arbitrary URLs (see the containment notes above).
+  "web_search",
   "todo_write",
   "get_goal",
   "create_goal",
@@ -273,16 +288,20 @@ const KEPT_TOOL_NAMES = [
 ] as const;
 
 /**
- * Read-capable tools the surface must never expose, used only by the fallback
- * filter below. Registered identifiers: `dsh-tool-bash` (`bash`),
- * `dsh-tool-pwsh` (`pwsh`), `dsh-tool-str-replace-editor`
- * (`str_replace_editor`, whose `view` command reads), `dsh-tool-jobs`
- * (`job_list`, `job_output`, `job_kill` — job output is arbitrary captured
- * text), `dsh-tool-subagent` (`subagent`, `subagent_fork`, configurable
- * `toolName`s), `dsh-tool-workflow` (`workflow`), `dsh-tool-ralph` (`ralph`),
- * `dsh-tool-web` (`web_search`, `web_fetch`), `dsh-tool-skill` (`skill`),
- * `dsh-tool-subagent-control` (`send_message`, `interrupt_agent`,
- * `list_agents`).
+ * Tools the surface must never expose, used only by the fallback filter below.
+ * Registered identifiers: `dsh-tool-bash` (`bash`), `dsh-tool-pwsh` (`pwsh`),
+ * `dsh-tool-str-replace-editor` (`str_replace_editor`, whose `view` command
+ * reads), `dsh-tool-jobs` (`job_list`, `job_output`, `job_kill` — job output
+ * is arbitrary captured text), `dsh-tool-subagent` (`subagent`,
+ * `subagent_fork`, configurable `toolName`s), `dsh-tool-workflow`
+ * (`workflow`), `dsh-tool-ralph` (`ralph`), `dsh-tool-web` (`web_search`,
+ * `web_fetch`), `dsh-tool-skill` (`skill`), `dsh-tool-subagent-control`
+ * (`send_message`, `interrupt_agent`, `list_agents`).
+ *
+ * Deliberately conservative, and left as it was when `web_search` moved to the
+ * kept side: this list only ever REMOVES tools, so being narrower than the
+ * allow path is the safe direction. A composition that registers `web_search`
+ * has a kept tool and therefore takes the allow path above, never this one.
  *
  * The base tree disables `bash` on win32 and `pwsh` on every other platform,
  * so neither list can be assumed present — which is exactly why the filter is
@@ -385,8 +404,8 @@ interface ToolsSurface {
  * The allow path is the real one and is fail-closed: any tool not named above
  * disappears, including one a future dsh release adds. The deny path is the
  * degraded fallback for a composition that registers none of the kept tools at
- * all — it can only remove the read-capable names it knows, so it is narrower
- * than the allow filter, never wider.
+ * all — it can only remove the names it knows (among them `web_search`, which
+ * the allow path keeps), so it is narrower than the allow filter, never wider.
  *
  * A throw from `restrict()` is deliberately NOT swallowed: it would mean this
  * deployment cannot be constrained, and an audible `agent-error` on the task

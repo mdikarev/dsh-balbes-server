@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { execFile } from "node:child_process";
+import { createServer } from "node:http";
 import { promisify } from "node:util";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
@@ -38,7 +39,11 @@ const WRITE_PROOF_CONTENT = "written through the restricted surface\n";
 
 /**
  * The agent-visible tools this deployment KEEPS (see KEPT_TOOL_NAMES in
- * src/agentTask.ts): workspace file work plus benign bookkeeping.
+ * src/agentTask.ts): workspace file work, internet SEARCH (`web_search`) plus
+ * benign bookkeeping. Search is kept deliberately — it is provider-mediated
+ * and cannot post data to an address the model picks. `web_fetch` is the
+ * mirror image and is NOT kept (see DENIED_TOOLS): it is an egress channel to
+ * an arbitrary URL.
  */
 const KEPT_TOOLS = [
   "read",
@@ -47,6 +52,7 @@ const KEPT_TOOLS = [
   "edit",
   "glob",
   "grep",
+  "web_search",
   "todo_write",
   "get_goal",
   "create_goal",
@@ -54,11 +60,14 @@ const KEPT_TOOLS = [
 ];
 
 /**
- * Read-capable tools the Telegram surface must NEVER expose. `bash` is a
- * concrete escape on a host with a usable sandbox backend (the production
- * Linux VPS): there the shell runs confined by a policy that permits reads
- * anywhere (`readOnly: ["/"]`), so `cat $DSH_HOME/.credentials.yaml` returns
- * bytes — the exact hole a path-argument guard cannot close.
+ * Tools the Telegram surface must NEVER expose. `bash` is a concrete escape on
+ * a host with a usable sandbox backend (the production Linux VPS): there the
+ * shell runs confined by a policy that permits reads anywhere
+ * (`readOnly: ["/"]`), so `cat $DSH_HOME/.credentials.yaml` returns bytes —
+ * the exact hole a path-argument guard cannot close. `web_fetch` is the
+ * containment split's other half: fetching an arbitrary URL is an egress
+ * channel an indirect prompt injection can point at an attacker's server, so
+ * a Telegram task must never be offered it.
  */
 const DENIED_TOOLS = [
   "bash",
@@ -71,7 +80,6 @@ const DENIED_TOOLS = [
   "subagent_fork",
   "workflow",
   "ralph",
-  "web_search",
   "web_fetch",
   "skill",
   "send_message",
@@ -129,6 +137,39 @@ async function hasDsh(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+const EGRESS_BAIT_CONTENT = "EGRESS-BAIT-BODY-31\n";
+
+/**
+ * A loopback HTTP listener used as egress bait: the scripted `web_fetch` probe
+ * points at it, so if the restricted surface ever offered the fetch tool the
+ * request would land here. Zero recorded requests is the host-independent
+ * proof that no fetch was performed — no reliance on this host's sandbox.
+ */
+async function startEgressBait(): Promise<{
+  url: string;
+  requests: string[];
+  close(): Promise<void>;
+}> {
+  const requests: string[] = [];
+  const server = createServer((req, res) => {
+    requests.push(req.url ?? "");
+    res.writeHead(200, { "content-type": "text/plain" });
+    res.end(EGRESS_BAIT_CONTENT);
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address() as { port: number };
+  return {
+    url: `http://127.0.0.1:${address.port}/egress-probe`,
+    requests,
+    async close(): Promise<void> {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  };
 }
 
 /** Concatenate the text content of every `role: "tool"` message across calls. */
@@ -419,9 +460,11 @@ describe.skipIf(!realEnabled)("REAL agentTask: restricted tool surface + read co
     const names = tools!.schemas(agent).map((schema) => schema.name);
 
     // The deployment-wide view is the control: the tools exist, so their
-    // absence below is this agent's restriction, not a missing plugin.
+    // absence below is this agent's restriction, not a missing plugin. The
+    // kept search tool is in this list too — its appearance on the agent
+    // surface must not be an accident of the deployment lacking it.
     const deploymentNames = tools!.schemas().map((schema) => schema.name);
-    for (const name of ["bash", "read", "write", "edit", "str_replace_editor", "web_fetch"]) {
+    for (const name of ["bash", "read", "write", "edit", "str_replace_editor", "web_search", "web_fetch"]) {
       expect(deploymentNames, `deployment registers ${name}`).toContain(name);
     }
 
@@ -435,50 +478,71 @@ describe.skipIf(!realEnabled)("REAL agentTask: restricted tool surface + read co
       // that the tool is removed for, which is what makes a call fail.
       expect(tools!.get(name, agent), `tools.get(${name}, agent)`).toBeUndefined();
     }
-    // Not a blanket narrowing of the deployment: the global view still has them.
+    // Not a blanket narrowing of the deployment: the global view still has them
+    // — including the excluded fetch tool, whose sibling search IS kept.
     expect(tools!.get("bash")).toBeDefined();
+    expect(tools!.get("web_search")).toBeDefined();
     expect(tools!.get("web_fetch")).toBeDefined();
     // The model-facing catalog matches the surface exactly.
     expect(names.filter((name) => name === "run_code")).toEqual([]);
   }, 120_000);
 
   /**
-   * Surface containment end-to-end: the scripted model CALLS the two read
-   * channels a path guard cannot cover (`bash`, `str_replace_editor view`) on
-   * the $DSH_HOME stand-in. Both must fail as unknown tools and return none of
-   * its bytes — on every host, including one where the shell would otherwise
-   * run confined-but-read-anywhere.
+   * Surface containment end-to-end: the scripted model CALLS the read and
+   * egress channels a path guard cannot cover — `bash`, `str_replace_editor
+   * view` and `web_fetch` aimed at a loopback bait listener. All three must
+   * fail as unknown tools, return none of the $DSH_HOME stand-in's bytes and
+   * perform no network request — on every host, including one where the shell
+   * would otherwise run confined-but-read-anywhere.
    */
-  it("containment: shell and editor read channels are absent, not merely guarded", async () => {
+  it("containment: shell, editor and web_fetch channels are absent, not merely guarded", async () => {
     const probePath = join(home!, "credentials-probe.txt");
-    const { result, results, turnResults } = await runScripted({
-      ref: alphaRef,
-      prompt: "read the credentials file with the shell and the editor",
-      script: [
-        {
-          toolCall: {
-            name: "bash",
-            arguments: JSON.stringify({ command: `cat ${probePath}`, description: "probe" })
-          }
-        },
-        {
-          toolCall: {
-            name: "str_replace_editor",
-            arguments: JSON.stringify({ command: "view", path: probePath })
-          }
-        },
-        { text: "surface result" }
-      ],
-      finalText: "surface result"
-    });
-    expect(result.ok).toBe(true);
-    // Both calls were refused by the registry (no such tool for this agent) —
-    // NOT by a host sandbox that happens to be unusable here.
-    expect(turnResults.join("\n").match(/unknown tool/g) ?? []).toHaveLength(2);
-    expect(turnResults.join("\n")).toContain("bash");
-    expect(results.join("\n")).not.toContain("no sandbox backend is usable");
-    // And neither channel produced a single byte of the file.
-    expect(results.join("\n")).not.toContain(CREDENTIALS_PROBE_CONTENT.trim());
+    const bait = await startEgressBait();
+    try {
+      const { result, results, turnResults } = await runScripted({
+        ref: alphaRef,
+        prompt: "read the credentials file with the shell and the editor, then fetch a URL",
+        script: [
+          {
+            toolCall: {
+              name: "bash",
+              arguments: JSON.stringify({ command: `cat ${probePath}`, description: "probe" })
+            }
+          },
+          {
+            toolCall: {
+              name: "str_replace_editor",
+              arguments: JSON.stringify({ command: "view", path: probePath })
+            }
+          },
+          {
+            // The egress half of the containment split: `web_fetch` stays off
+            // the surface while `web_search` is on it. The URL aims at the bait
+            // listener, so a fetch that happened would be observable.
+            toolCall: { name: "web_fetch", arguments: JSON.stringify({ url: bait.url }) }
+          },
+          { text: "surface result" }
+        ],
+        finalText: "surface result"
+      });
+      expect(result.ok).toBe(true);
+      const joined = turnResults.join("\n");
+      // All three calls were refused by the registry (no such tool for this
+      // agent) — NOT by a host sandbox that happens to be unusable here.
+      expect(joined.match(/unknown tool/g) ?? []).toHaveLength(3);
+      expect(joined).toContain("bash");
+      expect(joined).toContain("web_fetch");
+      expect(results.join("\n")).not.toContain("no sandbox backend is usable");
+      // And neither read channel produced a single byte of the file.
+      expect(results.join("\n")).not.toContain(CREDENTIALS_PROBE_CONTENT.trim());
+      // No egress either: the bait listener recorded no request at all, and the
+      // page body it would have returned never reached the model.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(bait.requests).toEqual([]);
+      expect(results.join("\n")).not.toContain(EGRESS_BAIT_CONTENT.trim());
+    } finally {
+      await bait.close();
+    }
   }, 120_000);
 
   /**
@@ -514,8 +578,9 @@ describe.skipIf(!realEnabled)("REAL agentTask: restricted tool surface + read co
 
   /**
    * The path guard still covers the tools that remain: with the shell gone, the
-   * fs read tools are the only read channel, and their traversal is refused by
-   * the per-agent guard.
+   * fs read tools are the only channel that can name a LOCAL path (`web_search`
+   * is kept but cannot address a file), and their traversal is refused by the
+   * per-agent guard.
    */
   it("containment: the kept read tools cannot traverse out of the workspace", async () => {
     const { result, turnResults } = await runScripted({
