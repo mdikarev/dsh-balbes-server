@@ -820,6 +820,38 @@ describe("live model selection", () => {
     expect(await recorder.appliedModel()).toBe("deepseek-v4-pro");
   });
 
+  /**
+   * The task's actual deliverable is the RUNNER's own re-read of the global
+   * default, not `composeAgentSetup`'s pass-through. The test above builds its
+   * own ref and calls `composeAgentSetup` directly, so it stays green if
+   * `liveSelection` hands dsh a frozen snapshot instead of a getter. This test
+   * closes that hole: it drives the `setup` closure the runner really installed
+   * on `agents.create` (`agents.createOpts[0].setup`, the seam dsh calls with
+   * the agent scope) and flips the spied global default between two
+   * assembly+request rounds against that one installed ref, so the model
+   * resolved per request must follow the CURRENT default.
+   */
+  it("re-reads the current global default through the runner's installed setup", async () => {
+    const { agents, deps, runner } = await makeRunner();
+    await runner.run(PROJECT_ALPHA, "первая");
+
+    expect(agents.createOpts).toHaveLength(1);
+    const recorder = makeRecordingAgentCtx();
+    agents.createOpts[0]!.setup(recorder.ctx);
+
+    vi.spyOn(deps.defaultModel!, "currentSelection").mockReturnValue({
+      provider: "deepseek-official",
+      model: "deepseek-v4-flash"
+    });
+    expect(await recorder.appliedModel()).toBe("deepseek-v4-flash");
+
+    vi.spyOn(deps.defaultModel!, "currentSelection").mockReturnValue({
+      provider: "deepseek-official",
+      model: "deepseek-v4-pro"
+    });
+    expect(await recorder.appliedModel()).toBe("deepseek-v4-pro");
+  });
+
   it("keeps the session id when the default changes between turns", async () => {
     const { runner, deps } = await makeRunner();
     const first = await runner.run(PROJECT_ALPHA, "первая");
