@@ -73,8 +73,12 @@ interface BalbesWorkspacesService {
   readFile(...args: unknown[]): Promise<unknown>;
 }
 
-/** How many tasks may wait (not run) per workspace. */
-const QUEUE_MAX_WAITING = 3;
+/**
+ * How many tasks may wait (not run) per workspace. Exported because the chat
+ * copy of the `queue-full` reply has to state the same depth (Task 16 review
+ * minor: the number was hardcoded in chat.ts).
+ */
+export const QUEUE_MAX_WAITING = 3;
 const BUSY_MESSAGE = "a task for this workspace is already running";
 const QUEUE_FULL_MESSAGE = `the workspace task queue is full (${QUEUE_MAX_WAITING} waiting tasks max)`;
 const AGENT_ERROR_MESSAGE = "agent task failed";
@@ -192,18 +196,53 @@ function summarizeTurn(session: AgentLike["session"], firstSeq: number): TurnOut
 
 /**
  * Compose the agent-scoped setup every task session receives (create and
- * resume): the model-selection wiring (mirrors runner.ts) plus the
- * read-containment guard.
+ * resume): the model-selection wiring (mirrors runner.ts), the restricted
+ * tool surface, and the read-containment guard.
  *
- * dsh 0.1.2-rc.1 seam fact (Task 1 facts 3/4/5): a registry-created agent can
- * read OUTSIDE its workspace root — `../` traversal, absolute paths, and
- * symlink escapes all reach the model (fs-sandbox fences only mutations;
- * "every mode permits reading"). composeAgentSetup therefore registers a
- * per-agent `tools.guard` through the agent's own scope context that denies
- * model-facing fs reads whose resolved path leaves the workspace root. The
- * guard keeps the read/write/edit surface intact for in-workspace work (Task
- * 12's task flow still reads notes.txt inside the project) while the model
- * never receives bytes from outside.
+ * WHAT IS CONTAINED
+ *
+ * 1. The tool surface. dsh 0.1.2-rc.1 exposes no workspace-root read boundary
+ *    of its own (Task 1 facts 3/4/5): `read` traversal, absolute paths and
+ *    symlink escapes all reach the model, and the shell tools share the host
+ *    process. On the macOS dev host `bash` happens to fail closed ("no sandbox
+ *    backend is usable"), but that is an accident of the host — on the Linux
+ *    VPS dsh mounts a usable backend (Landlock/bwrap with `readOnly: ["/"]`),
+ *    so `bash cat $DSH_HOME/.credentials.yaml` RUNS and returns bytes. A
+ *    path-argument guard can never cover that, nor `str_replace_editor`'s
+ *    `view` command, nor the delegation/network/job/channel tools. The only
+ *    boundary that holds on every host is the surface itself: this setup
+ *    narrows the agent to {@link KEPT_TOOL_NAMES} (workspace file work plus
+ *    benign bookkeeping) through the agent-scope `tools.restrict({ allow })`
+ *    seam. Everything else the deployment registers — `bash`, `pwsh`,
+ *    `str_replace_editor`, `subagent`, `subagent_fork`, `workflow`, `ralph`,
+ *    `web_fetch`, `web_search`, `skill`, the `job_*` tools, `send_message`,
+ *    `interrupt_agent`, `list_agents`, `exit_plan_mode` — is invisible to the
+ *    model, and it is an allow filter (not a deny list) on purpose: a tool a
+ *    future dsh registers is excluded by default instead of leaking in
+ *    unnamed.
+ * 2. Read paths inside that surface. The per-agent `tools.guard` denies fs
+ *    reads whose resolved path leaves the workspace root, so `read`,
+ *    `read_image`, `glob` and `grep` cannot walk out of the workspace by `../`,
+ *    absolute path or symlink. In-workspace work (Task 12's task flow reads
+ *    notes.txt inside the project) stays intact.
+ *
+ * WHAT IS NOT CONTAINED (deliberately, and stated so nobody re-derives it)
+ *
+ * - A tool a plugin registers into the AGENT's own scope is exempt from
+ *   restrictions by dsh design ("a restriction filters what a scope inherits,
+ *   and never what its OWN layer registers"). The Telegram deployment
+ *   registers none; a preset that adds one to this scope is outside this
+ *   boundary.
+ * - The reserved `run_code` PTC transport cannot be named in a restriction
+ *   (`tools.restrict` rejects it); it carries no tool of its own, and this
+ *   deployment runs the default native presentation mode.
+ * - The host process. This is a model-facing surface boundary — the agent can
+ *   no longer ASK for anything outside the workspace — not an OS sandbox: the
+ *   dsh process itself still holds the server's file permissions.
+ * - {@link restrictToolSurface}'s fallback path (see there): when a
+ *   composition registers none of the kept tools, the filter degrades to
+ *   naming the read-capable tools it can see, which is narrower than the
+ *   allow filter. The REAL suite asserts the allow path.
  */
 export interface AgentSetupOptions {
   /** The workspace root the session cwd resolves under (meta.cwd seed). */
@@ -211,6 +250,62 @@ export interface AgentSetupOptions {
   /** The model selection captured from agentDefaultModel at create/resume. */
   selection: { provider: string; model: string };
 }
+
+/**
+ * The model-facing tools a Telegram task session keeps: workspace file work
+ * plus harmless bookkeeping. Registered identifiers verified against the
+ * installed `@deepseek-ai/dsh-tool-fs` (`read`, `read_image`, `write`, `edit`),
+ * `dsh-tool-fs-search` (`glob`, `grep`), `dsh-tool-todo` (`todo_write`) and
+ * `dsh-tool-goal` (`create_goal`, `get_goal`, `update_goal`) packages, and
+ * asserted name-by-name by the REAL suite's agent-visible surface dump.
+ */
+const KEPT_TOOL_NAMES = [
+  "read",
+  "read_image",
+  "write",
+  "edit",
+  "glob",
+  "grep",
+  "todo_write",
+  "get_goal",
+  "create_goal",
+  "update_goal"
+] as const;
+
+/**
+ * Read-capable tools the surface must never expose, used only by the fallback
+ * filter below. Registered identifiers: `dsh-tool-bash` (`bash`),
+ * `dsh-tool-pwsh` (`pwsh`), `dsh-tool-str-replace-editor`
+ * (`str_replace_editor`, whose `view` command reads), `dsh-tool-jobs`
+ * (`job_list`, `job_output`, `job_kill` — job output is arbitrary captured
+ * text), `dsh-tool-subagent` (`subagent`, `subagent_fork`, configurable
+ * `toolName`s), `dsh-tool-workflow` (`workflow`), `dsh-tool-ralph` (`ralph`),
+ * `dsh-tool-web` (`web_search`, `web_fetch`), `dsh-tool-skill` (`skill`),
+ * `dsh-tool-subagent-control` (`send_message`, `interrupt_agent`,
+ * `list_agents`).
+ *
+ * The base tree disables `bash` on win32 and `pwsh` on every other platform,
+ * so neither list can be assumed present — which is exactly why the filter is
+ * probed against the live registry before it is applied.
+ */
+const FALLBACK_DENIED_TOOL_NAMES = [
+  "bash",
+  "pwsh",
+  "str_replace_editor",
+  "job_list",
+  "job_output",
+  "job_kill",
+  "subagent",
+  "subagent_fork",
+  "workflow",
+  "ralph",
+  "web_search",
+  "web_fetch",
+  "skill",
+  "send_message",
+  "interrupt_agent",
+  "list_agents"
+] as const;
 
 /** Model-facing tools whose string path argument must stay inside the root. */
 const READ_PATH_ARG_BY_TOOL: Record<string, string> = {
@@ -262,12 +357,57 @@ function rootEscapes(root: string): (requested: string) => boolean {
   };
 }
 
+/**
+ * The agent-scope slice of dsh-tools' `ToolRuntime` this package consumes
+ * structurally (same best-effort-against-public-d.ts posture as the rest of
+ * the file). `restrict` / `guard` register in the CALLING agent's scope —
+ * dsh binds the receiving context per access, so a registration made through
+ * `agentCtx.get("tools")` applies to that agent alone, while `get(name)` reads
+ * the deployment-wide view used here only to probe which names exist.
+ */
+interface ToolsSurface {
+  restrict(filter: { allow?: readonly string[]; deny?: readonly string[] }): unknown;
+  guard(guard: (exec: GuardExecLike) => string | undefined): unknown;
+  /** The deployment-wide definition for a registered name, if any. */
+  get(name: string): unknown;
+}
+
+/**
+ * Narrow the agent's model-facing surface to the workspace tool set.
+ *
+ * The filter is probed against the live registry first: dsh-tools'
+ * `restrict()` rejects any name the composition does not register ("names
+ * unknown global tool"), and registration is platform-dependent (the base tree
+ * disables `bash` on win32 and `pwsh` elsewhere), so an unprobed allow list
+ * would throw on every host that lacks one of its names. Probing turns "which
+ * tools exist here" into data instead of a failing agent create.
+ *
+ * The allow path is the real one and is fail-closed: any tool not named above
+ * disappears, including one a future dsh release adds. The deny path is the
+ * degraded fallback for a composition that registers none of the kept tools at
+ * all — it can only remove the read-capable names it knows, so it is narrower
+ * than the allow filter, never wider.
+ *
+ * A throw from `restrict()` is deliberately NOT swallowed: it would mean this
+ * deployment cannot be constrained, and an audible `agent-error` on the task
+ * is the fail-closed outcome — silently handing the model the full surface
+ * (shells included) is the failure this function exists to prevent.
+ */
+function restrictToolSurface(tools: ToolsSurface): void {
+  const kept = KEPT_TOOL_NAMES.filter((name) => tools.get(name) !== undefined);
+  if (kept.length > 0) {
+    tools.restrict({ allow: kept });
+    return;
+  }
+  const denied = FALLBACK_DENIED_TOOL_NAMES.filter((name) => tools.get(name) !== undefined);
+  if (denied.length > 0) tools.restrict({ deny: denied });
+}
+
 export function composeAgentSetup(agentCtx: unknown, options: AgentSetupOptions): void {
   installModelSelection(agentCtx as never, { current: options.selection, assembled: undefined });
-  const tools = (agentCtx as { get(key: string): unknown }).get("tools") as
-    | { guard(guard: (exec: GuardExecLike) => string | undefined): unknown }
-    | undefined;
+  const tools = (agentCtx as { get(key: string): unknown }).get("tools") as ToolsSurface | undefined;
   if (tools === undefined) return;
+  restrictToolSurface(tools);
   const escapes = rootEscapes(options.root);
   tools.guard((exec) => {
     const argName = READ_PATH_ARG_BY_TOOL[exec.name];

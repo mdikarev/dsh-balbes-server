@@ -3,6 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  composeAgentSetup,
   createAgentTaskRunner,
   workspaceRefKey,
   type AgentTaskDeps,
@@ -488,5 +489,141 @@ describe("agentTask runner (fake deps)", () => {
   it("workspaceRefKey encodes scope and project name", () => {
     expect(workspaceRefKey(HOME_REF)).toBe("home");
     expect(workspaceRefKey(PROJECT_ALPHA)).toBe("project:alpha");
+  });
+});
+
+/**
+ * `composeAgentSetup` surface restriction, hermetic: a fake tools runtime stands
+ * in for dsh-tools' `ToolRuntime` and records what the setup asked for. dsh's
+ * own `restrict()` rejects a name the composition does not register (and
+ * registration is platform-dependent: `bash` is absent on win32, `pwsh` absent
+ * elsewhere), so the probe-before-filter behaviour is asserted here and the
+ * real registry view is asserted by the REAL suite.
+ */
+interface FakeRestriction {
+  allow?: readonly string[];
+  deny?: readonly string[];
+}
+function makeTools(registered: string[]): {
+  restrictions: FakeRestriction[];
+  guards: Array<(exec: { name: string; arguments: unknown }) => string | undefined>;
+  restrict(filter: FakeRestriction): () => void;
+  guard(guard: (exec: { name: string; arguments: unknown }) => string | undefined): () => void;
+  get(name: string): unknown;
+} {
+  const restrictions: FakeRestriction[] = [];
+  const guards: Array<(exec: { name: string; arguments: unknown }) => string | undefined> = [];
+  return {
+    restrictions,
+    guards,
+    restrict(filter: FakeRestriction): () => void {
+      // dsh-tools' own contract: an unknown global name is a hard error.
+      for (const name of [...(filter.allow ?? []), ...(filter.deny ?? [])]) {
+        if (!registered.includes(name)) throw new Error(`tools.restrict() names unknown global tool "${name}"`);
+      }
+      restrictions.push(filter);
+      return () => {};
+    },
+    guard(guard): () => void {
+      guards.push(guard);
+      return () => {};
+    },
+    get(name: string): unknown {
+      return registered.includes(name) ? { name } : undefined;
+    }
+  };
+}
+
+/** The agent scope context a real `setup` callback receives, reduced to seams. */
+function makeAgentCtx(tools: unknown): { on(): () => void; get(key: string): unknown } {
+  return {
+    on: () => () => {},
+    get: (key: string) => (key === "tools" ? tools : undefined)
+  };
+}
+
+const KEPT_BY_CONTRACT = [
+  "read",
+  "read_image",
+  "write",
+  "edit",
+  "glob",
+  "grep",
+  "todo_write",
+  "get_goal",
+  "create_goal",
+  "update_goal"
+];
+
+describe("composeAgentSetup tool surface", () => {
+  it("restricts the agent to the kept workspace tools and keeps the path guard", () => {
+    // The deployment surface as the REAL suite observes it (26 tools), plus a
+    // hypothetical tool a future dsh release adds.
+    const registered = [
+      ...KEPT_BY_CONTRACT,
+      "bash",
+      "str_replace_editor",
+      "web_fetch",
+      "web_search",
+      "skill",
+      "subagent",
+      "subagent_fork",
+      "workflow",
+      "ralph",
+      "job_list",
+      "job_output",
+      "job_kill",
+      "send_message",
+      "interrupt_agent",
+      "list_agents",
+      "exit_plan_mode",
+      "some_future_shell"
+    ];
+    const tools = makeTools(registered);
+    composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: SELECTION });
+
+    expect(tools.restrictions).toHaveLength(1);
+    // An allow filter, not a deny list: the unlisted future tool is removed by
+    // construction. `deny` is never used on the primary path.
+    expect(tools.restrictions[0]).toEqual({ allow: KEPT_BY_CONTRACT });
+    expect(registered.filter((n) => !KEPT_BY_CONTRACT.includes(n))).toContain("some_future_shell");
+
+    // Defense in depth: the per-agent path guard is still registered beside it.
+    expect(tools.guards).toHaveLength(1);
+    const guard = tools.guards[0]!;
+    expect(guard({ name: "read", arguments: { file_path: "notes.txt" } })).toBeUndefined();
+    expect(guard({ name: "read", arguments: { file_path: "../bravo/secret.txt" } })).toContain("outside the workspace root");
+  });
+
+  it("names only registered tools, so a platform-dependent surface cannot throw", () => {
+    // A Windows-shaped composition: `bash` is not registered, `pwsh` is, and no
+    // goal/todo tools exist. A hardcoded allow list containing `bash` would make
+    // dsh reject the whole restriction and fail every task.
+    const tools = makeTools(["read", "write", "pwsh", "web_fetch"]);
+    expect(() =>
+      composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: SELECTION })
+    ).not.toThrow();
+    expect(tools.restrictions).toEqual([{ allow: ["read", "write"] }]);
+  });
+
+  it("degrades to the known read-capable names when no kept tool is registered", () => {
+    const tools = makeTools(["bash", "pwsh", "web_fetch", "skill", "interrupt_agent"]);
+    composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: SELECTION });
+    // No allow filter is possible (nothing to keep would be an empty surface):
+    // the narrower deny fallback still removes every read channel it can name.
+    expect(tools.restrictions).toEqual([{ deny: ["bash", "pwsh", "web_fetch", "skill", "interrupt_agent"] }]);
+    expect(tools.guards).toHaveLength(1);
+  });
+
+  it("asks for no restriction when the deployment registers nothing it knows", () => {
+    const tools = makeTools(["totally_unknown_tool"]);
+    composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: SELECTION });
+    expect(tools.restrictions).toEqual([]);
+  });
+
+  it("is a no-op without a tools service", () => {
+    expect(() =>
+      composeAgentSetup(makeAgentCtx(undefined), { root: "/tmp/ws-root", selection: SELECTION })
+    ).not.toThrow();
   });
 });

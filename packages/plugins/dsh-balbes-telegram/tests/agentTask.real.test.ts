@@ -2,7 +2,7 @@ import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -32,6 +32,52 @@ const PROBE_GLOBAL_KEY = "__balbesRunProbeCtx__";
 const WS_NOTES_CONTENT = "notes content inside project alpha\n";
 const SIBLING_SECRET_CONTENT = "PROJECT-BRAVO-SECRET-77\n";
 const FAKE_AUTH_CONTENT = "FAKE-ADMIN-AUTH-SECRET-42\n";
+/** The content a shell/editor read of the $DSH_HOME stand-in would leak. */
+const CREDENTIALS_PROBE_CONTENT = "FAKE-CREDENTIALS-PROBE-91\n";
+const WRITE_PROOF_CONTENT = "written through the restricted surface\n";
+
+/**
+ * The agent-visible tools this deployment KEEPS (see KEPT_TOOL_NAMES in
+ * src/agentTask.ts): workspace file work plus benign bookkeeping.
+ */
+const KEPT_TOOLS = [
+  "read",
+  "read_image",
+  "write",
+  "edit",
+  "glob",
+  "grep",
+  "todo_write",
+  "get_goal",
+  "create_goal",
+  "update_goal"
+];
+
+/**
+ * Read-capable tools the Telegram surface must NEVER expose. `bash` is a
+ * concrete escape on a host with a usable sandbox backend (the production
+ * Linux VPS): there the shell runs confined by a policy that permits reads
+ * anywhere (`readOnly: ["/"]`), so `cat $DSH_HOME/.credentials.yaml` returns
+ * bytes — the exact hole a path-argument guard cannot close.
+ */
+const DENIED_TOOLS = [
+  "bash",
+  "pwsh",
+  "str_replace_editor",
+  "job_list",
+  "job_output",
+  "job_kill",
+  "subagent",
+  "subagent_fork",
+  "workflow",
+  "ralph",
+  "web_search",
+  "web_fetch",
+  "skill",
+  "send_message",
+  "interrupt_agent",
+  "list_agents"
+];
 
 interface SeamCtx {
   get(key: string): unknown;
@@ -39,6 +85,20 @@ interface SeamCtx {
 interface FiberLike {
   dispose(): Promise<unknown>;
 }
+/**
+ * The Task 1 probe mechanism: dsh-tools' own registry view for one agent. The
+ * agent object IS the scope key, so `schemas(agent)` is exactly the surface the
+ * model is offered, and `get(name, agent)` the definition it may execute.
+ */
+interface ToolRuntimeLike {
+  schemas(scope?: unknown): Array<{ name: string }>;
+  get(name: string, scope?: unknown): { parameters?: unknown } | undefined;
+}
+interface CapturedHandle {
+  agent: unknown;
+  dispose(): Promise<void>;
+}
+type AgentHandle = Awaited<ReturnType<AgentTaskDeps["agents"]["create"]>>;
 interface StubCall {
   path: string;
   body: { messages?: Array<{ role?: string; content?: string | unknown[] | unknown }> };
@@ -85,6 +145,25 @@ function toolResults(calls: StubCall[]): string[] {
   return out;
 }
 
+/**
+ * Tool results THIS run added that the transcript did not already carry. The
+ * runner keeps one persistent session per workspace, so every request replays
+ * the whole history: a negative assertion ("this turn did not leak X") has to
+ * look at what this run added, never at the accumulated transcript.
+ */
+function addedToolResults(priorCalls: StubCall[], calls: StubCall[]): string[] {
+  if (calls.length === 0) return [];
+  const prior = new Set(toolResults(priorCalls));
+  const added: string[] = [];
+  // Each request replays the transcript, so one result shows up in every later
+  // request of the run: keep the distinct additions.
+  for (const result of toolResults(calls)) {
+    if (prior.has(result) || added.includes(result)) continue;
+    added.push(result);
+  }
+  return added;
+}
+
 async function makeHome(): Promise<string> {
   const home = await mkdtemp(join(tmpdir(), "balbes-agenttask-"));
   const minDir = join(home, "profiles", "balbes-min");
@@ -123,13 +202,17 @@ async function bootSeams(home: string, stubPort: number): Promise<{ fiber: Fiber
 const runReal = (process.env.RUN_REAL ?? "").trim() !== "";
 const realEnabled = runReal ? await hasDsh() : false;
 
-describe.skipIf(!realEnabled)("REAL agentTask: read containment guard + persistent session reuse", () => {
+describe.skipIf(!realEnabled)("REAL agentTask: restricted tool surface + read containment + persistent session reuse", () => {
   let stub: StubLike | undefined;
   let home: string | undefined;
+  let alphaPath: string | undefined;
   let booted: { fiber: FiberLike; ctx: SeamCtx } | undefined;
   let previousHome: string | undefined;
   let previousKey: string | undefined;
   let runner: ReturnType<typeof createAgentTaskRunner> | undefined;
+  let tools: ToolRuntimeLike | undefined;
+  /** Every handle the REAL registry handed the runner, in creation order. */
+  const captured: CapturedHandle[] = [];
   const alphaRef: WorkspaceRef = { scope: "project", name: "alpha" };
 
   beforeAll(async () => {
@@ -140,16 +223,36 @@ describe.skipIf(!realEnabled)("REAL agentTask: read containment guard + persiste
     // bravo is the sibling project an alpha agent must not reach.
     const alpha = await createProject(home, "alpha");
     const bravo = await createProject(home, "bravo");
+    alphaPath = alpha.path;
     await writeFile(join(alpha.path, "notes.txt"), WS_NOTES_CONTENT);
     await writeFile(join(bravo.path, "secret.txt"), SIBLING_SECRET_CONTENT);
-    // A stand-in for the real credential document under $DSH_HOME: FAKE
-    // content only, never a real secret.
+    // Stand-ins for the real credential document and a secret-adjacent file
+    // under $DSH_HOME: FAKE content only, never a real secret.
     await writeFile(join(home, "admin-auth.json"), FAKE_AUTH_CONTENT);
+    await writeFile(join(home, "credentials-probe.txt"), CREDENTIALS_PROBE_CONTENT);
     const started = await startStubLlm({ text: "ok from stub" });
     stub = started;
     booted = await bootSeams(home, started.port);
     const ctx = booted.ctx;
-    const agents = ctx.get("agents") as unknown as AgentTaskDeps["agents"];
+    tools = ctx.get("tools") as ToolRuntimeLike;
+    const realAgents = ctx.get("agents") as unknown as AgentTaskDeps["agents"];
+    // The runner is driven through the PRODUCTION composition: the real
+    // registry calls the setup callback composeAgentSetup installs, so the
+    // surface below is the one a Telegram task session really gets. The wrapper
+    // only remembers the handles so the probe can ask dsh-tools what each agent
+    // sees.
+    const agents: AgentTaskDeps["agents"] = {
+      create: async (options: unknown): Promise<AgentHandle> => {
+        const handle = await realAgents.create(options);
+        captured.push(handle as unknown as CapturedHandle);
+        return handle;
+      },
+      resume: async (options: unknown): Promise<AgentHandle> => {
+        const handle = await realAgents.resume(options as never);
+        captured.push(handle as unknown as CapturedHandle);
+        return handle;
+      }
+    };
     const sessions = ctx.get("sessions") as unknown as AgentTaskDeps["sessions"];
     const maybeDefaultModel = ctx.get("agentDefaultModel");
     const maybeLoader = ctx.get("loader");
@@ -183,12 +286,13 @@ describe.skipIf(!realEnabled)("REAL agentTask: read containment guard + persiste
     prompt: string;
     script: Array<{ text?: string; toolCall?: { name: string; arguments: string } }>;
     finalText: string;
-  }): Promise<{ result: TaskResult; results: string[] }> {
+  }): Promise<{ result: TaskResult; results: string[]; turnResults: string[] }> {
     const callsBefore = stub!.calls.length;
+    const priorCalls = stub!.calls.slice(0, callsBefore);
     stub!.setScript(opts.script);
     const result = await runner!.run(opts.ref, opts.prompt);
     const calls = stub!.calls.slice(callsBefore);
-    return { result, results: toolResults(calls) };
+    return { result, results: toolResults(calls), turnResults: addedToolResults(priorCalls, calls) };
   }
 
   it("in-workspace relative read returns the real content to the model (guard allows)", async () => {
@@ -296,5 +400,144 @@ describe.skipIf(!realEnabled)("REAL agentTask: read containment guard + persiste
     const alpha = runner!.sessionIdOf(alphaRef);
     expect(ok.sessionId).not.toBe(alpha);
     expect(runner!.snapshot()).toHaveLength(2);
+  }, 120_000);
+
+  /**
+   * The acceptance the whole-branch review demanded for the Critical finding:
+   * the DENIED tools are absent from the surface a Telegram-launched agent is
+   * offered AND cannot execute, the KEPT tools are present, and the removal is
+   * per-agent (the deployment itself still registers them). Host-independent:
+   * it reads dsh-tools' own registry view for the live agent instead of
+   * relying on this macOS host's fail-closed bash.
+   */
+  it("the tool surface of a telegram-launched agent is restricted to workspace file work", async () => {
+    // Reuses alpha's live handle (created by the first test); the probe needs
+    // an agent that went through composeAgentSetup.
+    const handle = captured[0];
+    expect(handle, "a handle created through the runner").toBeDefined();
+    const agent = handle!.agent;
+    const names = tools!.schemas(agent).map((schema) => schema.name);
+
+    // The deployment-wide view is the control: the tools exist, so their
+    // absence below is this agent's restriction, not a missing plugin.
+    const deploymentNames = tools!.schemas().map((schema) => schema.name);
+    for (const name of ["bash", "read", "write", "edit", "str_replace_editor", "web_fetch"]) {
+      expect(deploymentNames, `deployment registers ${name}`).toContain(name);
+    }
+
+    for (const name of KEPT_TOOLS) {
+      expect(names, `agent-visible surface keeps ${name}`).toContain(name);
+      expect(tools!.get(name, agent), `tools.get(${name}, agent)`).toBeDefined();
+    }
+    for (const name of DENIED_TOOLS) {
+      expect(names, `agent-visible surface hides ${name}`).not.toContain(name);
+      // Hidden is not enough: the definition must be unreachable for the agent
+      // that the tool is removed for, which is what makes a call fail.
+      expect(tools!.get(name, agent), `tools.get(${name}, agent)`).toBeUndefined();
+    }
+    // Not a blanket narrowing of the deployment: the global view still has them.
+    expect(tools!.get("bash")).toBeDefined();
+    expect(tools!.get("web_fetch")).toBeDefined();
+    // The model-facing catalog matches the surface exactly.
+    expect(names.filter((name) => name === "run_code")).toEqual([]);
+  }, 120_000);
+
+  /**
+   * Surface containment end-to-end: the scripted model CALLS the two read
+   * channels a path guard cannot cover (`bash`, `str_replace_editor view`) on
+   * the $DSH_HOME stand-in. Both must fail as unknown tools and return none of
+   * its bytes — on every host, including one where the shell would otherwise
+   * run confined-but-read-anywhere.
+   */
+  it("containment: shell and editor read channels are absent, not merely guarded", async () => {
+    const probePath = join(home!, "credentials-probe.txt");
+    const { result, results, turnResults } = await runScripted({
+      ref: alphaRef,
+      prompt: "read the credentials file with the shell and the editor",
+      script: [
+        {
+          toolCall: {
+            name: "bash",
+            arguments: JSON.stringify({ command: `cat ${probePath}`, description: "probe" })
+          }
+        },
+        {
+          toolCall: {
+            name: "str_replace_editor",
+            arguments: JSON.stringify({ command: "view", path: probePath })
+          }
+        },
+        { text: "surface result" }
+      ],
+      finalText: "surface result"
+    });
+    expect(result.ok).toBe(true);
+    // Both calls were refused by the registry (no such tool for this agent) —
+    // NOT by a host sandbox that happens to be unusable here.
+    expect(turnResults.join("\n").match(/unknown tool/g) ?? []).toHaveLength(2);
+    expect(turnResults.join("\n")).toContain("bash");
+    expect(results.join("\n")).not.toContain("no sandbox backend is usable");
+    // And neither channel produced a single byte of the file.
+    expect(results.join("\n")).not.toContain(CREDENTIALS_PROBE_CONTENT.trim());
+  }, 120_000);
+
+  /**
+   * The kept surface still WORKS: an allowed in-workspace write goes through
+   * the real fs tool (the file lands on disk) after the restriction is in
+   * place, so containment did not cost the task flow its file work.
+   */
+  it("an allowed in-workspace write still reaches the disk through the restricted surface", async () => {
+    const target = join(alphaPath!, "written.txt");
+    const { result, results, turnResults } = await runScripted({
+      ref: alphaRef,
+      prompt: "write a file",
+      script: [
+        {
+          toolCall: {
+            name: "write",
+            arguments: JSON.stringify({ file_path: "written.txt", content: WRITE_PROOF_CONTENT })
+          }
+        },
+        { text: "write ok" }
+      ],
+      finalText: "write ok"
+    });
+    expect(result.ok).toBe(true);
+    // This turn's own tool result is a success, not a refusal.
+    expect(turnResults.join("\n")).not.toContain("unknown tool");
+    expect(turnResults.join("\n")).not.toContain("denied");
+    expect(results.join("\n")).toContain("written.txt");
+    // The real write executed: the bytes are on disk inside the workspace.
+    expect(existsSync(target)).toBe(true);
+    expect(readFileSync(target, "utf8")).toBe(WRITE_PROOF_CONTENT);
+  }, 120_000);
+
+  /**
+   * The path guard still covers the tools that remain: with the shell gone, the
+   * fs read tools are the only read channel, and their traversal is refused by
+   * the per-agent guard.
+   */
+  it("containment: the kept read tools cannot traverse out of the workspace", async () => {
+    const { result, turnResults } = await runScripted({
+      ref: alphaRef,
+      prompt: "glob outside the workspace",
+      script: [
+        {
+          toolCall: {
+            name: "glob",
+            arguments: JSON.stringify({ pattern: "*", path: join(home!, "..") })
+          }
+        },
+        { text: "glob result" }
+      ],
+      finalText: "glob result"
+    });
+    expect(result.ok).toBe(true);
+    const joined = turnResults.join("\n");
+    // The tool EXISTS for this agent (it is on the kept surface) and its call
+    // was refused by the guard — the two layers are independent.
+    expect(joined).toContain("denied");
+    expect(joined).toContain("outside the workspace root");
+    expect(joined).not.toContain("unknown tool");
   }, 120_000);
 });
