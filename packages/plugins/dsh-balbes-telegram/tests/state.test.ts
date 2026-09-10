@@ -58,11 +58,98 @@ describe("TelegramState.save", () => {
     expect(await state.load()).toEqual({ version: 1, sessions: { home: "sess-2" }, offset: 7 });
   });
 
-  it("rejects and leaves no temporary file when the target directory is missing", async () => {
+  it("cleans up its temporary file when the rename fails", async () => {
+    // The failure must land AFTER the tmp exists: a directory planted at the
+    // state path takes the tmp write fine and then fails rename(tmp, dir), so
+    // only the best-effort unlink can keep the tmp from being left behind.
+    await mkdir(file);
+
+    await expect(state.save({ version: 1, sessions: { home: "sess-1" } })).rejects.toThrow();
+    expect(await readdir(home)).toEqual(["telegram-state.json"]);
+  });
+
+  it("rejects and writes nothing when the target directory is missing", async () => {
     const orphan = new TelegramState(join(home, "missing-dir", "telegram-state.json"));
 
     await expect(orphan.save({ version: 1, sessions: {} })).rejects.toThrow();
     expect(await readdir(home)).toEqual([]);
+  });
+
+  it("swaps the file atomically instead of rewriting it in place", async () => {
+    await state.save({ version: 1, sessions: { home: "sess-1" } });
+    const before = await stat(file);
+    await state.save({ version: 1, sessions: { home: "sess-2" } });
+    const after = await stat(file);
+
+    // tmp + rename installs a NEW inode; an in-place writeFile keeps the old
+    // one, which is exactly the window where a reader can observe a truncated
+    // file. A different inode proves the swap happened, not a partial rewrite.
+    expect(after.ino).not.toBe(before.ino);
+  });
+
+  it("survives interleaved concurrent writes with one tmp per write", async () => {
+    const payloads: TelegramStateData[] = Array.from({ length: 8 }, (_, i) => ({
+      version: 1,
+      sessions: { home: `sess-${i}` },
+      offset: i + 1
+    }));
+
+    // A shared (e.g. pid-only) tmp path makes these chains steal each other's
+    // tmp, so a save rejects with ENOENT and Promise.all fails.
+    await Promise.all(payloads.map((payload) => state.save(payload)));
+
+    expect(payloads).toContainEqual(await state.load());
+    expect((await readdir(home)).filter((name) => name.includes(".tmp."))).toEqual([]);
+  });
+});
+
+describe("TelegramState.save shape validation", () => {
+  it("rejects a non-finite offset instead of serializing it to null", async () => {
+    // NaN/Infinity are type-legal numbers that JSON.stringify turns into null,
+    // which would leave the file unloadable on the next load.
+    await expect(state.save({ version: 1, sessions: {}, offset: Number.NaN })).rejects.toThrow(file);
+    await expect(state.save({ version: 1, sessions: {}, offset: Number.POSITIVE_INFINITY })).rejects.toThrow(file);
+    await expect(state.save({ version: 1, sessions: {}, offset: Number.NEGATIVE_INFINITY })).rejects.toThrow(file);
+
+    expect(await readdir(home)).toEqual([]);
+    expect(await state.load()).toEqual({ version: 1, sessions: {} });
+  });
+
+  it("rejects a non-positive or fractional offset with the file name", async () => {
+    for (const offset of [0, -1, 1.5]) {
+      await expect(state.save({ version: 1, sessions: {}, offset })).rejects.toThrow(file);
+    }
+
+    expect(await readdir(home)).toEqual([]);
+  });
+
+  it("rejects a non-string session id with the file name", async () => {
+    // A type-bypassing caller (a cast, an untyped JSON round-trip) must not be
+    // able to persist a shape that load will later refuse.
+    const illegal = { version: 1 as const, sessions: { home: 7 as unknown as string } };
+
+    await expect(state.save(illegal)).rejects.toThrow(file);
+    expect(await readdir(home)).toEqual([]);
+  });
+
+  it("rejects an empty session id with the file name", async () => {
+    await expect(state.save({ version: 1, sessions: { home: "" } })).rejects.toThrow(file);
+    expect(await readdir(home)).toEqual([]);
+  });
+
+  it("rejects a non-string activeWorkspace with the file name", async () => {
+    const illegal = { version: 1 as const, sessions: {}, activeWorkspace: 7 as unknown as string };
+
+    await expect(state.save(illegal)).rejects.toThrow(file);
+    expect(await readdir(home)).toEqual([]);
+  });
+
+  it("writes a valid shape that load reads back unchanged", async () => {
+    const data: TelegramStateData = { version: 1, activeWorkspace: "home", sessions: { home: "sess-1" }, offset: 5 };
+
+    await state.save(data);
+
+    expect(await state.load()).toEqual(data);
   });
 });
 
@@ -128,6 +215,14 @@ describe("TelegramState.load shape validation", () => {
 
   it("rejects a non-string session id with the file name", async () => {
     await writeRaw(JSON.stringify({ version: 1, sessions: { home: 7 } }));
+
+    await expect(state.load()).rejects.toThrow(file);
+  });
+
+  it("rejects an empty session id with the file name", async () => {
+    // Same validator as save: an empty string is not a session id, so a file
+    // carrying one is damage rather than a resumable session.
+    await writeRaw(JSON.stringify({ version: 1, sessions: { home: "" } }));
 
     await expect(state.load()).rejects.toThrow(file);
   });

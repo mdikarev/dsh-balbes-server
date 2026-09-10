@@ -28,26 +28,25 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Strict shape check on load, in the `parseAdminAuth` style: a damaged or
- * foreign file is an error naming the file, never a silent reset — silently
- * rewriting would drop the session map (and with it every conversation) on a
- * single bad parse, and would hide real damage until it is unrecoverable.
+ * Strict shape check shared by load and save, in the `parseAdminAuth` style:
+ * every rejection is an error naming the file. Returns a normalized copy built
+ * from the known fields only, so absent optionals stay absent and unknown
+ * fields never reach the disk (or the caller).
+ *
+ * Applying the SAME validator on both sides is what keeps the store loadable:
+ * a NaN/Infinity offset serializes to JSON `null` and an empty session id to
+ * `""`, so a save that skipped this check would leave a file that load must
+ * then reject — a permanently unloadable store.
  */
-function parseState(raw: string, file: string): TelegramStateData {
+function assertShape(value: unknown, file: string): TelegramStateData {
   const invalid = (detail: string): Error => new Error(`telegram state file ${file} ${detail}`);
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw invalid("is not valid JSON");
-  }
-  if (!isPlainObject(parsed)) throw invalid("misses required fields");
-  const record = parsed as { version?: unknown; activeWorkspace?: unknown; sessions?: unknown; offset?: unknown };
+  if (!isPlainObject(value)) throw invalid("misses required fields");
+  const record = value as { version?: unknown; activeWorkspace?: unknown; sessions?: unknown; offset?: unknown };
   if (record.version !== 1 || !isPlainObject(record.sessions)) throw invalid("misses required fields");
   const sessions: Record<string, string> = {};
-  for (const [key, value] of Object.entries(record.sessions)) {
-    if (typeof value !== "string") throw invalid(`has a non-string session id for key ${key}`);
-    sessions[key] = value;
+  for (const [key, sessionId] of Object.entries(record.sessions)) {
+    if (typeof sessionId !== "string" || sessionId === "") throw invalid(`has an invalid session id for key ${key}`);
+    sessions[key] = sessionId;
   }
   const data: TelegramStateData = { version: 1, sessions };
   if (record.activeWorkspace !== undefined) {
@@ -55,14 +54,31 @@ function parseState(raw: string, file: string): TelegramStateData {
     data.activeWorkspace = record.activeWorkspace;
   }
   if (record.offset !== undefined) {
-    // A Telegram update_id is always positive, so 0/negatives/fractions are
-    // damage, not a legitimate "no updates yet" marker (that is the absent field).
+    // A Telegram update_id is always positive, so 0/negatives/fractions/NaN
+    // are damage, not a legitimate "no updates yet" marker (that is the absent
+    // field). Number.isInteger also rejects Infinity.
     if (typeof record.offset !== "number" || !Number.isInteger(record.offset) || record.offset <= 0) {
       throw invalid("has an invalid offset");
     }
     data.offset = record.offset;
   }
   return data;
+}
+
+/**
+ * Parse-and-check a file's contents. A damaged or foreign file is an error
+ * naming the file, never a silent reset: silently rewriting would drop the
+ * session map (and with it every conversation) on a single bad parse, and
+ * would hide real damage until it is unrecoverable.
+ */
+function parseState(raw: string, file: string): TelegramStateData {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`telegram state file ${file} is not valid JSON`);
+  }
+  return assertShape(parsed, file);
 }
 
 /**
@@ -92,14 +108,19 @@ export class TelegramState {
     return parseState(raw, this.file);
   }
 
-  /** Write the whole state atomically, owner-only (mode 600). */
+  /**
+   * Write the whole state atomically, owner-only (mode 600). The shape is
+   * validated BEFORE anything is written, so a rejected save leaves the
+   * previous file (and the previous state) untouched.
+   */
   async save(next: TelegramStateData): Promise<void> {
+    const data = assertShape(next, this.file);
     // Unique tmp per write (same reasoning as workspaces' writeRegistry):
     // un-mutexed writeFile -> chmod -> rename chains must never share one tmp
     // path, or one chain's rename steals the other's tmp mid-flight.
     const tmp = `${this.file}.tmp.${process.pid}.${randomUUID()}`;
     try {
-      await writeFile(tmp, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+      await writeFile(tmp, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
       await chmod(tmp, 0o600);
       await rename(tmp, this.file);
     } catch (error) {
