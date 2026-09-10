@@ -251,8 +251,10 @@ function summarizeTurn(session: AgentLike["session"], firstSeq: number): TurnOut
  *   composition registers none of the kept tools, the filter degrades to a
  *   deny list of the tools it knows it must remove. That path is deliberately
  *   conservative and is intentionally left as it was when `web_search` moved
- *   to the kept side: it only ever REMOVES tools, so it is narrower than the
- *   allow path, never wider. The REAL suite asserts the allow path.
+ *   to the kept side: it removes a subset of what the allow path removes — a
+ *   weaker guarantee, never a stronger one (any name it does not list stays
+ *   reachable, which is exactly why this is filed as not-contained). The REAL
+ *   suite asserts the allow path.
  */
 export interface AgentSetupOptions {
   /** The workspace root the session cwd resolves under (meta.cwd seed). */
@@ -299,9 +301,11 @@ const KEPT_TOOL_NAMES = [
  * (`send_message`, `interrupt_agent`, `list_agents`).
  *
  * Deliberately conservative, and left as it was when `web_search` moved to the
- * kept side: this list only ever REMOVES tools, so being narrower than the
- * allow path is the safe direction. A composition that registers `web_search`
- * has a kept tool and therefore takes the allow path above, never this one.
+ * kept side: this list removes a subset of what the allow path removes — a
+ * weaker guarantee, never a stronger one, because an unlisted name stays
+ * reachable here (that residual surface is what {@link KEPT_TOOL_NAMES}'s
+ * allow filter closes). A composition that registers `web_search` has a kept
+ * tool and therefore takes the allow path above, never this one.
  *
  * The base tree disables `bash` on win32 and `pwsh` on every other platform,
  * so neither list can be assumed present — which is exactly why the filter is
@@ -404,8 +408,10 @@ interface ToolsSurface {
  * The allow path is the real one and is fail-closed: any tool not named above
  * disappears, including one a future dsh release adds. The deny path is the
  * degraded fallback for a composition that registers none of the kept tools at
- * all — it can only remove the names it knows (among them `web_search`, which
- * the allow path keeps), so it is narrower than the allow filter, never wider.
+ * all — it removes a subset of what the allow filter removes (it can only name
+ * the tools it knows, among them `web_search`, which the allow path keeps),
+ * i.e. a weaker guarantee, never a stronger one: a name it does not list stays
+ * reachable, so this branch degrades the boundary instead of tightening it.
  *
  * A throw from `restrict()` is deliberately NOT swallowed: it would mean this
  * deployment cannot be constrained, and an audible `agent-error` on the task

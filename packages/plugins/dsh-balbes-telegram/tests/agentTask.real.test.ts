@@ -44,6 +44,11 @@ const WRITE_PROOF_CONTENT = "written through the restricted surface\n";
  * and cannot post data to an address the model picks. `web_fetch` is the
  * mirror image and is NOT kept (see DENIED_TOOLS): it is an egress channel to
  * an arbitrary URL.
+ *
+ * `web_search` is asserted at SURFACE level only (registered here, offered to
+ * the agent, reachable through `tools.get`): the suite never calls it, because
+ * a real call would hit the live DeepSeek search endpoint and this suite must
+ * stay offline and deterministic (the stub LLM is the only network peer).
  */
 const KEPT_TOOLS = [
   "read",
@@ -483,6 +488,10 @@ describe.skipIf(!realEnabled)("REAL agentTask: restricted tool surface + read co
     expect(tools!.get("bash")).toBeDefined();
     expect(tools!.get("web_search")).toBeDefined();
     expect(tools!.get("web_fetch")).toBeDefined();
+    // The surface is EXACTLY the kept set — no more (nothing slipped in beside
+    // the allow list) and no less (every kept name really is reachable). This
+    // is the reproducible form of "these eleven tools and nothing else".
+    expect([...names].sort()).toEqual([...KEPT_TOOLS].sort());
     // The model-facing catalog matches the surface exactly.
     expect(names.filter((name) => name === "run_code")).toEqual([]);
   }, 120_000);
@@ -491,9 +500,9 @@ describe.skipIf(!realEnabled)("REAL agentTask: restricted tool surface + read co
    * Surface containment end-to-end: the scripted model CALLS the read and
    * egress channels a path guard cannot cover — `bash`, `str_replace_editor
    * view` and `web_fetch` aimed at a loopback bait listener. All three must
-   * fail as unknown tools, return none of the $DSH_HOME stand-in's bytes and
-   * perform no network request — on every host, including one where the shell
-   * would otherwise run confined-but-read-anywhere.
+   * fail as unknown tools, return none of the $DSH_HOME stand-in's bytes, and
+   * reach no destination on the network — on every host, including one where
+   * the shell would otherwise run confined-but-read-anywhere.
    */
   it("containment: shell, editor and web_fetch channels are absent, not merely guarded", async () => {
     const probePath = join(home!, "credentials-probe.txt");
@@ -527,16 +536,22 @@ describe.skipIf(!realEnabled)("REAL agentTask: restricted tool surface + read co
       });
       expect(result.ok).toBe(true);
       const joined = turnResults.join("\n");
-      // All three calls were refused by the registry (no such tool for this
-      // agent) — NOT by a host sandbox that happens to be unusable here.
+      // THE PROOF, in order of strength:
+      // 1. exactly three `unknown tool` refusals — the registry itself rejects
+      //    each name for this agent, so the calls cannot be attempted at all.
+      //    This is what establishes "the surface does not offer them",
+      //    independently of any host sandbox.
       expect(joined.match(/unknown tool/g) ?? []).toHaveLength(3);
       expect(joined).toContain("bash");
       expect(joined).toContain("web_fetch");
       expect(results.join("\n")).not.toContain("no sandbox backend is usable");
       // And neither read channel produced a single byte of the file.
       expect(results.join("\n")).not.toContain(CREDENTIALS_PROBE_CONTENT.trim());
-      // No egress either: the bait listener recorded no request at all, and the
-      // page body it would have returned never reached the model.
+      // 2. Corroboration only: an empty bait list shows no request reached THIS
+      //    loopback listener within the grace window below — a timing
+      //    assumption, not proof about the network in general (the refusals
+      //    above are the real evidence), and the page body never reached the
+      //    model either.
       await new Promise((resolve) => setTimeout(resolve, 200));
       expect(bait.requests).toEqual([]);
       expect(results.join("\n")).not.toContain(EGRESS_BAIT_CONTENT.trim());

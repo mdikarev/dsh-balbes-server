@@ -709,11 +709,12 @@ describe("composeAgentSetup tool surface", () => {
     expect(tools.restrictions).toEqual([{ allow: ["read", "write"] }]);
   });
 
-  it("degrades to the known read-capable names when no kept tool is registered", () => {
+  it("degrades to the names it knows must never be exposed when no kept tool is registered", () => {
     const tools = makeTools(["bash", "pwsh", "web_fetch", "skill", "interrupt_agent"]);
     composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: SELECTION });
     // No allow filter is possible (nothing to keep would be an empty surface):
-    // the narrower deny fallback still removes every read channel it can name.
+    // the fallback still removes every name it knows the surface must never
+    // expose — and only those, which is its weaker guarantee.
     expect(tools.restrictions).toEqual([{ deny: ["bash", "pwsh", "web_fetch", "skill", "interrupt_agent"] }]);
     expect(tools.guards).toHaveLength(1);
   });
