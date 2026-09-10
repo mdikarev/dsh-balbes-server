@@ -35,6 +35,12 @@ interface FakeHandleConfig {
   /** When true every `whenIdle` rejects (an agent-loop failure). */
   throwOnIdle?: boolean;
   idleError?: string;
+  /**
+   * When true, dispose() models the real dsh teardown: it marks the agent's
+   * loop dead, resolves any parked `whenIdle` (the abort convergence of Task
+   * 1 fact 9), and every later `whenIdle` rejects.
+   */
+  disposeStopsLoop?: boolean;
 }
 interface FakeHandle {
   agent: {
@@ -54,6 +60,7 @@ function makeHandle(cfg: FakeHandleConfig = {}): FakeHandle {
   const events: EventLike[] = [];
   let parked: Array<() => void> = [];
   let answerAt = 0;
+  let loopDead = false;
   const session = {
     get seq(): number {
       return events.length;
@@ -67,6 +74,7 @@ function makeHandle(cfg: FakeHandleConfig = {}): FakeHandle {
     status: "idle",
     whenIdle: vi.fn(async () => {
       if (cfg.throwOnIdle) throw new Error(cfg.idleError ?? "idle loop exploded");
+      if (cfg.disposeStopsLoop === true && loopDead) throw new Error("agent loop disposed");
       if (cfg.holdIdle) {
         await new Promise<void>((resolve) => {
           parked.push(resolve);
@@ -87,14 +95,20 @@ function makeHandle(cfg: FakeHandleConfig = {}): FakeHandle {
     }),
     cancel: vi.fn()
   };
+  const releaseParked = () => {
+    const pending = parked;
+    parked = [];
+    for (const resolve of pending) resolve();
+  };
   return {
     agent,
-    dispose: vi.fn(async () => {}),
-    releaseParked() {
-      const pending = parked;
-      parked = [];
-      for (const resolve of pending) resolve();
-    },
+    dispose: vi.fn(async () => {
+      if (cfg.disposeStopsLoop === true) {
+        loopDead = true;
+        releaseParked();
+      }
+    }),
+    releaseParked,
     get parkedCount(): number {
       return parked.length;
     }
@@ -193,6 +207,19 @@ async function waitFor(fn: () => boolean, timeoutMs = 3000): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   throw new Error("condition not met within the timeout");
+}
+
+/** Await `promise`, failing the test loudly if it never settles in time. */
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const guard = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, guard]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 function expectOk(result: TaskResult): { text: string; sessionId: string } {
@@ -383,6 +410,41 @@ describe("agentTask runner (fake deps)", () => {
     const { agents, runner } = await makeRunner();
     await expect(runner.reset(PROJECT_BRAVO)).resolves.toBeUndefined();
     expect(agents.created).toHaveLength(0);
+  });
+
+  it("reset during an in-flight turn settles run() and disposes the handle exactly once", async () => {
+    const { agents, runner } = await makeRunner();
+    // The fake parks the run mid-turn (the agent loop awaiting its provider);
+    // dispose() aborts the loop exactly like the real dsh teardown (Task 1
+    // fact 9): the parked whenIdle converges and later whenIdle calls reject,
+    // because the agent is gone.
+    agents.cfg({ holdIdle: true, disposeStopsLoop: true });
+    const p1 = runner.run(PROJECT_ALPHA, "long task");
+    await waitFor(() => agents.created.length === 1 && agents.created[0]!.agent.whenIdle.mock.calls.length === 1);
+    const h1 = agents.created[0]!;
+    expect(runner.sessionIdOf(PROJECT_ALPHA)).toBeTruthy();
+
+    // A context reset lands while the turn is in flight.
+    const resetP = runner.reset(PROJECT_ALPHA);
+    // The in-flight run must SETTLE (a hang would leave the chat caller's
+    // promise pending forever) — agent-error from the abort is acceptable.
+    const result = await withTimeout(p1, 2000, "run() never settled after a mid-turn reset");
+    await resetP;
+    expect(result.ok).toBe(false);
+    expect((result as { code?: string }).code).toBe("agent-error");
+    // Teardown is owned by reset: the in-flight turn must not dispose the
+    // same handle a second time through its own error path.
+    expect(h1.dispose).toHaveBeenCalledTimes(1);
+    expect(runner.sessionIdOf(PROJECT_ALPHA)).toBeUndefined();
+    expect(runner.snapshot()).toEqual([]);
+
+    // The runner stays usable afterwards with a fresh session.
+    agents.cfg({});
+    const after = expectOk(await runner.run(PROJECT_ALPHA, "after reset"));
+    expect(after.text).toBe("fake answer");
+    expect(agents.createOpts).toHaveLength(2);
+    expect(after.sessionId).toBeTruthy();
+    expect(agents.created[1]!.dispose).not.toHaveBeenCalled();
   });
 
   it("workspace-gone: a workspaces.root throw maps to a safe result and never creates an agent", async () => {

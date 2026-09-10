@@ -79,6 +79,7 @@ const BUSY_MESSAGE = "a task for this workspace is already running";
 const QUEUE_FULL_MESSAGE = `the workspace task queue is full (${QUEUE_MAX_WAITING} waiting tasks max)`;
 const AGENT_ERROR_MESSAGE = "agent task failed";
 const RESET_DROP_MESSAGE = "task dropped because the workspace context was reset";
+const RESET_ABORT_MESSAGE = "task aborted because the workspace context was reset";
 
 interface SessionEventLike {
   type: string;
@@ -125,6 +126,13 @@ interface KeyedEntry {
   /** The text of the task currently being executed (for dedupe). */
   activeText: string | undefined;
   queue: PendingTask[];
+  /**
+   * Set synchronously by reset() before the entry leaves the map. An
+   * in-flight executeTurn checks it after every engine await so a reset that
+   * lands mid-turn settles the run instead of driving a disposed agent
+   * (hang risk) or disposing the same handle twice.
+   */
+  retired: boolean;
 }
 
 function errorMessage(error: unknown, fallback = "unknown error"): string {
@@ -313,6 +321,7 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
 
   /** One serialized turn: root check, handle acquisition, followup, flush. */
   async function executeTurn(
+    key: string,
     entry: KeyedEntry,
     ref: WorkspaceRef,
     text: string,
@@ -342,6 +351,14 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
       }
       const agent = handle.agent;
       await agent.whenIdle();
+      // A reset may have retired the entry while the loop was starting (its
+      // dispose aborts the parked agent — Task 1 fact 9). Stop here instead
+      // of sending a followup into a dying agent: the teardown is owned by
+      // reset, so the run settles as an abort, never hangs, and never double-
+      // disposes.
+      if (entry.retired) {
+        return { ok: false, code: "agent-error", message: RESET_ABORT_MESSAGE };
+      }
       const firstSeq = agent.session.seq;
       agent.followup(
         createUserMessage({
@@ -350,6 +367,9 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
         }) as never
       );
       await agent.whenIdle();
+      if (entry.retired) {
+        return { ok: false, code: "agent-error", message: RESET_ABORT_MESSAGE };
+      }
       await deps.sessions.flush(agent.session);
 
       const outcome = summarizeTurn(agent.session, firstSeq);
@@ -367,8 +387,10 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
     } catch (error) {
       // A driver-level failure (whenIdle rejected, flush threw, ...) may have
       // wedged the agent loop: dispose it and drop the session mapping so the
-      // next run starts clean instead of failing forever.
-      if (entry.handle !== undefined) {
+      // next run starts clean instead of failing forever. When the entry was
+      // retired by reset() the disposal already happened there — never dispose
+      // the same handle twice.
+      if (!entry.retired && entry.handle !== undefined) {
         const doomed = entry.handle;
         entry.handle = undefined;
         entry.sessionId = undefined;
@@ -395,12 +417,12 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
     entry.busy = true;
     entry.activeText = text;
     try {
-      return await executeTurn(entry, ref, text, opts);
+      return await executeTurn(key, entry, ref, text, opts);
     } finally {
       entry.busy = false;
       entry.activeText = undefined;
       const next = entry.queue.shift();
-      if (next !== undefined && cache.get(key) === entry) {
+      if (next !== undefined && !entry.retired && cache.get(key) === entry) {
         void startTurn(key, entry, next.ref, next.text, next.opts).then(next.resolve, (error) => {
           next.resolve({ ok: false, code: "agent-error", message: errorMessage(error, AGENT_ERROR_MESSAGE) });
         });
@@ -414,7 +436,14 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
       const key = workspaceRefKey(ref);
       let entry = cache.get(key);
       if (entry === undefined) {
-        entry = { handle: undefined, sessionId: undefined, busy: false, activeText: undefined, queue: [] };
+        entry = {
+          handle: undefined,
+          sessionId: undefined,
+          busy: false,
+          activeText: undefined,
+          queue: [],
+          retired: false
+        };
         cache.set(key, entry);
       }
       if (entry.busy) {
@@ -437,6 +466,10 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
       const key = workspaceRefKey(ref);
       const entry = cache.get(key);
       if (entry === undefined) return;
+      // Retire FIRST (synchronously): an in-flight turn parked on the engine
+      // checks entry.retired at its next checkpoint and settles as an abort
+      // instead of driving the disposed agent or disposing it a second time.
+      entry.retired = true;
       // Drop every waiting task so its caller never hangs, then dispose the
       // handle (stops the loop, unregisters the agent — Task 1 fact 9) and
       // forget the mapping; the next run starts a clean session.
