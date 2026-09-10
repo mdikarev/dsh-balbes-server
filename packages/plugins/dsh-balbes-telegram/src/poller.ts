@@ -12,6 +12,14 @@
  *   passed to `start`; afterwards the offset is `last.update_id + 1`. The
  *   offset advances even when a whole batch was unauthorized, so an ignored
  *   update is never fetched forever.
+ * - The offset moves BEFORE the batch is delivered, and every acknowledged
+ *   batch is reported once through `cb.onAck(nextOffset)` — the value a state
+ *   file must persist. Deriving that value from `onUpdate` instead would
+ *   regress it (a batch can end with unauthorized updates that are never
+ *   delivered) and re-deliver already-handled commands after a restart.
+ *   Loss window, by design: if `cb.onUpdate` rejects for an acknowledged
+ *   update, that update is never retried — the offset has already moved past
+ *   it, and the failure is only recorded in `lastError`.
  * - Only updates for which `isAuthorized(update, allowedUserId)` holds reach
  *   `cb.onUpdate`. Every other update is dropped without any processing and
  *   without observable state.
@@ -22,21 +30,29 @@
  * - Anything else is transient: the status stays "running", `lastError` is
  *   recorded and the next poll waits a backoff starting at 1s and doubling up
  *   to `maxBackoffMs` (default 30s). A successful batch resets the backoff.
- * - A throwing `cb.onUpdate` is contained: the rest of the batch and the loop
- *   survive it, and it is reported through `lastError` — the only channel a
- *   pure transport has (there is no logger in this contract).
+ * - A throwing `cb.onUpdate` or `cb.onAck` is contained: the rest of the batch
+ *   and the loop survive it, and it is reported through `lastError` — the only
+ *   channel a pure transport has (there is no logger in this contract).
  *
  * Lifecycle:
  * - `start` is a no-op while "running"; a fatal stop leaves the poller
  *   restartable and `start` clears `lastError`.
  * - `stop` aborts the current run through an `AbortController`, waits for the
- *   iteration to exit (including the handlers of a batch it already fetched, so
- *   nothing acknowledged by the offset is lost) and leaves no timer behind. A
- *   restart must await `stop()` first: `start` is deliberately synchronous and
- *   only refuses to run while the loop is "running". The last offset is kept,
- *   so a restart without an explicit offset resumes where the previous run
- *   stopped. A batch that resolves after the abort is dropped without
- *   acknowledging its offset, so a restart re-fetches it.
+ *   iteration to exit (including the handlers of a batch it already fetched)
+ *   and leaves no timer behind. A restart must await `stop()` first: `start`
+ *   is deliberately synchronous and only refuses to run while the loop is
+ *   "running". The last offset is kept, so a restart without an explicit
+ *   offset resumes where the previous run stopped. A batch that resolves after
+ *   the abort is dropped without acknowledging its offset, so a restart
+ *   re-fetches it.
+ * - Bound of `stop`: it cancels the loop, NOT the transport. `BotClient` takes
+ *   no `AbortSignal`, so `stop()` resolves only once the in-flight `getUpdates`
+ *   has settled on its own — on a dead network that is up to
+ *   `(retries + 1) x REQUEST_TIMEOUT_MS` of `bot.ts` (~180s with its defaults
+ *   of 2 retries and a 60s per-attempt timeout, plus the short retry sleeps),
+ *   and a handler that never settles extends the wait further. Callers (Task 11
+ *   dispose/disable) must `await stop()`, but must not let that wait block HTTP
+ *   request handling beyond the effect that owns the poller.
  * - `lastError` is cleared only by `start`: it is the last safe error of the
  *   current run, not a claim that the current state is broken.
  */
@@ -58,6 +74,13 @@ export interface PollerCallbacks {
   onUpdate(update: BotUpdate): Promise<void> | void;
   /** Called once when polling dies fatally (401): the loop stops, status is "error". */
   onFatal(error: BotApiError): void;
+  /**
+   * Optional persistence seam: called once per successful batch with the offset
+   * the poller just acknowledged (`last.update_id + 1`, the same value the next
+   * `getUpdates` sends). Optional so a caller that keeps no offset — and every
+   * transport-only test — can ignore it.
+   */
+  onAck?(nextOffset: number): void;
 }
 
 export interface Poller {
@@ -80,6 +103,7 @@ const INITIAL_BACKOFF_MS = 1_000;
 const CODE_UNAUTHORIZED = "unauthorized";
 const CODE_POLL_FAILED = "poll-failed";
 const CODE_UPDATE_FAILED = "update-failed";
+const CODE_ACK_FAILED = "ack-failed";
 
 function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -165,7 +189,24 @@ export function createPoller(
       lastPollAt = new Date().toISOString();
       backoffMs = Math.min(INITIAL_BACKOFF_MS, maxBackoffMs);
       const last = updates[updates.length - 1];
-      if (last !== undefined) offset = last.update_id + 1;
+      if (last !== undefined) {
+        // The offset moves BEFORE delivery: Telegram counts these updates as
+        // confirmed from here on, so an update whose handler then rejects is
+        // lost by design (recorded in lastError, never retried), and an abort
+        // during delivery does not rewind the offset either. An empty batch
+        // acknowledges nothing and leaves the offset untouched.
+        offset = last.update_id + 1;
+        // Persist the ack at once: a stored offset that lags the in-memory one
+        // would make a restart re-fetch — and re-execute — updates this process
+        // already delivered.
+        if (cb.onAck !== undefined) {
+          try {
+            cb.onAck(offset);
+          } catch (error) {
+            lastError = { code: CODE_ACK_FAILED, message: reasonOf(error) };
+          }
+        }
+      }
 
       for (const update of updates) {
         // Authorization comes first: an unauthorized update is never

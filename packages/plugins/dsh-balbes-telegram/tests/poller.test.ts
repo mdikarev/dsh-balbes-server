@@ -67,16 +67,28 @@ interface Recorder {
   /** Updates handed to `onUpdate`, in delivery order. */
   updates: BotUpdate[];
   fatals: BotApiError[];
+  /** Offsets handed to `onAck`, in acknowledgement order. */
+  acks: number[];
   update: ReturnType<typeof vi.fn>;
   fatal: ReturnType<typeof vi.fn>;
+  ack: ReturnType<typeof vi.fn>;
 }
 
-function recorder(impl?: {
+interface RecorderImpl {
+  /**
+   * Install the optional `onAck` hook. Left out by default so the "no ack hook
+   * configured" path stays exercised by every other test.
+   */
+  ack?: boolean;
   onUpdate?: (update: BotUpdate) => void | Promise<void>;
   onFatal?: (error: BotApiError) => void;
-}): Recorder {
+  onAck?: (nextOffset: number) => void;
+}
+
+function recorder(impl?: RecorderImpl): Recorder {
   const updates: BotUpdate[] = [];
   const fatals: BotApiError[] = [];
+  const acks: number[] = [];
   const update = vi.fn(async (u: BotUpdate): Promise<void> => {
     updates.push(u);
     await impl?.onUpdate?.(u);
@@ -85,7 +97,13 @@ function recorder(impl?: {
     fatals.push(error);
     impl?.onFatal?.(error);
   });
-  return { callbacks: { onUpdate: update, onFatal: fatal }, updates, fatals, update, fatal };
+  const ack = vi.fn((nextOffset: number): void => {
+    acks.push(nextOffset);
+    impl?.onAck?.(nextOffset);
+  });
+  const callbacks: PollerCallbacks = { onUpdate: update, onFatal: fatal };
+  if (impl?.ack === true || impl?.onAck !== undefined) callbacks.onAck = ack;
+  return { callbacks, updates, fatals, acks, update, fatal, ack };
 }
 
 /** An allowlisted private-chat text message (the only shape that is delivered). */
@@ -371,7 +389,14 @@ describe("createPoller long polling", () => {
     expect(getUpdates).toHaveBeenCalledTimes(2);
   });
 
-  it("drops a batch that lands while stopping and resolves stop()", async () => {
+  /**
+   * Scope of this test: `stop()` waits for the iteration in flight and the
+   * batch that lands after the abort is dropped. It does NOT show that `stop()`
+   * cancels a hung transport — the poll is resolved by the test itself, because
+   * `BotClient.getUpdates` takes no signal (see the bound documented in
+   * `poller.ts`: a stop on a dead network waits for the client's own timeouts).
+   */
+  it("waits for the in-flight getUpdates to settle and drops the batch that lands after the abort", async () => {
     let release: ((updates: BotUpdate[]) => void) | undefined;
     const { bot, getUpdates } = fakeBot(
       () =>
@@ -379,7 +404,7 @@ describe("createPoller long polling", () => {
           release = resolve;
         })
     );
-    const rec = recorder();
+    const rec = recorder({ ack: true });
     const poller = makePoller(rec.callbacks, { idleMs: 1, maxBackoffMs: 5 });
 
     poller.start({ bot, allowedUserId: OWNER_ID });
@@ -387,17 +412,112 @@ describe("createPoller long polling", () => {
     expect(getUpdates).toHaveBeenCalledTimes(1);
     expect(release).toBeDefined();
 
+    let settled = false;
     const stopped = poller.stop();
+    void stopped.then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    // Still blocked on the transport: the test, not the poller, ends the call.
+    expect(settled).toBe(false);
+
     release?.([messageUpdate(41)]);
     await expect(stopped).resolves.toBeUndefined();
 
-    // The in-flight long poll resolved after the abort: it is not processed and
-    // its offset stays unacknowledged, so a restart re-fetches those updates.
+    // The in-flight long poll resolved after the abort: it is neither processed
+    // nor acknowledged, so a restart re-fetches those updates.
     expect(rec.update).not.toHaveBeenCalled();
+    expect(rec.acks).toEqual([]);
     expect(poller.status()).toStrictEqual({ state: "stopped" });
 
     await vi.advanceTimersByTimeAsync(60_000);
     expect(getUpdates).toHaveBeenCalledTimes(1);
+  });
+
+  it("acks the advanced offset once per successful batch, and that is what the next poll sends", async () => {
+    const { bot, getUpdates } = fakeBot((_args, call) => {
+      if (call === 0) return [messageUpdate(10), messageUpdate(11)];
+      if (call === 1) return [messageUpdate(20)];
+      return [];
+    });
+    const rec = recorder({ ack: true });
+    const poller = makePoller(rec.callbacks, { idleMs: 1, maxBackoffMs: 5 });
+
+    poller.start({ bot, allowedUserId: OWNER_ID });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(rec.acks).toEqual([12]);
+    expect(rec.ack).toHaveBeenCalledTimes(1);
+
+    // The value the poller acknowledged is exactly the offset it polls with next.
+    await vi.advanceTimersByTimeAsync(1);
+    expect(callArgs(getUpdates, 1).offset).toBe(rec.acks[0]);
+    expect(rec.acks).toEqual([12, 21]);
+
+    // An empty batch acknowledges nothing, so it must not touch the stored offset.
+    await vi.advanceTimersByTimeAsync(1);
+    expect(getUpdates).toHaveBeenCalledTimes(3);
+    expect(rec.acks).toEqual([12, 21]);
+  });
+
+  it("does not ack a batch that failed", async () => {
+    let failing = true;
+    const { bot } = fakeBot(() => {
+      if (failing) throw new Error("network down");
+      return [messageUpdate(30)];
+    });
+    const rec = recorder({ ack: true });
+    const poller = makePoller(rec.callbacks, { idleMs: 1, maxBackoffMs: 40 });
+
+    poller.start({ bot, allowedUserId: OWNER_ID });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(rec.acks).toEqual([]);
+
+    failing = false;
+    await vi.advanceTimersByTimeAsync(40);
+
+    expect(rec.acks).toEqual([31]);
+  });
+
+  it("acks the whole batch even when its trailing updates are unauthorized", async () => {
+    const authorized = messageUpdate(60);
+    const batch = [authorized, messageUpdate(61, OTHER_ID), messageUpdate(62, OWNER_ID, "group")];
+    const { bot, getUpdates } = fakeBot(() => batch);
+    const rec = recorder({ ack: true });
+    const poller = makePoller(rec.callbacks, { idleMs: 1, maxBackoffMs: 5 });
+
+    poller.start({ bot, allowedUserId: OWNER_ID });
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Deriving the offset from onUpdate would ack 61 here and re-deliver 61/62
+    // forever after a restart; the poller acks what it really confirmed.
+    expect(rec.updates).toEqual([authorized]);
+    expect(rec.acks).toEqual([63]);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(callArgs(getUpdates, 1)).toStrictEqual({ offset: 63, timeout: POLL_TIMEOUT_SEC });
+  });
+
+  it("keeps polling when the ack hook throws", async () => {
+    const { bot, getUpdates } = fakeBot((_args, call) => (call === 0 ? [messageUpdate(70)] : []));
+    const rec = recorder({
+      ack: true,
+      onAck: () => {
+        throw new Error("state write failed");
+      }
+    });
+    const poller = makePoller(rec.callbacks, { idleMs: 1, maxBackoffMs: 5 });
+
+    poller.start({ bot, allowedUserId: OWNER_ID });
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Delivery still happened; only the persistence seam failed.
+    expect(rec.update).toHaveBeenCalledTimes(1);
+    expect(poller.status()).toMatchObject({ lastError: { code: "ack-failed", message: "state write failed" } });
+    expect(poller.status().state).toBe("running");
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(getUpdates).toHaveBeenCalledTimes(2);
   });
 
   it("stops polling on stop(), leaves no timer behind and restarts from the last offset", async () => {
