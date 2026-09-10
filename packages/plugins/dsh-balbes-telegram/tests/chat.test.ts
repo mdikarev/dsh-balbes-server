@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentTaskRunner, TaskResult, WorkspaceRef } from "../src/agentTask.js";
 import type { BotClient } from "../src/bot.js";
 import {
@@ -181,11 +181,15 @@ function makeRunner(): {
   service: AgentTaskRunner;
   runs: Array<{ ref: WorkspaceRef; text: string }>;
   resets: WorkspaceRef[];
+  cancels: ReturnType<typeof vi.fn>;
   setResult: (result: TaskResult) => void;
   hold: () => { release: (result: TaskResult) => void; settled: () => boolean };
 } {
   const runs: Array<{ ref: WorkspaceRef; text: string }> = [];
   const resets: WorkspaceRef[] = [];
+  // Configurable by the chat tests that drive the /stop surface (task 9): the
+  // default is "nothing was running".
+  const cancels = vi.fn(async () => ({ cancelled: false, dropped: 0 }));
   let result: TaskResult = { ok: true, text: "готово", sessionId: "session-1" };
   let gate: Promise<TaskResult> | undefined;
 
@@ -198,6 +202,7 @@ function makeRunner(): {
     async reset(ref) {
       resets.push(ref);
     },
+    cancel: cancels,
     sessionIdOf() {
       return undefined;
     },
@@ -210,6 +215,7 @@ function makeRunner(): {
     service,
     runs,
     resets,
+    cancels,
     setResult: (next) => {
       result = next;
     },

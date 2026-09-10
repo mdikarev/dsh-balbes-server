@@ -31,11 +31,23 @@ export function workspaceRefKey(ref: WorkspaceRef): string {
 
 export type TaskResult =
   | { ok: true; text: string; sessionId: string }
-  | { ok: false; code: "workspace-gone" | "agent-error" | "queue-full" | "busy"; message: string };
+  | {
+      ok: false;
+      code: "workspace-gone" | "agent-error" | "queue-full" | "busy" | "cancelled";
+      message: string;
+    };
 
 export interface AgentTaskRunner {
   run(ref: WorkspaceRef, text: string, opts?: { sessionId?: string }): Promise<TaskResult>;
   reset(ref: WorkspaceRef): Promise<void>;
+  /**
+   * The soft stop: abort the active turn and drop every waiting task of one
+   * workspace, but KEEP the agent handle and its session — the owner's next
+   * task continues the same conversation. Contrast {@link reset}, which is the
+   * hard stop that disposes the session. Returns whether a turn was actually
+   * stopped and how many waiting tasks were dropped.
+   */
+  cancel(ref: WorkspaceRef): Promise<{ cancelled: boolean; dropped: number }>;
   sessionIdOf(ref: WorkspaceRef): string | undefined;
   /** Live session mapping, for persisting across restarts (tasks 8/11). */
   snapshot(): Array<{ key: string; sessionId: string }>;
@@ -84,6 +96,14 @@ const QUEUE_FULL_MESSAGE = `the workspace task queue is full (${QUEUE_MAX_WAITIN
 const AGENT_ERROR_MESSAGE = "agent task failed";
 const RESET_DROP_MESSAGE = "task dropped because the workspace context was reset";
 const RESET_ABORT_MESSAGE = "task aborted because the workspace context was reset";
+/**
+ * The `cancelled` code and this message are what a deliberate owner stop
+ * reports. It is deliberately NOT shaped like the reset phrases (chat.ts maps
+ * those to the reset copy by exact string) and is never matched by string
+ * anywhere in the runner: the outcome of a stop is decided by the turn's own
+ * `aborted` reason, so a real agent failure can never be mistaken for a stop.
+ */
+export const CANCELLED_MESSAGE = "task cancelled by the owner";
 
 interface SessionEventLike {
   type: string;
@@ -97,6 +117,15 @@ interface SessionEventLike {
 interface AgentLike {
   whenIdle(): Promise<void>;
   followup(message: unknown): void;
+  /**
+   * The stock dsh seam for stopping work: it aborts the ACTIVE turn (or the
+   * between-turn task) and clears queued/steering work unless `keepInbox` is
+   * set, and is a no-op when the agent has no activity. It never tears the
+   * session down — only `dispose()` does (Task 4 facts). `keepInbox: true` is
+   * what makes the stop soft: work already sitting in the agent's own inbox (a
+   * message the next task queued) survives, so the conversation continues.
+   */
+  cancel(cause: { kind: "user" }, options?: { keepInbox?: boolean }): void;
   session: {
     seq: number;
     eventAt(seq: unknown): SessionEventLike | undefined;
@@ -137,6 +166,13 @@ interface KeyedEntry {
    * (hang risk) or disposing the same handle twice.
    */
   retired: boolean;
+  /**
+   * Set by cancel() for the current turn; cleared when that turn settles. A
+   * SEPARATE flag from `retired` on purpose: a cancel keeps the entry, the
+   * handle and the session alive, so the checkpoints answer "cancelled" where
+   * the retired ones answer "reset aborted and the handle was disposed".
+   */
+  cancelled: boolean;
 }
 
 function errorMessage(error: unknown, fallback = "unknown error"): string {
@@ -562,6 +598,13 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
         }
         entry.handle = handle;
         entry.sessionId = sessionId;
+        // A cancel may have landed while create/resume was still resolving:
+        // there was no handle to abort yet, only the entry flag. Keep the handle
+        // (unlike the retired path above) so the session survives the stop.
+        if (entry.cancelled) {
+          entry.cancelled = false;
+          return { ok: false, code: "cancelled", message: CANCELLED_MESSAGE };
+        }
       } else {
         handle = entry.handle;
         sessionId = entry.sessionId;
@@ -576,6 +619,12 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
       if (entry.retired) {
         return { ok: false, code: "agent-error", message: RESET_ABORT_MESSAGE };
       }
+      // Checked AFTER the retired branch on purpose: when a reset and a cancel
+      // race, the reset owns the outcome (its abort phrase, its disposal).
+      if (entry.cancelled) {
+        entry.cancelled = false;
+        return { ok: false, code: "cancelled", message: CANCELLED_MESSAGE };
+      }
       const firstSeq = agent.session.seq;
       agent.followup(
         createUserMessage({
@@ -587,9 +636,22 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
       if (entry.retired) {
         return { ok: false, code: "agent-error", message: RESET_ABORT_MESSAGE };
       }
+      // Parked after followup: an owner stop that released this park stopped
+      // THIS turn, so it is reported as cancelled without touching the handle.
+      if (entry.cancelled) {
+        entry.cancelled = false;
+        return { ok: false, code: "cancelled", message: CANCELLED_MESSAGE };
+      }
       await deps.sessions.flush(agent.session);
 
       const outcome = summarizeTurn(agent.session, firstSeq);
+      // Отмена подтверждается ПРИЧИНОЙ turn'а, а не только флагом: cancel,
+      // пришедший в момент, когда turn уже завершался, не должен превращать
+      // успешный результат в «остановлено».
+      if (entry.cancelled && outcome.reason?.kind === "aborted") {
+        return { ok: false, code: "cancelled", message: CANCELLED_MESSAGE };
+      }
+      if (entry.cancelled) entry.cancelled = false;
       if (outcome.reason?.kind === "error") {
         return {
           ok: false,
@@ -632,6 +694,9 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
     } finally {
       entry.busy = false;
       entry.activeText = undefined;
+      // The stop flag is scoped to the turn it stopped: a cancel that landed as
+      // this turn was settling must not misreport the NEXT queued task.
+      entry.cancelled = false;
       const next = entry.queue.shift();
       if (next !== undefined && !entry.retired && cache.get(key) === entry) {
         void startTurn(key, entry, next.ref, next.text, next.opts).then(next.resolve, (error) => {
@@ -653,7 +718,8 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
           busy: false,
           activeText: undefined,
           queue: [],
-          retired: false
+          retired: false,
+          cancelled: false
         };
         cache.set(key, entry);
       }
@@ -692,6 +758,35 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
       if (entry.handle !== undefined) {
         await disposeQuietly(entry.handle, "reset dispose failed");
       }
+    },
+
+    /**
+     * The soft stop, the counterpart of reset(): abort the active turn of this
+     * workspace and settle every waiting task as `cancelled`, but keep the
+     * handle, the session and the transcript — the owner loses the task, never
+     * the context. A cancel with nothing running (or nothing cached) is a no-op
+     * that still drains the queue, so a caller can always await it safely.
+     */
+    async cancel(ref: WorkspaceRef): Promise<{ cancelled: boolean; dropped: number }> {
+      // The same readiness gate run() waits on, and the reason it matters here:
+      // a task accepted a moment ago is registered on that same tick, so the
+      // drain below sees it and settles it as cancelled instead of letting it
+      // start as the follow-up turn of a stop the owner already asked for.
+      await deps.loader?.await();
+      const key = workspaceRefKey(ref);
+      const entry = cache.get(key);
+      if (entry === undefined) return { cancelled: false, dropped: 0 };
+      let dropped = 0;
+      while (entry.queue.length > 0) {
+        entry.queue.shift()!.resolve({ ok: false, code: "cancelled", message: CANCELLED_MESSAGE });
+        dropped += 1;
+      }
+      if (!entry.busy) return { cancelled: false, dropped };
+      // Мягкая отмена: сессия и хэндл остаются живыми, инбокс задач не чистится
+      // (keepInbox), поэтому следующая задача продолжает ту же сессию.
+      entry.cancelled = true;
+      entry.handle?.agent.cancel({ kind: "user" }, { keepInbox: true });
+      return { cancelled: true, dropped };
     },
 
     sessionIdOf(ref: WorkspaceRef): string | undefined {

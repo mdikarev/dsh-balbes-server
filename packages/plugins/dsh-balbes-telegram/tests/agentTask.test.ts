@@ -70,6 +70,13 @@ function makeHandle(cfg: FakeHandleConfig = {}): FakeHandle {
       return events[Number(seq)];
     }
   };
+  // Declared before the agent object: `cancel` (and `dispose` below) resolve the
+  // current park, and the abort convergence must be reachable from both.
+  const releaseParked = () => {
+    const pending = parked;
+    parked = [];
+    for (const resolve of pending) resolve();
+  };
   const agent = {
     session,
     status: "idle",
@@ -94,12 +101,16 @@ function makeHandle(cfg: FakeHandleConfig = {}): FakeHandle {
         { type: "turn/end", data: { reason: { kind: "completed" } } }
       );
     }),
-    cancel: vi.fn()
-  };
-  const releaseParked = () => {
-    const pending = parked;
-    parked = [];
-    for (const resolve of pending) resolve();
+    cancel: vi.fn((_cause: unknown, _options?: unknown) => {
+      // Реальный Agent.cancel прерывает активный turn и разрешает парковку
+      // whenIdle; turn/end с причиной "aborted" появляется только если turn
+      // действительно был открыт.
+      const open = events.some((event) => event.type === "turn/start") && events.at(-1)?.type !== "turn/end";
+      if (open) {
+        events.push({ type: "turn/end", data: { reason: { kind: "aborted", reason: { kind: "user" } } } });
+      }
+      releaseParked();
+    })
   };
   return {
     agent,
@@ -560,6 +571,112 @@ describe("agentTask runner (fake deps)", () => {
   it("workspaceRefKey encodes scope and project name", () => {
     expect(workspaceRefKey(HOME_REF)).toBe("home");
     expect(workspaceRefKey(PROJECT_ALPHA)).toBe("project:alpha");
+  });
+});
+
+/**
+ * The soft stop: cancel() aborts the active turn and drops the waiting queue
+ * while the handle and its session stay alive — the whole point of having a
+ * second stop next to reset(), which disposes the session (losing context).
+ */
+describe("cancel", () => {
+  it("cancels the active turn and clears the queue while keeping the session", async () => {
+    const { runner, agents } = await makeRunner();
+    agents.cfg({ holdIdle: true });
+    const running = runner.run(PROJECT_ALPHA, "долгая");
+    await waitFor(() => agents.created.length === 1);
+    const handle = agents.created[0]!;
+    await waitFor(() => handle.parkedCount === 1);
+
+    const queued = runner.run(PROJECT_ALPHA, "в очереди");
+    const outcome = await runner.cancel(PROJECT_ALPHA);
+
+    expect(outcome).toEqual({ cancelled: true, dropped: 1 });
+    await expect(queued).resolves.toMatchObject({ ok: false, code: "cancelled" });
+    await expect(running).resolves.toMatchObject({ ok: false, code: "cancelled" });
+    // The stop is the stock dsh seam, and `keepInbox` is what makes it soft:
+    // work already in the agent's inbox survives, so the session goes on.
+    expect(handle.agent.cancel).toHaveBeenCalledWith({ kind: "user" }, { keepInbox: true });
+    expect(handle.dispose).not.toHaveBeenCalled();
+    expect(runner.sessionIdOf(PROJECT_ALPHA)).toBeDefined();
+  });
+
+  it("settles a turn that was already running as cancelled", async () => {
+    const { runner, agents } = await makeRunner();
+    agents.cfg({ holdIdle: true });
+    const running = runner.run(PROJECT_ALPHA, "долгая");
+    await waitFor(() => agents.created.length === 1);
+    const handle = agents.created[0]!;
+    await waitFor(() => handle.parkedCount === 1);
+    handle.releaseParked();                                 // пропускаем followup
+    await waitFor(() => handle.agent.followup.mock.calls.length === 1);
+    await waitFor(() => handle.parkedCount === 1);          // парковка после followup
+
+    const outcome = await runner.cancel(PROJECT_ALPHA);
+
+    expect(outcome.cancelled).toBe(true);
+    await expect(running).resolves.toMatchObject({ ok: false, code: "cancelled" });
+    expect(handle.dispose).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op when nothing runs", async () => {
+    const { runner } = await makeRunner();
+    await expect(runner.cancel(PROJECT_ALPHA)).resolves.toEqual({ cancelled: false, dropped: 0 });
+  });
+
+  /**
+   * The race the reason gate exists for: cancel() lands AFTER the runner's last
+   * checkpoint of the turn (here: while the session flush is in flight), so the
+   * turn had already completed normally. The flag alone must not rewrite a
+   * finished turn into "cancelled" — only an aborted turn may be reported as
+   * one. The flush gate makes that window deterministic instead of a timing
+   * accident.
+   */
+  it("does not turn a turn that already completed into cancelled", async () => {
+    const base = await mkdtemp(join(tmpdir(), "agenttask-"));
+    const agents = makeAgents();
+    let flushStarted!: () => void;
+    const flushing = new Promise<void>((resolve) => {
+      flushStarted = resolve;
+    });
+    let releaseFlush!: () => void;
+    const flushGate = new Promise<void>((resolve) => {
+      releaseFlush = resolve;
+    });
+    const deps: AgentTaskDeps = {
+      agents: agents as unknown as AgentTaskDeps["agents"],
+      sessions: {
+        flush: vi.fn(async () => {
+          flushStarted();
+          await flushGate;
+        })
+      },
+      defaultModel: { currentSelection: () => SELECTION },
+      workspaces: makeWorkspaces(base) as unknown as AgentTaskDeps["workspaces"],
+      logger: { warn: vi.fn() }
+    };
+    const runner = createAgentTaskRunner(deps);
+    agents.cfg({ holdIdle: true, answers: ["готовый ответ"] });
+    const running = runner.run(PROJECT_ALPHA, "долгая");
+    await waitFor(() => agents.created.length === 1);
+    const handle = agents.created[0]!;
+    // Through the pre-followup park, then the post-followup park.
+    await waitFor(() => handle.parkedCount === 1);
+    handle.releaseParked();
+    await waitFor(() => handle.agent.followup.mock.calls.length === 1);
+    await waitFor(() => handle.parkedCount === 1);
+    handle.releaseParked();
+    // The turn is complete and the runner is now inside flush: cancel arrives
+    // too late to stop anything (the fake's turn is closed, so no aborted
+    // reason is ever appended).
+    await flushing;
+    const outcome = await runner.cancel(PROJECT_ALPHA);
+    expect(outcome.cancelled).toBe(true);
+    releaseFlush();
+
+    await expect(running).resolves.toMatchObject({ ok: true, text: "готовый ответ" });
+    expect(handle.dispose).not.toHaveBeenCalled();
+    expect(runner.sessionIdOf(PROJECT_ALPHA)).toBeDefined();
   });
 });
 

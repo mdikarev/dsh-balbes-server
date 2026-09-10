@@ -280,6 +280,11 @@ export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: stri
           persist();
         }
       },
+      async cancel(ref) {
+        // A soft stop: unlike reset below, the session mapping is KEPT, because
+        // the handle and its session survive the cancellation.
+        return runner.cancel(ref);
+      },
       sessionIdOf: (ref) => runner.sessionIdOf(ref),
       snapshot: () => runner.snapshot()
     };
