@@ -55,6 +55,10 @@ const ctx = {
       : key === "agentDefaultModel" ? agentDefaultModel
       : undefined;
   },
+  provided: {} as Record<string, unknown>,
+  provide(key: string, value: unknown): void {
+    this.provided[key] = value;
+  },
   logger: { warn(_m: string) {} }
 };
 
@@ -100,6 +104,7 @@ describe("balbes-models plugin", () => {
     settings = new FakeSettings();
     credentials = new FakeCredentials();
     agentDefaultModel = new FakeDefaultModel();
+    ctx.provided = {};
   });
 
   it("exposes name/inject/apply contract and registers five bearer routes", () => {
@@ -110,6 +115,15 @@ describe("balbes-models plugin", () => {
       "/api/models/catalog", "/api/models/default", "/api/models/delete", "/api/models/list", "/api/models/save"
     ]);
     for (const s of seats) expect(s.auth).toBe("bearer");
+  });
+
+  it("provides the balbesModels service for in-process consumers", () => {
+    apply(ctx as never, {});
+    expect(typeof (ctx.provided["balbesModels"] as { list?: unknown }).list).toBe("function");
+    expect((ctx.provided["balbesModels"] as { current(): unknown }).current()).toEqual({
+      provider: "deepseek-official",
+      model: "deepseek-v4-flash"
+    });
   });
 
   it("list returns the deepseek connection as default without a key", async () => {
@@ -196,6 +210,9 @@ describe("balbes-models plugin", () => {
     const bad = await call("/api/models/default", { provider: "my-gateway", model: "nope" });
     expect(bad.status).toBe(400);
     expect((bad.json as { error: { code: string } }).error.code).toBe("invalid-model");
+    const unknownRoute = await call("/api/models/default", { provider: "nope", model: "m-1" });
+    expect(unknownRoute.status).toBe(400);
+    expect((unknownRoute.json as { error: { code: string } }).error.code).toBe("invalid-route");
   });
 
   it("editing a custom connection to drop its default model -> 409 default-in-use, nothing written", async () => {
