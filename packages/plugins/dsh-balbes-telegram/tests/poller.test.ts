@@ -55,7 +55,8 @@ function fakeBot(handler: UpdatesHandler): FakeBot {
   const bot: BotClient = {
     getMe: vi.fn(async () => ({ id: 1, username: "sample_bot" })),
     getUpdates,
-    sendMessage: vi.fn(async () => undefined),
+    // sendMessage resolves the sent message id (unused by the poller loop).
+    sendMessage: vi.fn(async () => 1),
     editMessageText: vi.fn(async () => undefined),
     answerCallbackQuery: vi.fn(async () => undefined)
   };

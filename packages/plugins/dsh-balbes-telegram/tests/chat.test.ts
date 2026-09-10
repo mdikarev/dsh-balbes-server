@@ -30,6 +30,8 @@ interface Markup {
 }
 interface SentCall {
   chatId: number;
+  /** The id the fake Bot API assigns to this send, like the real one does. */
+  messageId: number;
   text: string;
   markup: Markup | undefined;
 }
@@ -57,6 +59,9 @@ function makeBot(): {
   const sent: SentCall[] = [];
   const edits: EditCall[] = [];
   const answers: Array<{ id: string; text: string | undefined }> = [];
+  // Telegram assigns every sent message an id and answers sendMessage with it;
+  // the fake does the same so the chat can snapshot what it sent.
+  let nextSentId = 900_000;
   const bot: BotClient = {
     async getMe() {
       return {};
@@ -65,7 +70,9 @@ function makeBot(): {
       return [];
     },
     async sendMessage(chatId, text, extra) {
-      sent.push({ chatId, text, markup: markupOf(extra) });
+      const messageId = nextSentId++;
+      sent.push({ chatId, messageId, text, markup: markupOf(extra) });
+      return messageId;
     },
     async editMessageText(chatId, messageId, text, extra) {
       edits.push({ chatId, messageId, text, markup: markupOf(extra) });
@@ -371,6 +378,21 @@ describe("chat machine: root menu and workspace list", () => {
     expect(h.bot.data(h.bot.sent[0]!.markup)).toEqual(["ws:pick:0", "ws:pick:1"]);
   });
 
+  it("a list rendered from a text alias is immediately usable (no false stale toast)", async () => {
+    const h = makeHarness();
+    h.workspaces.projects.push("alpha");
+
+    await h.machine.onMessage(message("Воркспейсы"));
+    const listId = h.bot.sent.at(-1)!.messageId;
+
+    await h.machine.onCallback(callback("ws:pick:1", listId));
+
+    expect(h.machine.activeWorkspace()).toEqual(project("alpha"));
+    expect(h.bot.sent.at(-1)!.text).toBe("Выбран: Проект: alpha");
+    expect(h.bot.answers).toEqual([{ id: `cb-${listId}-ws:pick:1`, text: undefined }]);
+    expect(h.bot.editTexts()).toHaveLength(0);
+  });
+
   it("an unknown command shows the root menu instead of running a task", async () => {
     const h = makeHarness();
 
@@ -623,6 +645,22 @@ describe("chat machine: tasks", () => {
     expect(h.bot.texts()[1]).toBe("Воркспейс удалён — выберите другой");
     expect(h.bot.data(h.bot.sent[1]!.markup)).toEqual(["ws"]);
     expect(h.bot.texts()[1]).not.toContain("not-found");
+  });
+
+  it("does not clear a newer active workspace when a stale task reports workspace-gone", async () => {
+    const h = makeHarness();
+    withActive(h);
+    const gate = h.runner.hold();
+    await h.machine.onMessage(message("задача в доме"));
+    // the owner switches while the detached task is still in flight
+    h.machine.setActiveWorkspace(project("alpha"));
+
+    gate.release({ ok: false, code: "workspace-gone", message: "not-found: project deleted" });
+    await settle();
+
+    expect(h.machine.activeWorkspace()).toEqual(project("alpha"));
+    expect(h.activeChanges).toEqual([]);
+    expect(h.bot.texts()).toEqual(["Задача принята…", "Воркспейс удалён — выберите другой"]);
   });
 
   it("reports the agent failure with its safe phrase", async () => {

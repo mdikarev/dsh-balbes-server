@@ -364,12 +364,22 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
     deps.onActiveChange(copyRef(active));
   }
 
-  async function send(chatId: number, text: string, keyboard?: InlineKeyboardMarkup): Promise<void> {
+  /**
+   * Send one message and resolve the id Telegram assigned to it, so a view
+   * that was sent (not edited) can be snapshotted too. `undefined` means the
+   * message is either unsent or carries no usable id: its buttons then fall
+   * back to the stale-but-safe path.
+   */
+  async function send(chatId: number, text: string, keyboard?: InlineKeyboardMarkup): Promise<number | undefined> {
     try {
-      if (keyboard === undefined) await deps.bot.sendMessage(chatId, text);
-      else await deps.bot.sendMessage(chatId, text, { reply_markup: keyboard });
+      const messageId =
+        keyboard === undefined
+          ? await deps.bot.sendMessage(chatId, text)
+          : await deps.bot.sendMessage(chatId, text, { reply_markup: keyboard });
+      return typeof messageId === "number" && messageId > 0 ? messageId : undefined;
     } catch (error) {
       warn(`sendMessage failed (${codeOf(error)})`);
+      return undefined;
     }
   }
 
@@ -632,7 +642,13 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
       return;
     }
     if (result.code === "workspace-gone") {
-      applyActive(undefined);
+      // The run is detached, so the owner may have switched workspaces while it
+      // was in flight: clear the selection only while it still points at the
+      // workspace the task ran in, otherwise keep the newer one (mirrors the
+      // still-active guard of the reset confirmation).
+      if (active !== undefined && workspaceRefKey(active) === workspaceRefKey(ref)) {
+        applyActive(undefined);
+      }
       await send(chatId, WORKSPACE_GONE, menuKeyboard());
       return;
     }
@@ -813,7 +829,11 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
           await send(update.chatId, LIST_FAILED, menuKeyboard());
           return;
         }
-        await send(update.chatId, view.text, view.keyboard);
+        const sentId = await send(update.chatId, view.text, view.keyboard);
+        // The list is snapshotted under the id Telegram assigned to it, so its
+        // first press already resolves the row the owner saw instead of
+        // answering «Список устарел» on a list that was just rendered.
+        if (sentId !== undefined) putSnapshot(sentId, view.snapshot);
         return;
       }
       // Every other command (including /start) answers with the root menu: an

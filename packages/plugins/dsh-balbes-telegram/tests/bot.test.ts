@@ -105,6 +105,22 @@ describe("createBotClient", () => {
     });
   });
 
+  it("sendMessage resolves the message_id Telegram assigned to the sent message", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(200, { ok: true, result: { message_id: 4242 } }));
+    const bot = createBotClient({ token: TOKEN, apiBase: API_BASE, fetchImpl: asFetch(fetchImpl) });
+
+    await expect(bot.sendMessage(7, "hi")).resolves.toBe(4242);
+  });
+
+  it("sendMessage resolves 0 when the response carries no numeric message_id", async () => {
+    for (const result of [{}, { message_id: "42" }, { message_id: 1.5 }, null]) {
+      const fetchImpl = vi.fn(async () => jsonResponse(200, { ok: true, result }));
+      const bot = createBotClient({ token: TOKEN, apiBase: API_BASE, fetchImpl: asFetch(fetchImpl) });
+
+      await expect(bot.sendMessage(7, "hi")).resolves.toBe(0);
+    }
+  });
+
   it("editMessageText includes chat_id, message_id, text and reply_markup in the body", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse(200, { ok: true, result: { message_id: 5 } }));
     const bot = createBotClient({ token: TOKEN, apiBase: API_BASE, fetchImpl: asFetch(fetchImpl) });

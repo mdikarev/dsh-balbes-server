@@ -56,7 +56,14 @@ export class BotApiError extends Error {
 export interface BotClient {
   getMe(): Promise<{ username?: string; id?: number }>;
   getUpdates(opts: { offset?: number; timeout?: number }): Promise<BotUpdate[]>;
-  sendMessage(chatId: number, text: string, extra?: { reply_markup?: unknown }): Promise<void>;
+  /**
+   * Send one text message and resolve the `message_id` Telegram assigned to
+   * it (0 when the API answered without one). Callers that do not care about
+   * the id just ignore the resolved value; the chat machine keys its
+   * rendered-view snapshots by it, so a freshly sent list is immediately
+   * pageable instead of looking stale on its first press.
+   */
+  sendMessage(chatId: number, text: string, extra?: { reply_markup?: unknown }): Promise<number>;
   editMessageText(chatId: number, messageId: number, text: string, extra?: { reply_markup?: unknown }): Promise<void>;
   answerCallbackQuery(callbackQueryId: string, opts?: { text?: string }): Promise<void>;
 }
@@ -174,8 +181,18 @@ export function createBotClient(opts: {
       return call<BotUpdate[]>("getUpdates", payload);
     },
 
-    async sendMessage(chatId: number, text: string, extra?: { reply_markup?: unknown }): Promise<void> {
-      await call<unknown>("sendMessage", { chat_id: chatId, text, ...extra });
+    async sendMessage(chatId: number, text: string, extra?: { reply_markup?: unknown }): Promise<number> {
+      // The Bot API answers sendMessage with the sent Message. A response that
+      // carries no numeric message_id resolves 0 — an explicit "unknown id"
+      // the caller can tell apart from a real one, instead of an exception that
+      // would make a sent message look failed.
+      const result = await call<{ message_id?: unknown } | undefined>("sendMessage", {
+        chat_id: chatId,
+        text,
+        ...extra
+      });
+      const messageId = result?.message_id;
+      return typeof messageId === "number" && Number.isInteger(messageId) ? messageId : 0;
     },
 
     async editMessageText(
