@@ -109,6 +109,7 @@ export async function readRegistryFile(file: string): Promise<RegistryData> {
  */
 export class WorkspaceSessionsRegistry {
   private state: RegistryData | null = null;
+  private loading: Promise<RegistryData> | null = null;
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly file: string) {}
@@ -147,9 +148,19 @@ export class WorkspaceSessionsRegistry {
 
   private async load(): Promise<RegistryData> {
     if (this.state !== null) return this.state;
-    const state = await readRegistryFile(this.file);
-    this.state = state;
-    return state;
+    // Одна идущая загрузка на экземпляр. Без этой мемоизации два параллельных
+    // вызова читают файл независимо, и снимок, снятый раньше, но разрешившийся
+    // позже, затирает более новый: `register` считает `next` от `this.state` и
+    // пишет документ целиком, поэтому затёртое состояние уносит уже
+    // зарегистрированную сессию с диска — нарушение append-only.
+    this.loading ??= readRegistryFile(this.file);
+    try {
+      this.state = await this.loading;
+      return this.state;
+    } finally {
+      // Неудачная загрузка не кэшируется: следующий вызов перечитает файл.
+      this.loading = null;
+    }
   }
 
   private async save(next: RegistryData): Promise<void> {
