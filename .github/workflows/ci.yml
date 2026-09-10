@@ -83,3 +83,47 @@ jobs:
 
       - name: Validate profile manifest is JSON
         run: node -e "JSON.parse(require('fs').readFileSync('profiles/balbes/package.json','utf8'))"
+
+  # The REAL suites compose the shipped code against a real dsh boot (real
+  # Loader, real agent loop, real tool registry, real fs sandbox, real profile
+  # CLI). They are the only evidence for the composition seams and the
+  # containment policy, and they rot silently if nothing runs them: this job is
+  # the reason the Telegram agent-surface restriction and the platform-aware
+  # bash probe stay verified. RUN_REAL=1 is the suite gate; without a `dsh` on
+  # PATH every REAL test skips, so the global install below is mandatory.
+  real:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable corepack pnpm
+        run: corepack enable && corepack prepare pnpm@10.0.0 --activate
+
+      - name: Install dsh CLI
+        run: npm i -g @deepseek-ai/dsh
+
+      - name: Install workspace deps
+        run: pnpm install
+
+      - name: Link core mirror into workspace
+        run: node scripts/link-core.mjs
+
+      - name: Build packages
+        run: pnpm -r --if-present run build
+
+      - name: REAL suites — host bundle (composition seams + fs/bash containment)
+        working-directory: packages/bundles/dsh-balbes-host
+        env:
+          RUN_REAL: "1"
+        run: bash node_modules/.bin/vitest run tests/seams.test.ts tests/integration.test.ts
+
+      - name: REAL suites — telegram channel (agent surface, containment, profile composition)
+        working-directory: packages/plugins/dsh-balbes-telegram
+        env:
+          RUN_REAL: "1"
+        run: bash node_modules/.bin/vitest run tests/agentTask.real.test.ts tests/integration.test.ts

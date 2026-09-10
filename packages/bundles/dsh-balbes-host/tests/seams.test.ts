@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, writeFile, rm, readdir, symlink } from "node:fs/promise
 import { existsSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startStubLlm } from "./helpers/stub-llm.mjs";
 
@@ -477,7 +477,7 @@ describe.skipIf(!realEnabled)("REAL seams probe: session cwd, fs tool containmen
     expect(relResults.join("\n")).toContain(OUTSIDE_CONTENT.trim());
   }, 120_000);
 
-  it("containment: bash tool fails closed instead of running unconfined", async () => {
+  it("containment: bash containment is platform-dependent — confined-but-read-anywhere, or fail closed", async () => {
     const result = await runTurn(booted!.ctx, stub!, {
       sessionId: "session-seam-bash",
       metaCwd: ws,
@@ -491,19 +491,43 @@ describe.skipIf(!realEnabled)("REAL seams probe: session cwd, fs tool containmen
         { text: "bash result" }
       ]
     });
-    // dsh 0.1.2-rc.1 seam fact (this macOS dev host): under the default
-    // workspace-write mode the bash tool REFUSES to run — "no sandbox backend
-    // is usable on this host" — because the Seatbelt sandbox-exec backend
-    // cannot start inside this already-sandboxed vitest process. The command
-    // never executes (fail closed); the model receives an error tool result.
-    // On a host with a usable backend the same call would run confined by the
-    // deployment's sandbox policy (writes fenced to writableRoots; reads pass)
-    // — bash read containment is policy-rooted, never session-cwd-rooted.
+    // dsh 0.1.2-rc.1 seam fact: the SHELL has no workspace-root read boundary,
+    // and whether the command runs at all depends on the HOST, not on this
+    // deployment. The tool is policy-rooted, never session-cwd-rooted:
+    // - On a host without a usable sandbox backend (this macOS dev host: the
+    //   Seatbelt sandbox-exec backend cannot start inside an already-sandboxed
+    //   vitest process) the tool REFUSES to run — "no sandbox backend is
+    //   usable on this host" — and no host content reaches the model.
+    // - On a host WITH a usable backend (the Linux VPS: Landlock/bwrap mounted
+    //   with `readOnly: ["/"]`) the command runs, writes are fenced to the
+    //   writable roots, and READS ANYWHERE PASS — so `cat /etc/hosts` returns
+    //   its content and `cd ..` renders a directory outside the session
+    //   workspace. That is not escapable by configuration.
+    // Both outcomes are asserted below and exactly one must hold, so the suite
+    // stays honest on either platform instead of pinning this host's accident
+    // (a Linux-only branch cannot be exercised from macOS; no platform skip).
+    // This is precisely why the Telegram channel does not rely on the shell
+    // policy at all: it REMOVES `bash` (and every other read-capable channel)
+    // from the agent's tool surface in composeAgentSetup, which is the only
+    // boundary that holds on both kinds of host.
     expect(result.reason?.kind).toBe("completed");
-    const results = toolResults(result.calls);
-    expect(results.join("\n")).toContain("no sandbox backend is usable");
-    // And the shell never leaked host content into any model-visible result.
-    expect(results.join("\n")).not.toContain("localhost");
+    const joined = toolResults(result.calls).join("\n");
+    const failedClosed = joined.includes("no sandbox backend is usable");
+    const ranConfined = joined.includes("localhost");
+    expect(
+      failedClosed || ranConfined,
+      `bash neither failed closed nor ran: ${joined.slice(0, 500)}`
+    ).toBe(true);
+    expect(failedClosed && ranConfined, "the two bash outcomes are mutually exclusive").toBe(false);
+    if (failedClosed) {
+      // Never a leak on this host: the shell produced no host content at all.
+      expect(joined).not.toContain("localhost");
+    } else {
+      // Reads pass under the sandbox policy: the host's /etc/hosts came back and
+      // the shell reached the parent directory of the session workspace.
+      expect(joined).toContain("localhost");
+      expect(joined).toContain(basename(home!));
+    }
   }, 120_000);
 
   it("containment: writes are fenced to the session cwd + platform temp areas", async () => {
