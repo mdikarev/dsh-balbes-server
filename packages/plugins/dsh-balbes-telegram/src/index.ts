@@ -285,6 +285,7 @@ export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: stri
         // the handle and its session survive the cancellation.
         return runner.cancel(ref);
       },
+      progress: (ref) => runner.progress(ref),
       sessionIdOf: (ref) => runner.sessionIdOf(ref),
       snapshot: () => runner.snapshot()
     };

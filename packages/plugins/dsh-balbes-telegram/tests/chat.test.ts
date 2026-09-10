@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { AgentTaskRunner, TaskResult, WorkspaceRef } from "../src/agentTask.js";
+import type { AgentTaskRunner, TaskProgress, TaskResult, WorkspaceRef } from "../src/agentTask.js";
 import type { BotClient } from "../src/bot.js";
 import {
   createChatMachine,
@@ -203,6 +203,7 @@ function makeRunner(): {
       resets.push(ref);
     },
     cancel: cancels,
+    progress: vi.fn((): TaskProgress => ({ phase: "idle", steps: [], queued: 0 })),
     sessionIdOf() {
       return undefined;
     },

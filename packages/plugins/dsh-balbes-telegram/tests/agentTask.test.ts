@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   composeAgentSetup,
   createAgentTaskRunner,
+  summarizeProgress,
   workspaceRefKey,
   type AgentTaskDeps,
   type TaskResult,
@@ -776,6 +777,287 @@ describe("cancel", () => {
     await expect(running).resolves.toMatchObject({ ok: true, text: "готовый ответ" });
     expect(handle.dispose).not.toHaveBeenCalled();
     expect(runner.sessionIdOf(PROJECT_ALPHA)).toBeDefined();
+  });
+});
+
+/**
+ * The progress summary is a PURE reading of one turn's event slice, so this
+ * suite builds that slice by hand: every arm — the target whitelist, the cap and
+ * its ordering, ok/failed, the latest todo list — is then deterministic and
+ * reachable without a real agent. `fakeSessionWith` mirrors the fake session
+ * inside `makeHandle`; `SessionSeqLike` is the same boundary cast the runner
+ * performs with the real `SessionSeq`.
+ */
+function fakeSessionWith(events: EventLike[]): Parameters<typeof summarizeProgress>[0] {
+  return {
+    get seq(): number {
+      return events.length;
+    },
+    eventAt: (seq: unknown) => events[Number(seq)] as never
+  };
+}
+const SessionSeqLike = (n: number): never => n as never;
+
+/**
+ * One `tool/call` in the engine's own shape (dsh-session `SessionEventMap`):
+ * `arguments` is the RAW JSON string exactly as the model produced it. A string
+ * is passed through unchanged, which is how a malformed-arguments case is built.
+ */
+function toolCall(callId: string, name: string, args: unknown, step = 1): EventLike {
+  return {
+    type: "tool/call",
+    data: {
+      turn: 1,
+      step,
+      callId,
+      name,
+      arguments: typeof args === "string" ? args : JSON.stringify(args)
+    }
+  };
+}
+
+/**
+ * One `tool/result` in the engine's own shape. The engine does NOT put `callId`
+ * on this event (`'tool/result': { turn, step, message, error?, meta? }` in
+ * @deepseek-ai/dsh-session): the call identity rides the model-facing result
+ * message — `message.source.callId` and the `tool-result` block's `toolCallId`
+ * (dsh-llm `createToolResultMessage`). The event-level `error` is the harness
+ * failure IDENTITY (`{name, code}`), which dsh-agent-loop attaches only when the
+ * failure carries one, so it is not the only sign of a failed call: a path-guard
+ * denial is an `isError` result with no identity.
+ */
+function toolResult(
+  callId: string,
+  opts: { isError?: boolean; text?: string; identity?: { name: string; code: string } } = {}
+): EventLike {
+  return {
+    type: "tool/result",
+    data: {
+      turn: 1,
+      step: 1,
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: callId,
+            content: [{ type: "text", text: opts.text ?? "result" }],
+            isError: opts.isError ?? false
+          }
+        ],
+        source: { kind: "tool", callId }
+      },
+      ...(opts.identity !== undefined ? { error: opts.identity } : {})
+    }
+  };
+}
+
+describe("task progress", () => {
+  it("summarizes steps, targets and todos of the running turn", () => {
+    const session = fakeSessionWith([
+      { type: "turn/start", data: {} },
+      { type: "step/start", data: { turn: 1, step: 1 } },
+      toolCall("c1", "read", { file_path: "notes.txt" }),
+      toolResult("c1"),
+      toolCall("c2", "write", { file_path: "out.txt", content: "a\nb" }, 2),
+      { type: "todo/write", data: { todos: [{ content: "Разобрать логи", status: "completed" }] } }
+    ]);
+
+    const progress = summarizeProgress(session, SessionSeqLike(0), 5);
+
+    expect(progress.steps).toEqual([
+      { name: "read", target: "notes.txt", status: "ok" },
+      { name: "write", target: "out.txt", status: "running" }
+    ]);
+    expect(progress.todos).toEqual([{ content: "Разобрать логи", status: "completed" }]);
+  });
+
+  it("never renders file content or long targets", () => {
+    const long = "x".repeat(500);
+    const session = fakeSessionWith([
+      { type: "turn/start", data: {} },
+      {
+        type: "tool/call",
+        data: {
+          turn: 1,
+          step: 1,
+          callId: "c1",
+          name: "write",
+          arguments: JSON.stringify({ file_path: `${long}\n\nsecret`, content: "СОДЕРЖИМОЕ" })
+        }
+      }
+    ]);
+
+    const line = summarizeProgress(session, SessionSeqLike(0), 5).steps[0]!;
+
+    expect(line.target).toBe(`${"x".repeat(80)}…`);
+    expect(JSON.stringify(line)).not.toContain("СОДЕРЖИМОЕ");
+  });
+
+  it("reports an idle phase and the queue depth", async () => {
+    const { runner } = await makeRunner();
+    expect(runner.progress(PROJECT_ALPHA)).toEqual({ phase: "idle", steps: [], queued: 0 });
+  });
+
+  it("keeps only the newest steps of a long turn, oldest first", () => {
+    const events: EventLike[] = [
+      { type: "turn/start", data: {} },
+      { type: "step/start", data: { turn: 1, step: 2 } }
+    ];
+    for (let n = 1; n <= 7; n++) events.push(toolCall(`c${n}`, "read", { file_path: `file-${n}.txt` }, n));
+
+    const progress = summarizeProgress(fakeSessionWith(events), SessionSeqLike(0));
+
+    // The cap keeps where the task IS, not its whole history, and the kept five
+    // stay in the order the model called them.
+    expect(progress.steps.map((step) => step.target)).toEqual([
+      "file-3.txt",
+      "file-4.txt",
+      "file-5.txt",
+      "file-6.txt",
+      "file-7.txt"
+    ]);
+    expect(progress.steps.every((step) => step.status === "running")).toBe(true);
+    expect(progress.step).toBe(2);
+  });
+
+  it("pairs a result with its call by callId and never reads the result text", () => {
+    const session = fakeSessionWith([
+      { type: "turn/start", data: {} },
+      toolCall("c1", "read", { file_path: "notes.txt" }),
+      toolCall("c2", "write", { file_path: "out.txt", content: "СОДЕРЖИМОЕ" }),
+      toolCall("c3", "glob", { path: "src" }),
+      toolResult("c1"),
+      // A result whose call is not in the slice must not rewrite any step.
+      toolResult("c-unknown", { isError: true }),
+      toolResult("c2", { isError: true, text: "СЕКРЕТ-ИЗ-РЕЗУЛЬТАТА" }),
+      toolResult("c3", { isError: true, identity: { name: "AbortError", code: "tool_aborted" } })
+    ]);
+
+    const progress = summarizeProgress(session, SessionSeqLike(0));
+
+    expect(progress.steps).toEqual([
+      { name: "read", target: "notes.txt", status: "ok" },
+      { name: "write", target: "out.txt", status: "failed" },
+      { name: "glob", target: "src", status: "failed" }
+    ]);
+    // Tool RESULTS are not part of the summary at all, only the fact that the
+    // call ended.
+    expect(JSON.stringify(progress)).not.toContain("СЕКРЕТ-ИЗ-РЕЗУЛЬТАТА");
+  });
+
+  it("reports the todo list of the latest todo/write", () => {
+    const session = fakeSessionWith([
+      { type: "turn/start", data: {} },
+      { type: "todo/write", data: { todos: [{ content: "первое", status: "pending" }] } },
+      {
+        type: "todo/write",
+        data: {
+          todos: [
+            { content: "первое", status: "completed" },
+            { content: "второе", status: "in_progress" }
+          ]
+        }
+      }
+    ]);
+
+    const progress = summarizeProgress(session, SessionSeqLike(0));
+
+    expect(progress.todos).toEqual([
+      { content: "первое", status: "completed" },
+      { content: "второе", status: "in_progress" }
+    ]);
+    // Nothing else is invented for a turn with no calls: no steps key, no step
+    // number, no percentage, no timing.
+    expect(Object.keys(progress).sort()).toEqual(["steps", "todos"]);
+  });
+
+  it("ignores the events that precede the turn's own turn/start", () => {
+    const session = fakeSessionWith([
+      toolCall("old", "read", { file_path: "старый.txt" }),
+      { type: "todo/write", data: { todos: [{ content: "старое", status: "completed" }] } },
+      { type: "turn/start", data: {} },
+      toolCall("new", "read", { file_path: "новый.txt" })
+    ]);
+
+    const progress = summarizeProgress(session, SessionSeqLike(0));
+
+    expect(progress.steps).toEqual([{ name: "read", target: "новый.txt", status: "running" }]);
+    expect(progress.todos).toBeUndefined();
+  });
+
+  it("exposes no target for a foreign tool, malformed JSON or a blank value, and collapses whitespace", () => {
+    const session = fakeSessionWith([
+      { type: "turn/start", data: {} },
+      toolCall("c1", "todo_write", { todos: [{ content: "СЕКРЕТ-ПЛАНА", status: "pending" }] }),
+      toolCall("c2", "read", "{не json"),
+      toolCall("c3", "read", { file_path: 42 }),
+      toolCall("c4", "read", { file_path: "   " }),
+      toolCall("c5", "read", { file_path: "a\n\n  b.txt" })
+    ]);
+
+    const progress = summarizeProgress(session, SessionSeqLike(0));
+
+    expect(progress.steps).toEqual([
+      { name: "todo_write", status: "running" },
+      { name: "read", status: "running" },
+      { name: "read", status: "running" },
+      { name: "read", status: "running" },
+      { name: "read", target: "a b.txt", status: "running" }
+    ]);
+    expect(JSON.stringify(progress)).not.toContain("СЕКРЕТ-ПЛАНА");
+  });
+
+  /**
+   * The runner's own contract: the summary is scoped to the turn of THIS
+   * workspace, so a task being set up (busy, no turn of its own yet) has no
+   * phase, and the turn that already settled is never reported again — the
+   * window where a stale slice would otherwise be summarized is the next
+   * queued task's set-up.
+   */
+  it("reports the running turn and never the turn that already settled", async () => {
+    const { agents, runner } = await makeRunner();
+    agents.cfg({ holdIdle: true, answers: ["первый ответ", "второй ответ"] });
+    const running = runner.run(PROJECT_ALPHA, "долгая задача");
+    await waitFor(() => agents.created.length === 1);
+    const handle = agents.created[0]!;
+    await waitFor(() => handle.agent.whenIdle.mock.calls.length === 1);
+
+    // Busy, but the turn has not started: no phase and no task text of a turn.
+    expect(runner.progress(PROJECT_ALPHA)).toEqual({ phase: "idle", steps: [], queued: 0 });
+
+    handle.releaseParked(); // пропускаем followup
+    await waitFor(() => handle.agent.followup.mock.calls.length === 1);
+    await waitFor(() => handle.parkedCount === 1);
+    const queued = runner.run(PROJECT_ALPHA, "в очереди");
+    // run() registers the accepted task after its own readiness await.
+    await waitFor(() => runner.progress(PROJECT_ALPHA).queued === 1);
+
+    // The waited task is counted, never given a phase of its own.
+    expect(runner.progress(PROJECT_ALPHA)).toEqual({
+      phase: "running",
+      taskText: "долгая задача",
+      startedAt: expect.any(Number),
+      steps: [],
+      queued: 1
+    });
+
+    handle.releaseParked(); // завершаем первый turn
+    // The queued task is now being set up, and the settled turn is gone for good.
+    await waitFor(() => handle.agent.whenIdle.mock.calls.length === 3);
+    await waitFor(() => handle.parkedCount === 1);
+    expect(runner.progress(PROJECT_ALPHA)).toEqual({ phase: "idle", steps: [], queued: 0 });
+
+    handle.releaseParked(); // пропускаем followup второго turn
+    await waitFor(() => handle.agent.followup.mock.calls.length === 2);
+    await waitFor(() => handle.parkedCount === 1);
+    handle.releaseParked(); // завершаем второй turn
+
+    const first = expectOk(await withTimeout(running, 2000, "the first run never settled"));
+    const second = expectOk(await withTimeout(queued, 2000, "the queued run never settled"));
+    expect(first.text).toBe("первый ответ");
+    expect(second.text).toBe("второй ответ");
+    expect(runner.progress(PROJECT_ALPHA)).toEqual({ phase: "idle", steps: [], queued: 0 });
   });
 });
 

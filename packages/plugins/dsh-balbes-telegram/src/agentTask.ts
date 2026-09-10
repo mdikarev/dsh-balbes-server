@@ -37,6 +37,42 @@ export type TaskResult =
       message: string;
     };
 
+/** One tool invocation of the turn a progress read describes. */
+export interface TaskProgressStep {
+  name: string;
+  /**
+   * At most one short argument, and only for a whitelisted tool (see {@link
+   * PROGRESS_TARGET_ARG}); absent for everything else. Never file content.
+   */
+  target?: string;
+  status: "running" | "ok" | "failed";
+}
+
+/** One entry of the agent's todo list of the turn a progress read describes. */
+export interface TaskProgressTodo {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
+/**
+ * A read-only snapshot of one workspace's running turn, for the progress card.
+ *
+ * It is deliberately small and content-free: the step names plus one whitelisted
+ * short argument each, the agent's own todo list, the step number, the start
+ * time and the queue depth. Tool RESULTS are never read and the assistant's text
+ * never appears — this is a sign of life, not a stream of the answer.
+ */
+export interface TaskProgress {
+  /** The workspace's own turn: a task waiting in the queue has no phase. */
+  phase: "idle" | "running";
+  taskText?: string;
+  startedAt?: number;
+  step?: number;
+  steps: TaskProgressStep[];
+  todos?: TaskProgressTodo[];
+  queued: number;
+}
+
 export interface AgentTaskRunner {
   run(ref: WorkspaceRef, text: string, opts?: { sessionId?: string }): Promise<TaskResult>;
   reset(ref: WorkspaceRef): Promise<void>;
@@ -48,6 +84,14 @@ export interface AgentTaskRunner {
    * stopped and how many waiting tasks were dropped.
    */
   cancel(ref: WorkspaceRef): Promise<{ cancelled: boolean; dropped: number }>;
+  /**
+   * The summarised progress of this workspace's RUNNING turn, or an `idle`
+   * snapshot with the queue depth when nothing of its own is running. Read-only
+   * and cheap by construction: no I/O, no locks, no agent call — it reads the
+   * live session log the runner already holds and never starts, waits for or
+   * touches a turn.
+   */
+  progress(ref: WorkspaceRef): TaskProgress;
   sessionIdOf(ref: WorkspaceRef): string | undefined;
   /** Live session mapping, for persisting across restarts (tasks 8/11). */
   snapshot(): Array<{ key: string; sessionId: string }>;
@@ -108,8 +152,24 @@ export const CANCELLED_MESSAGE = "task cancelled by the owner";
 interface SessionEventLike {
   type: string;
   data: {
-    message?: { content?: Array<{ type: string; text?: string }> };
+    message?: {
+      content?: Array<{ type: string; text?: string; toolCallId?: string; isError?: boolean }>;
+      /**
+       * The message source. A tool result carries its `callId` here
+       * (`{ kind: "tool", callId }`) — the event itself has none.
+       */
+      source?: { kind?: string; callId?: string };
+    };
     reason?: unknown;
+    step?: number;
+    callId?: string;
+    name?: string;
+    /** The raw argument JSON string of a `tool/call`, exactly as the model wrote it. */
+    arguments?: string;
+    /** The harness failure identity of a `tool/result` (`{ name, code }`), when it has one. */
+    error?: unknown;
+    /** The whole-list snapshot of a `todo/write`; the latest write wins. */
+    todos?: TaskProgressTodo[];
   };
 }
 
@@ -173,6 +233,14 @@ interface KeyedEntry {
    * the retired ones answer "reset aborted and the handle was disposed".
    */
   cancelled: boolean;
+  /**
+   * The session sequence the RUNNING turn starts at, and when it started. Both
+   * are set for the moment the turn is submitted and cleared the moment it
+   * settles, so a progress read can neither summarize a turn that is only being
+   * set up nor one that is already over.
+   */
+  firstSeq: number | undefined;
+  startedAt: number | undefined;
 }
 
 function errorMessage(error: unknown, fallback = "unknown error"): string {
@@ -228,6 +296,128 @@ function summarizeTurn(session: AgentLike["session"], firstSeq: number): TurnOut
   const outcome: TurnOutcome = { text };
   if (reason !== undefined) outcome.reason = reason;
   return outcome;
+}
+
+/**
+ * Arguments worth showing in the progress card, by tool. Everything else is
+ * omitted: `write`/`edit` arguments carry whole file bodies, and a card that
+ * rendered them would push workspace content into the chat. The whitelist is
+ * consulted FIRST, so no tool outside it can contribute an argument at all.
+ */
+const PROGRESS_TARGET_ARG: Record<string, string> = {
+  read: "file_path",
+  read_image: "file_path",
+  write: "file_path",
+  edit: "file_path",
+  glob: "path",
+  grep: "path",
+  web_search: "query"
+};
+/** Longest target the card may show, before the ellipsis. */
+const PROGRESS_TARGET_MAX = 80;
+/** How many of the turn's newest steps a progress read returns. */
+const PROGRESS_STEP_MAX = 5;
+
+/**
+ * The one argument of `tool` the card may show, or nothing.
+ *
+ * Every failure to answer is `undefined` — a tool outside the whitelist, a
+ * malformed argument string (never re-parsed leniently), a missing or non-string
+ * or blank value. The result is whitespace-collapsed and capped, because a path
+ * may be long, multi-line or contain the model's own newlines.
+ */
+function progressTarget(tool: string, rawArguments: string): string | undefined {
+  const argName = PROGRESS_TARGET_ARG[tool];
+  if (argName === undefined) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawArguments);
+  } catch {
+    return undefined;
+  }
+  const value = (parsed as Record<string, unknown> | undefined)?.[argName];
+  if (typeof value !== "string" || value === "") return undefined;
+  const collapsed = value.replace(/\s+/g, " ").trim();
+  if (collapsed === "") return undefined;
+  return collapsed.length > PROGRESS_TARGET_MAX ? `${collapsed.slice(0, PROGRESS_TARGET_MAX)}…` : collapsed;
+}
+
+/**
+ * The call identity of a `tool/result`. The engine puts it on the model-facing
+ * result message, not on the event: `message.source.callId` is the required tool
+ * source of that message and the `tool-result` block repeats it as
+ * `toolCallId` (@deepseek-ai/dsh-llm `createToolResultMessage`, appended by
+ * dsh-agent-loop's `appendToolResult`). A result whose identity cannot be read
+ * is left unpaired — a step keeps reporting "running" rather than being
+ * credited to the wrong call.
+ */
+function resultCallId(message: SessionEventLike["data"]["message"]): string | undefined {
+  const source = message?.source;
+  if (source?.kind === "tool" && typeof source.callId === "string") return source.callId;
+  const block = message?.content?.[0];
+  return block?.type === "tool-result" && typeof block.toolCallId === "string" ? block.toolCallId : undefined;
+}
+
+/**
+ * A `tool/result` reports a failed call when the tool itself said so (the
+ * model-facing result block is an error) or when the harness attached a failure
+ * identity. Both matter: a path-guard denial — the containment this deployment
+ * relies on — is an `isError` result with NO identity, so reading only the
+ * identity would render a denied read as a success.
+ */
+function resultFailed(event: SessionEventLike): boolean {
+  return event.data.message?.content?.[0]?.isError === true || event.data.error !== undefined;
+}
+
+/**
+ * Steps, todo list and step number of one turn's event slice: the pure half of
+ * {@link AgentTaskRunner.progress}. `firstSeq` is the session sequence the turn
+ * started at, so the slice is exactly the turn's own events (the leading
+ * `turn/start` is the gate the rest of the file uses too).
+ *
+ * Only tool NAMES, one whitelisted argument per call, todo text and step numbers
+ * are read: no tool result, no assistant text, no event the slice does not own.
+ * Steps are returned oldest first, capped to the newest `limit` of them.
+ */
+export function summarizeProgress(
+  session: AgentLike["session"],
+  firstSeq: number,
+  limit = PROGRESS_STEP_MAX
+): { steps: TaskProgressStep[]; todos?: TaskProgressTodo[]; step?: number } {
+  const byCallId = new Map<string, TaskProgressStep>();
+  const steps: TaskProgressStep[] = [];
+  let todos: TaskProgressTodo[] | undefined;
+  let step: number | undefined;
+  let started = false;
+  for (let seq = firstSeq; seq < session.seq; seq++) {
+    const event = session.eventAt(SessionSeq(seq));
+    if (event === undefined) continue;
+    if (event.type === "turn/start") started = true;
+    if (!started) continue;
+    const data = event.data;
+    if (event.type === "step/start" && typeof data.step === "number") step = data.step;
+    if (event.type === "todo/write" && Array.isArray(data.todos)) {
+      todos = data.todos.map((todo) => ({ content: todo.content, status: todo.status }));
+    }
+    if (event.type === "tool/call" && typeof data.callId === "string" && typeof data.name === "string") {
+      const line: TaskProgressStep = { name: data.name, status: "running" };
+      const target = progressTarget(data.name, data.arguments ?? "");
+      if (target !== undefined) line.target = target;
+      byCallId.set(data.callId, line);
+      steps.push(line);
+    }
+    if (event.type === "tool/result") {
+      const callId = resultCallId(data.message);
+      const line = callId === undefined ? undefined : byCallId.get(callId);
+      if (line !== undefined) line.status = resultFailed(event) ? "failed" : "ok";
+    }
+  }
+  const out: { steps: TaskProgressStep[]; todos?: TaskProgressTodo[]; step?: number } = {
+    steps: steps.slice(Math.max(0, steps.length - limit))
+  };
+  if (todos !== undefined) out.todos = todos;
+  if (step !== undefined) out.step = step;
+  return out;
 }
 
 /**
@@ -626,6 +816,10 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
         return { ok: false, code: "cancelled", message: CANCELLED_MESSAGE };
       }
       const firstSeq = agent.session.seq;
+      // The progress read of THIS turn starts here (progress() reads the pair
+      // back); `agent.followup` below is what puts its first event into the log.
+      entry.firstSeq = firstSeq;
+      entry.startedAt = Date.now();
       agent.followup(
         createUserMessage({
           content: [{ type: "text", text }],
@@ -707,6 +901,12 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
     } finally {
       entry.busy = false;
       entry.activeText = undefined;
+      // The progress read is scoped to the turn that just settled: clearing it
+      // BEFORE the next queued task is set up is what keeps a later read from
+      // summarizing a turn that is over (the next task's own window has no
+      // events yet, so it must report no phase at all).
+      entry.firstSeq = undefined;
+      entry.startedAt = undefined;
       // The stop flag is scoped to the turn it stopped: a cancel that landed as
       // this turn was settling must not misreport the NEXT queued task.
       entry.cancelled = false;
@@ -732,7 +932,9 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
           activeText: undefined,
           queue: [],
           retired: false,
-          cancelled: false
+          cancelled: false,
+          firstSeq: undefined,
+          startedAt: undefined
         };
         cache.set(key, entry);
       }
@@ -800,6 +1002,34 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
       entry.cancelled = true;
       entry.handle?.agent.cancel({ kind: "user" }, { keepInbox: true });
       return { cancelled: true, dropped };
+    },
+
+    /**
+     * The progress of the workspace's own running turn. Deliberately free of
+     * side effects — no loader gate, no lock, no agent call — because a chat
+     * poll may read it while a turn is mid-flight. The turn is summarized from
+     * the live session log the runner already owns, from the sequence the turn
+     * started at; a task that is merely WAITING is reported as queue depth, and
+     * a task still being set up (no turn of its own yet) has no phase at all.
+     */
+    progress(ref: WorkspaceRef): TaskProgress {
+      const entry = cache.get(workspaceRefKey(ref));
+      if (entry === undefined) return { phase: "idle", steps: [], queued: 0 };
+      const queued = entry.queue.length;
+      if (!entry.busy || entry.handle === undefined || entry.firstSeq === undefined) {
+        return { phase: "idle", steps: [], queued };
+      }
+      const summary = summarizeProgress(entry.handle.agent.session, entry.firstSeq);
+      const out: TaskProgress = {
+        phase: "running",
+        steps: summary.steps,
+        queued,
+        startedAt: entry.startedAt ?? Date.now()
+      };
+      if (entry.activeText !== undefined) out.taskText = entry.activeText;
+      if (summary.step !== undefined) out.step = summary.step;
+      if (summary.todos !== undefined) out.todos = summary.todos;
+      return out;
     },
 
     sessionIdOf(ref: WorkspaceRef): string | undefined {
