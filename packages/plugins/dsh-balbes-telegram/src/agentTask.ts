@@ -259,8 +259,18 @@ function summarizeTurn(session: AgentLike["session"], firstSeq: number): TurnOut
 export interface AgentSetupOptions {
   /** The workspace root the session cwd resolves under (meta.cwd seed). */
   root: string;
-  /** The model selection captured from agentDefaultModel at create/resume. */
-  selection: { provider: string; model: string };
+  /**
+   * The LIVE model selection of the session. dsh's `installModelSelection`
+   * reads `current` at prompt-assembly time and owns the `assembled` slot, so
+   * the runner passes the ref itself (never a snapshot of it).
+   */
+  selection: ModelSelectionRefLike;
+}
+
+/** The mutable selection dsh's installModelSelection reads per step. */
+export interface ModelSelectionRefLike {
+  current?: { provider: string; model: string } | undefined;
+  assembled?: { provider: string; model: string } | undefined;
 }
 
 /**
@@ -428,8 +438,28 @@ function restrictToolSurface(tools: ToolsSurface): void {
   if (denied.length > 0) tools.restrict({ deny: denied });
 }
 
+/**
+ * The live selection of one keyed session: `agentOptions` needs a concrete pair
+ * at create/resume time, but every later request must read the CURRENT global
+ * default, so a change made from the admin page or the chat reaches a session
+ * that is already alive. The `assembled` slot stays owned by dsh.
+ */
+function liveSelection(defaultModel: AgentTaskDeps["defaultModel"]): {
+  ref: ModelSelectionRefLike;
+  initial: { provider: string; model: string };
+} {
+  const initial = defaultModel?.currentSelection() ?? { provider: "", model: "" };
+  const ref: ModelSelectionRefLike = {
+    get current(): { provider: string; model: string } {
+      return defaultModel?.currentSelection() ?? initial;
+    },
+    assembled: undefined
+  };
+  return { ref, initial };
+}
+
 export function composeAgentSetup(agentCtx: unknown, options: AgentSetupOptions): void {
-  installModelSelection(agentCtx as never, { current: options.selection, assembled: undefined });
+  installModelSelection(agentCtx as never, options.selection as never);
   const tools = (agentCtx as { get(key: string): unknown }).get("tools") as ToolsSurface | undefined;
   if (tools === undefined) return;
   restrictToolSurface(tools);
@@ -454,15 +484,15 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
     root: string,
     opts: { sessionId?: string } | undefined
   ): Promise<{ handle: AgentHandleLike; sessionId: string }> {
-    const selection = deps.defaultModel?.currentSelection() ?? { provider: "", model: "" };
+    const selection = liveSelection(deps.defaultModel);
     const setup = (agentCtx: unknown): void => {
-      composeAgentSetup(agentCtx, { root, selection });
+      composeAgentSetup(agentCtx, { root, selection: selection.ref });
     };
     if (opts?.sessionId !== undefined) {
       try {
         const handle = await deps.agents.resume({
           resumeSessionId: opts.sessionId,
-          agentOptions: selection,
+          agentOptions: selection.initial,
           setup
         });
         return { handle, sessionId: opts.sessionId };
@@ -478,7 +508,7 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
     const handle = await deps.agents.create({
       sessionId,
       meta: { cwd: root },
-      agentOptions: selection,
+      agentOptions: selection.initial,
       setup
     });
     return { handle, sessionId };

@@ -614,6 +614,42 @@ function makeAgentCtx(tools: unknown): { on(): () => void; get(key: string): unk
 }
 
 /**
+ * The agent-scope context a real `setup` callback receives, recording the two
+ * waterfall listeners `installModelSelection` installs so a test can drive one
+ * prompt-assembly + request round by hand.
+ */
+function makeRecordingAgentCtx(): {
+  ctx: { on(event: string, listener: never): () => void; get(key: string): unknown };
+  appliedModel(): Promise<string | undefined>;
+} {
+  const listeners = new Map<string, unknown>();
+  const tools = makeTools([]);
+  return {
+    ctx: {
+      on(event: string, listener: never): () => void {
+        listeners.set(event, listener);
+        return () => listeners.delete(event);
+      },
+      get: (key: string) => (key === "tools" ? tools : undefined)
+    },
+    async appliedModel(): Promise<string | undefined> {
+      const assemble = listeners.get("system-prompt/assemble") as unknown as (
+        assembly: unknown,
+        context: unknown,
+        next: () => Promise<unknown>
+      ) => Promise<unknown>;
+      const request = listeners.get("agent/request") as unknown as (
+        payload: unknown,
+        next: () => Promise<unknown>
+      ) => Promise<unknown>;
+      await assemble({}, {}, async () => ({ variables: {} }));
+      const resolved = (await request({}, async () => ({ provider: "p", model: "m" }))) as { model?: string };
+      return resolved.model;
+    }
+  };
+}
+
+/**
  * The allow list `composeAgentSetup` must apply on this deployment, name by
  * name. `web_search` is kept on purpose (internet search); `web_fetch` is NOT:
  * it is an egress channel to an arbitrary URL.
@@ -656,7 +692,7 @@ describe("composeAgentSetup tool surface", () => {
       "some_future_shell"
     ];
     const tools = makeTools(registered);
-    composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: SELECTION });
+    composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: { current: SELECTION } });
 
     expect(tools.restrictions).toHaveLength(1);
     // An allow filter, not a deny list: the unlisted future tool is removed by
@@ -684,7 +720,7 @@ describe("composeAgentSetup tool surface", () => {
     // and `web_fetch` on the live registry), and only search survives.
     const registered = [...KEPT_BY_CONTRACT, "web_fetch", "bash"];
     const tools = makeTools(registered);
-    composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: SELECTION });
+    composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: { current: SELECTION } });
 
     expect(registered).toContain("web_search");
     expect(registered).toContain("web_fetch");
@@ -704,14 +740,14 @@ describe("composeAgentSetup tool surface", () => {
     // dsh reject the whole restriction and fail every task.
     const tools = makeTools(["read", "write", "pwsh", "web_fetch"]);
     expect(() =>
-      composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: SELECTION })
+      composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: { current: SELECTION } })
     ).not.toThrow();
     expect(tools.restrictions).toEqual([{ allow: ["read", "write"] }]);
   });
 
   it("degrades to the names it knows must never be exposed when no kept tool is registered", () => {
     const tools = makeTools(["bash", "pwsh", "web_fetch", "skill", "interrupt_agent"]);
-    composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: SELECTION });
+    composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: { current: SELECTION } });
     // No allow filter is possible (nothing to keep would be an empty surface):
     // the fallback still removes every name it knows the surface must never
     // expose — and only those, which is its weaker guarantee.
@@ -721,13 +757,13 @@ describe("composeAgentSetup tool surface", () => {
 
   it("asks for no restriction when the deployment registers nothing it knows", () => {
     const tools = makeTools(["totally_unknown_tool"]);
-    composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: SELECTION });
+    composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: { current: SELECTION } });
     expect(tools.restrictions).toEqual([]);
   });
 
   it("is a no-op without a tools service", () => {
     expect(() =>
-      composeAgentSetup(makeAgentCtx(undefined), { root: "/tmp/ws-root", selection: SELECTION })
+      composeAgentSetup(makeAgentCtx(undefined), { root: "/tmp/ws-root", selection: { current: SELECTION } })
     ).not.toThrow();
   });
 
@@ -759,5 +795,43 @@ describe("composeAgentSetup tool surface", () => {
     resumed.agents.resumeOpts[0]!.setup(makeAgentCtx(resumeTools));
     expect(resumeTools.restrictions).toEqual([{ allow: KEPT_BY_CONTRACT }]);
     expect(resumeTools.guards).toHaveLength(1);
+  });
+});
+
+describe("live model selection", () => {
+  it("resolves every request through the current global default", async () => {
+    let selection = { provider: "deepseek-official", model: "deepseek-v4-flash" };
+    const recorder = makeRecordingAgentCtx();
+
+    composeAgentSetup(recorder.ctx, {
+      root: "/tmp/ws-root",
+      selection: {
+        get current() {
+          return selection;
+        },
+        assembled: undefined
+      }
+    });
+
+    expect(await recorder.appliedModel()).toBe("deepseek-v4-flash");
+
+    selection = { provider: "deepseek-official", model: "deepseek-v4-pro" };
+
+    expect(await recorder.appliedModel()).toBe("deepseek-v4-pro");
+  });
+
+  it("keeps the session id when the default changes between turns", async () => {
+    const { runner, deps } = await makeRunner();
+    const first = await runner.run(PROJECT_ALPHA, "первая");
+    const sessionId = expectOk(first).sessionId;
+
+    vi.spyOn(deps.defaultModel!, "currentSelection").mockReturnValue({
+      provider: "deepseek-official",
+      model: "deepseek-v4-pro"
+    });
+
+    const second = await runner.run(PROJECT_ALPHA, "вторая");
+
+    expect(expectOk(second).sessionId).toBe(sessionId);
   });
 });
