@@ -89,12 +89,31 @@ describe("model cards", () => {
     expect(card.keyboard.inline_keyboard[1]![0]!.text).toContain("нет ключа");
   });
 
-  it("pages a long model list and marks the active model", () => {
+  it("renders the caller's slice with absolute model codes and marks the active model", () => {
     const models = Array.from({ length: 10 }, (_, i) => `m-${i}`);
-    const card = modelListCard({ label: "DeepSeek (официальный)", models, page: 1, pages: 2, currentModel: "m-8" });
+    const card = modelListCard({
+      label: "DeepSeek (официальный)",
+      models: models.slice(8, 10),
+      startIndex: 8,
+      page: 1,
+      pages: 2,
+      currentModel: "m-8"
+    });
 
     expect(data(card)).toEqual(["mdl:m:8", "mdl:m:9", "mdl:pg:0", "mdl:pg:1", "mdl:back"]);
     expect(card.keyboard.inline_keyboard[0]![0]!.text).toContain("• m-8");
+  });
+
+  it("never slices: it renders exactly the models and start index the caller passed", () => {
+    const card = modelListCard({
+      label: "DeepSeek (официальный)",
+      models: ["m-4", "m-5", "m-6"],
+      startIndex: 4,
+      page: 0,
+      pages: 1
+    });
+
+    expect(data(card)).toEqual(["mdl:m:4", "mdl:m:5", "mdl:m:6", "mdl:back"]);
   });
 
   it("pages the connection list and omits the current model when none is known", () => {

@@ -44,12 +44,6 @@ export function formatElapsed(ms: number): string {
 const MENU_BUTTON = { text: "⬅ Меню", callback_data: "mnu" } as const;
 const REFRESH_ROW = [{ text: "🔄 Обновить", callback_data: "mnu:refresh" }];
 
-/**
- * The page size of the model list: the whole list is passed in and this module
- * slices the page, so the callback index stays global (`page * PAGE_SIZE + offset`).
- */
-const PAGE_SIZE = 8;
-
 export function menuCard(opts: {
   workspaceLabel: string | undefined;
   modelLabel: string | undefined;
@@ -106,14 +100,16 @@ export function modelConnectionsCard(opts: {
 
 export function modelListCard(opts: {
   label: string;
+  /** The page's models, in order (the caller pages; the card never slices). */
   models: string[];
+  /** Global index of models[0], so callback codes stay absolute. */
+  startIndex: number;
   page: number;
   pages: number;
   currentModel?: string;
 }): CardView {
-  const start = opts.page * PAGE_SIZE;
-  const rows = opts.models.slice(start, start + PAGE_SIZE).map((model, offset) => [
-    { text: `${opts.currentModel === model ? "• " : ""}${model}`, callback_data: `mdl:m:${start + offset}` }
+  const rows = opts.models.map((model, offset) => [
+    { text: `${opts.currentModel === model ? "• " : ""}${model}`, callback_data: `mdl:m:${opts.startIndex + offset}` }
   ]);
   if (opts.pages > 1) rows.push(paginationRow("mdl:pg", opts.page, opts.pages));
   rows.push([{ text: "⬅ Назад", callback_data: "mdl:back" }]);
