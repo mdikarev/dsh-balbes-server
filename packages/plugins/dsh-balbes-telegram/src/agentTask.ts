@@ -636,12 +636,13 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
       if (entry.retired) {
         return { ok: false, code: "agent-error", message: RESET_ABORT_MESSAGE };
       }
-      // Parked after followup: an owner stop that released this park stopped
-      // THIS turn, so it is reported as cancelled without touching the handle.
-      if (entry.cancelled) {
-        entry.cancelled = false;
-        return { ok: false, code: "cancelled", message: CANCELLED_MESSAGE };
-      }
+      // No flag-only checkpoint here on purpose. Unlike the two checkpoints
+      // above (where no turn exists yet, so the flag is the only evidence of a
+      // stop), this point is reached with a turn that has an outcome of its
+      // own: an owner stop that released this park aborted the turn, so the
+      // turn carries the `aborted` reason and the reason gate below classifies
+      // it. Deciding "cancelled" from the flag alone would let a cancel landing
+      // as the turn was finishing discard a completed answer.
       await deps.sessions.flush(agent.session);
 
       const outcome = summarizeTurn(agent.session, firstSeq);

@@ -14,9 +14,11 @@ import {
 /**
  * Hermetic unit suite for the workspace-aware agent task runner. Everything
  * below is fake: no real dsh agent, no LLM, no network. The fake `agents`
- * service emulates dsh's AgentHandle seam — after `followup` the fake session
- * gains turn/assistant/turn-end events and `whenIdle` resolves (optionally
- * parked so a test can observe the runner mid-turn).
+ * service emulates dsh's AgentHandle seam — `followup` starts a turn (turn/start
+ * plus the assistant message) and `whenIdle` resolves (optionally parked so a
+ * test can observe the runner mid-turn). A parked turn stays OPEN until its park
+ * is released: that is when its `turn/end` lands, so a cancel arriving on the
+ * park really does stop a running turn.
  */
 
 const PROJECT_ALPHA: WorkspaceRef = { scope: "project", name: "alpha" };
@@ -62,6 +64,16 @@ function makeHandle(cfg: FakeHandleConfig = {}): FakeHandle {
   let parked: Array<() => void> = [];
   let answerAt = 0;
   let loopDead = false;
+  /**
+   * Whether the current turn still lacks its `turn/end`. A real turn is OPEN
+   * from the moment `followup` starts it until it really finishes; the fake
+   * therefore keeps it open while the run is parked and closes it only when the
+   * park is released (or when `cancel` aborts it). A fake that closed the turn
+   * inside `followup` would leave an agent that is genuinely mid-turn with no
+   * open turn, so a cancel landing on that park could never produce an honest
+   * `aborted` reason.
+   */
+  let turnOpen = false;
   const session = {
     get seq(): number {
       return events.length;
@@ -70,9 +82,20 @@ function makeHandle(cfg: FakeHandleConfig = {}): FakeHandle {
       return events[Number(seq)];
     }
   };
+  /** Append the closing `turn/end` of the open turn; a no-op when none is open. */
+  const closeTurn = (reason: unknown) => {
+    if (!turnOpen) return;
+    turnOpen = false;
+    events.push({ type: "turn/end", data: { reason } });
+  };
   // Declared before the agent object: `cancel` (and `dispose` below) resolve the
   // current park, and the abort convergence must be reachable from both.
   const releaseParked = () => {
+    // Releasing the park is what ENDS the held turn: while it is held open the
+    // owner can still stop it, and only an unaborted release completes it. The
+    // close happens before the parked `whenIdle` resolves, so the runner always
+    // summarizes a session that already carries this turn's end event.
+    closeTurn({ kind: "completed" });
     const pending = parked;
     parked = [];
     for (const resolve of pending) resolve();
@@ -97,18 +120,20 @@ function makeHandle(cfg: FakeHandleConfig = {}): FakeHandle {
         {
           type: "assistant/message",
           data: { message: { content: [{ type: "text", text }] } }
-        },
-        { type: "turn/end", data: { reason: { kind: "completed" } } }
+        }
       );
+      turnOpen = true;
+      // A handle that never parks runs its turn to the end synchronously (the
+      // same turn/start + assistant/message + turn/end as before). A held
+      // handle leaves the turn OPEN until releaseParked(): that is what makes
+      // "parked mid-turn" mean it.
+      if (!cfg.holdIdle) closeTurn({ kind: "completed" });
     }),
     cancel: vi.fn((_cause: unknown, _options?: unknown) => {
       // Реальный Agent.cancel прерывает активный turn и разрешает парковку
       // whenIdle; turn/end с причиной "aborted" появляется только если turn
       // действительно был открыт.
-      const open = events.some((event) => event.type === "turn/start") && events.at(-1)?.type !== "turn/end";
-      if (open) {
-        events.push({ type: "turn/end", data: { reason: { kind: "aborted", reason: { kind: "user" } } } });
-      }
+      closeTurn({ kind: "aborted", reason: { kind: "user" } });
       releaseParked();
     })
   };
