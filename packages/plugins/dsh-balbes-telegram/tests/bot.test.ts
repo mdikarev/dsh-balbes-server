@@ -27,9 +27,13 @@ function asFetch(mock: ReturnType<typeof vi.fn>): typeof fetch {
   return mock as unknown as typeof fetch;
 }
 
+/**
+ * The init of the LAST recorded call: a test that drives two methods through
+ * one client asserts the payload of the call it just made, not of the first.
+ */
 function lastInit(mock: ReturnType<typeof vi.fn>): { body: string; method: string } {
-  const init = mock.mock.calls[0]![1] as { body: string; method: string };
-  return init;
+  const call = mock.mock.calls[mock.mock.calls.length - 1]!;
+  return call[1] as { body: string; method: string };
 }
 
 function parsedBody(mock: ReturnType<typeof vi.fn>): unknown {
@@ -142,6 +146,30 @@ describe("createBotClient", () => {
     await bot.answerCallbackQuery("cb-9", { text: "Done" });
 
     expect(parsedBody(fetchImpl)).toEqual({ callback_query_id: "cb-9", text: "Done" });
+  });
+
+  it("registers the command list and the commands menu button", async () => {
+    const fetchMock = vi.fn(async (_url: string, _init: unknown) => jsonResponse(200, { ok: true, result: true }));
+    const client = createBotClient({ token: TOKEN, apiBase: API_BASE, fetchImpl: asFetch(fetchMock) });
+
+    await client.setMyCommands([{ command: "menu", description: "Меню и состояние" }]);
+    expect((fetchMock.mock.calls[0]![0] as string).endsWith("/setMyCommands")).toBe(true);
+    expect(parsedBody(fetchMock)).toEqual({ commands: [{ command: "menu", description: "Меню и состояние" }] });
+
+    await client.setChatMenuButton();
+    expect((fetchMock.mock.calls[1]![0] as string).endsWith("/setChatMenuButton")).toBe(true);
+    expect(parsedBody(fetchMock)).toEqual({ menu_button: { type: "commands" } });
+  });
+
+  it("surfaces a rejected registration without leaking the token", async () => {
+    const fetchMock = vi.fn(async (_url: string, _init: unknown) =>
+      jsonResponse(400, { ok: false, error_code: 400, description: `bad token ${TOKEN}` })
+    );
+    const client = createBotClient({ token: TOKEN, apiBase: API_BASE, fetchImpl: asFetch(fetchMock), retries: 0 });
+
+    const err = await rejectionOf(client.setMyCommands([]));
+    expect(err).toBeInstanceOf(BotApiError);
+    expect(err.message).not.toContain(TOKEN);
   });
 
   it("maps an HTTP error envelope to BotApiError, masks the token, and never retries 4xx", async () => {

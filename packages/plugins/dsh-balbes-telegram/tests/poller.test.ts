@@ -58,7 +58,9 @@ function fakeBot(handler: UpdatesHandler): FakeBot {
     // sendMessage resolves the sent message id (unused by the poller loop).
     sendMessage: vi.fn(async () => 1),
     editMessageText: vi.fn(async () => undefined),
-    answerCallbackQuery: vi.fn(async () => undefined)
+    answerCallbackQuery: vi.fn(async () => undefined),
+    setMyCommands: vi.fn(async () => undefined),
+    setChatMenuButton: vi.fn(async () => undefined)
   };
   return { bot, getUpdates };
 }

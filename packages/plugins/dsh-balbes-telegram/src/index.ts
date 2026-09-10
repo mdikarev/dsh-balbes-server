@@ -229,7 +229,9 @@ export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: stri
     getUpdates: (opts) => runtime.bot().getUpdates(opts),
     sendMessage: (chatId, text, extra) => runtime.bot().sendMessage(chatId, text, extra),
     editMessageText: (chatId, messageId, text, extra) => runtime.bot().editMessageText(chatId, messageId, text, extra),
-    answerCallbackQuery: (callbackQueryId, opts) => runtime.bot().answerCallbackQuery(callbackQueryId, opts)
+    answerCallbackQuery: (callbackQueryId, opts) => runtime.bot().answerCallbackQuery(callbackQueryId, opts),
+    setMyCommands: (commands) => runtime.bot().setMyCommands(commands),
+    setChatMenuButton: (button) => runtime.bot().setChatMenuButton(button)
   };
 
   const runnerWithSessions: AgentTaskRunner = (() => {

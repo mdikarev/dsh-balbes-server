@@ -79,7 +79,9 @@ function makeBot(): {
     },
     async answerCallbackQuery(callbackQueryId, opts) {
       answers.push({ id: callbackQueryId, text: opts?.text });
-    }
+    },
+    async setMyCommands() {},
+    async setChatMenuButton() {}
   };
   const buttons = (markup: Markup | undefined): MarkupButton[] =>
     markup === undefined ? [] : markup.inline_keyboard.flat();

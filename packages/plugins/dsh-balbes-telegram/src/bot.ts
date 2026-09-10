@@ -66,6 +66,13 @@ export interface BotClient {
   sendMessage(chatId: number, text: string, extra?: { reply_markup?: unknown }): Promise<number>;
   editMessageText(chatId: number, messageId: number, text: string, extra?: { reply_markup?: unknown }): Promise<void>;
   answerCallbackQuery(callbackQueryId: string, opts?: { text?: string }): Promise<void>;
+  /**
+   * Replace the bot's command list (Telegram's «/» autocomplete and the default
+   * «Меню» button). Idempotent: the same list may be pushed on every start.
+   */
+  setMyCommands(commands: Array<{ command: string; description: string }>): Promise<void>;
+  /** Pin the chat menu button to the command list (`{type:"commands"}`). */
+  setChatMenuButton(button?: { type: "commands" }): Promise<void>;
 }
 
 /** JSON envelope every Bot API method answers with. */
@@ -206,6 +213,14 @@ export function createBotClient(opts: {
 
     async answerCallbackQuery(callbackQueryId: string, opts?: { text?: string }): Promise<void> {
       await call<unknown>("answerCallbackQuery", { callback_query_id: callbackQueryId, ...opts });
+    },
+
+    async setMyCommands(commands: Array<{ command: string; description: string }>): Promise<void> {
+      await call<unknown>("setMyCommands", { commands });
+    },
+
+    async setChatMenuButton(button: { type: "commands" } = { type: "commands" }): Promise<void> {
+      await call<unknown>("setChatMenuButton", { menu_button: button });
     }
   };
 }

@@ -146,6 +146,10 @@ class FakeBot implements BotClient {
   async editMessageText(): Promise<void> {}
 
   async answerCallbackQuery(): Promise<void> {}
+
+  async setMyCommands(): Promise<void> {}
+
+  async setChatMenuButton(): Promise<void> {}
 }
 
 function makeRes(): { res: ResLike; read(): { status: number; raw: string; json: unknown } } {
