@@ -70,6 +70,12 @@ jobs:
           rm -rf "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-telegram/tests" \
                  "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-telegram/src" \
                  "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-telegram/lib/types"
+          cp -R packages/plugins/dsh-balbes-sessions "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-sessions"
+          rm -f "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-sessions/tsconfig.json" \
+                "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-sessions/tsconfig.build.json"
+          rm -rf "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-sessions/tests" \
+                 "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-sessions/src" \
+                 "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-sessions/lib/types"
 
       - name: Validate profile composition (no LLM)
         run: dsh --profile balbes --dump-config >/dev/null

@@ -10,9 +10,10 @@
 # the global @deepseek-ai/dsh CLI (never patched or edited — dsh is a
 # dependency, not a fork), builds the workspace packages (dsh-balbes-host,
 # dsh-balbes-contracts, dsh-balbes-workspaces, dsh-balbes-models,
-# dsh-balbes-telegram, the admin SPA), syncs profiles/balbes from the
-# repository into $DSH_HOME/profiles, copies the built host and the
-# workspaces, models and telegram plugins into the profile, deploys the built
+# dsh-balbes-sessions, dsh-balbes-telegram, the admin SPA), syncs
+# profiles/balbes from the repository into $DSH_HOME/profiles, copies the
+# built host and the workspaces, models, sessions and telegram plugins into
+# the profile, deploys the built
 # admin UI, stores the DeepSeek API key in
 # $DSH_HOME/.credentials.yaml, generates the admin account
 # ($DSH_HOME/admin-auth.json, printed once), writes the dsh-balbes systemd
@@ -381,7 +382,7 @@ verify_composition() {
 # Сборка идёт ДО рестарта сервиса: при падении install.sh выходит с ошибкой,
 # работающий сервис не трогается.
 build_workspace() {
-    info "Building workspace packages (host, workspaces, models, telegram, contracts, admin SPA)..."
+    info "Building workspace packages (host, workspaces, models, sessions, telegram, contracts, admin SPA)..."
     ( cd "$REPO_DIR" && pnpm install --frozen-lockfile=false && node scripts/link-core.mjs && pnpm -r --if-present run build ) || die "workspace build failed"
     info "Workspace build OK."
 }
@@ -452,6 +453,24 @@ copy_telegram_into_profile() {
     rm -rf "$dst/tests" "$dst/src" "$dst/lib/types"
     chmod -R u+rwX,go-w "$dst"
     info "Telegram plugin copied into $dst"
+}
+
+# copy_sessions_into_profile — зеркало copy_telegram_into_profile: собранный
+# плагин сессий воркспейса копируется реальным каталогом в node_modules профиля.
+copy_sessions_into_profile() {
+    local profile_dir="$DSH_HOME/profiles/$PROFILE_NAME"
+    local src="$REPO_DIR/packages/plugins/dsh-balbes-sessions"
+    local dst="$profile_dir/node_modules/dsh-balbes-sessions"
+    if [[ ! -d "$src/lib" ]]; then
+        die "sessions plugin not built at $src/lib — build step failed"
+    fi
+    mkdir -p "$profile_dir/node_modules"
+    rm -rf "$dst"
+    cp -R "$src" "$dst"
+    rm -f "$dst/tsconfig.json" "$dst/tsconfig.build.json"
+    rm -rf "$dst/tests" "$dst/src" "$dst/lib/types"
+    chmod -R u+rwX,go-w "$dst"
+    info "Sessions plugin copied into $dst"
 }
 
 # deploy_ui — собрать dist SPA в $DSH_HOME/balbes/ui (без старых файлов).
@@ -597,6 +616,9 @@ Smoke without a browser (JWT):
     -d '{"name":"my-project"}'
   curl -fsS -X POST http://127.0.0.1:$BALBES_PORT/api/models/list \\
     -H "authorization: Bearer \$TOKEN"
+  curl -fsS -X POST http://127.0.0.1:$BALBES_PORT/api/sessions/list \\
+    -H "authorization: Bearer \$TOKEN" -H 'content-type: application/json' \\
+    -d '{"scope":"home"}'
   curl -fsS -X POST http://127.0.0.1:$BALBES_PORT/api/telegram/status \\
     -H "authorization: Bearer \$TOKEN"
 =====================================================================
@@ -624,6 +646,7 @@ main() {
     copy_workspaces_into_profile
     copy_models_into_profile
     copy_telegram_into_profile
+    copy_sessions_into_profile
     deploy_ui
     configure_api_key
     verify_composition

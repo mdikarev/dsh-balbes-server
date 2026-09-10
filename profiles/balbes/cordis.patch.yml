@@ -10,5 +10,8 @@
     - id: balbes-models
       name: 'dsh-balbes-models'
 
+    - id: balbes-sessions
+      name: 'dsh-balbes-sessions'
+
     - id: balbes-telegram
       name: 'dsh-balbes-telegram'
