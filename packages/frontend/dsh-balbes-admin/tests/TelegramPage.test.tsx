@@ -141,9 +141,28 @@ describe("TelegramPage status card", () => {
 
   it("surfaces status.error.message for the error state", async () => {
     render(<TelegramPage api={makeApi(FAILED)} />);
-    const alert = await screen.findByTestId("telegram-status-error");
-    expect(alert.textContent).toContain("polling is not running");
-    expect(alert.getAttribute("role")).toBe("alert");
+    const message = await screen.findByTestId("telegram-status-error");
+    expect(message.textContent).toContain("polling is not running");
+    // the card message describes a state; it is not an alert region, so only the
+    // actionable banner below ever announces itself to assistive tech
+    expect(message.getAttribute("role")).toBeNull();
+    expect(screen.queryAllByRole("alert")).toHaveLength(0);
+  });
+
+  it("keeps exactly one role=alert region when the error state and an action failure coexist", async () => {
+    const api = makeApi(FAILED);
+    vi.mocked(api.telegramTest).mockRejectedValueOnce(new Error("getMe failed"));
+    render(<TelegramPage api={api} />);
+    await screen.findByTestId("telegram-state");
+    expect(screen.getByTestId("telegram-status-error").textContent).toContain("polling is not running");
+
+    fireEvent.click(screen.getByTestId("telegram-test"));
+    const banner = await screen.findByTestId("telegram-error");
+    expect(banner.getAttribute("role")).toBe("alert");
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    // both messages stay visible: the persistent card detail and the banner
+    expect(screen.getByTestId("telegram-status-error").textContent).toContain("polling is not running");
+    expect(banner.textContent).toContain("getMe failed");
   });
 
   it("shows the load error with a retry that recovers", async () => {
@@ -309,6 +328,32 @@ describe("TelegramPage test connection", () => {
 
     const banner = await screen.findByTestId("telegram-error");
     expect(banner.textContent).toContain("Bad Gateway");
+    expect(screen.queryByTestId("telegram-test-result")).toBeNull();
+  });
+
+  it("clears a previously shown check result when a later operation runs", async () => {
+    const api = makeApi(CONNECTED);
+    render(<TelegramPage api={api} />);
+    await screen.findByTestId("telegram-state");
+    fireEvent.click(screen.getByTestId("telegram-test"));
+    expect((await screen.findByTestId("telegram-test-result")).textContent).toContain("@balbes_bot");
+
+    fireEvent.click(screen.getByTestId("telegram-disable"));
+    await waitFor(() => expect(screen.getByTestId("telegram-state").textContent).toBe("выключено"));
+    // the success line described the state that the operation just invalidated
+    expect(screen.queryByTestId("telegram-test-result")).toBeNull();
+  });
+
+  it("clears a previously shown check result when the token is removed", async () => {
+    const api = makeApi(CONNECTED);
+    render(<TelegramPage api={api} />);
+    await screen.findByTestId("telegram-state");
+    fireEvent.click(screen.getByTestId("telegram-test"));
+    expect((await screen.findByTestId("telegram-test-result")).textContent).toContain("@balbes_bot");
+
+    fireEvent.click(screen.getByTestId("telegram-clear-token"));
+    fireEvent.click(screen.getByTestId("telegram-clear-submit"));
+    await waitFor(() => expect(screen.getByTestId("telegram-state").textContent).toBe("не настроено"));
     expect(screen.queryByTestId("telegram-test-result")).toBeNull();
   });
 });

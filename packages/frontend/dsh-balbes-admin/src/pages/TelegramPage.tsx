@@ -124,11 +124,14 @@ export default function TelegramPage({ api }: TelegramPageProps) {
   /**
    * Run a state-changing call, then re-read the status (T11-7). Returns whether
    * the operation itself succeeded; a failed refresh is reported on its own.
+   * Every operation invalidates a previously shown connection-test result, so a
+   * stale «Подключение работает» line never outlives the state it described.
    */
   async function run(action: () => Promise<unknown>, fallback: string): Promise<boolean> {
     if (busy) return false;
     setBusy(true);
     setError(null);
+    setTestUsername(null);
     let ok = false;
     try {
       await action();
@@ -235,8 +238,10 @@ export default function TelegramPage({ api }: TelegramPageProps) {
             <p className="mc-line" data-testid="telegram-token-state">
               Токен: <code>{status.tokenConfigured ? "••••" : "не задан"}</code>
             </p>
+            {/* Descriptive state detail, deliberately not role="alert": the
+                actionable banner stays the page's single alert region. */}
             {status.error !== undefined && (
-              <p className="form-error" role="alert" data-testid="telegram-status-error">
+              <p className="form-error telegram-status-error" data-testid="telegram-status-error">
                 Ошибка бота: {status.error.message}
               </p>
             )}
