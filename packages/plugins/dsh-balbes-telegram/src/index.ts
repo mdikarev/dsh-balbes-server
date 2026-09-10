@@ -57,10 +57,16 @@ export { TELEGRAM_BOT_TOKEN_REF, type TelegramStatus };
  * Plugin config. schemastery treats nullish input as absent unless a field is
  * marked `.required()`, so `dshHome: z.string()` is the optional field of the
  * brief's zod spelling; apply resolves it config -> $DSH_HOME -> ~/.dsh.
+ *
+ * `apiBase` defaults from `BALBES_TELEGRAM_API_BASE` when the environment
+ * provides one (Task 12): a REAL-composition profile must be able to point the
+ * whole channel at a local fake Bot API server, and that server's port is only
+ * known at spawn time — a value a static `cordis.patch.yml` config cannot
+ * carry. An explicit `config.apiBase` still wins.
  */
 export const Config = z.object({
   dshHome: z.string(),
-  apiBase: z.string().default("https://api.telegram.org"),
+  apiBase: z.string().default(process.env.BALBES_TELEGRAM_API_BASE ?? "https://api.telegram.org"),
   maxFileBytes: z.number().default(256 * 1024)
 });
 

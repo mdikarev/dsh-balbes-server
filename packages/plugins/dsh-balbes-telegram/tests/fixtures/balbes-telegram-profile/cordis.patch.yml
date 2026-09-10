@@ -1,0 +1,24 @@
+# Profile patch of the telegram REAL composition: dsh-base + the balbes host
+# bundle (from package.json), plus the two plugins under test.
+#
+# `balbes-workspaces` provides the `balbesWorkspaces` service AND the
+# /api/workspaces/* routes the scenario drives to create projects;
+# `balbes-telegram` is the plugin under test (its `inject` list needs
+# `balbesHttp`, `settings`, `credentials`, `balbesWorkspaces`, `agents`,
+# `sessions` and `agentDefaultModel` — the last one is a dsh-base row, so this
+# profile composes without the models plugin).
+#
+# `session-title-llm` is disabled for stub determinism: a fresh session
+# otherwise fires an EXTRA first-prompt model request (Task 1 seam fact 10),
+# which would consume a scripted stub entry that belongs to the task turn.
+# Disabling the row (rather than tolerating the extra request) keeps every
+# scripted turn aligned with exactly one agent request.
+
+- id: session-title-llm
+  disabled: true
+
+- insert:
+    - id: balbes-workspaces
+      name: 'dsh-balbes-workspaces'
+    - id: balbes-telegram
+      name: 'dsh-balbes-telegram'
