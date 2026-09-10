@@ -148,15 +148,22 @@ long polling, выбор воркспейса, persistent dsh-сессии, за
   (агент/владелец) приходят в SPA событиями push-канала, дерево инвалидирует
   и перечитывает затронутые узлы.
 - Telegram: владелец в админке сохраняет token и Telegram user ID через
-  `/api/telegram/save`, проверяет `getMe` и включает polling без рестарта.
+  `/api/telegram/save`, проверяет `getMe` (`telegram.test`) и включает polling без рестарта.
+  Настройки (enabled, allowedUserId) — зарегистрированный settings-namespace `balbes-telegram`; token — ref в `$DSH_HOME/.credentials.yaml`;
+  нечувствительное состояние — атомарный `$DSH_HOME/telegram-state.json` (600): active workspace, mapping `workspaceRef → sessionId`, последний update offset.
   Плагин принимает только update из private chat от allowlisted user, отдаёт
   inline-список `home`/projects и сохраняет active workspace. Текстовая задача
   проходит в `AgentTaskService`: workspace разрешается по containment, dsh
   agent loop создаётся/возобновляется с `meta.cwd`, сообщение отправляется
   через `followup`, агент ждёт `whenIdle`, session flush-ится, а ответ делится
-  на допустимые сообщения Telegram. Callback файлов лениво читает каталог или
+  на допустимые сообщения Telegram. Сессия закрепляется за воркспейсом: persistent между задачами, возобновляется после рестарта штатным resume,
+  задачи одного воркспейса сериализуются (FIFO до 3 ожидающих), «сбросить контекст» завершает сессию.
+  Callback файлов лениво читает каталог или
   ограниченное text-содержимое через `balbesWorkspaces`; старые/чужие paths
   повторно валидируются.
+  Границы канала: агентская задача получает только файловые инструменты воркспейса и инструменты планирования (allow-фильтр per-agent поверхности инструментов),
+  поэтому shell, `str_replace_editor`, skill, subagent/workflow и сетевые инструменты недоступны — задача из одного проекта не может прочитать другой проект
+  или `$DSH_HOME`. Чтение относительных и абсолютных путей дополнительно проходит containment-guard в scope агента; записи ограничены sandbox-политикой движка.
 - Настройка моделей (раздел «Модели», ручки `/api/models/*`): чтение/
   запись идут штатными сервисами движка — `ctx.settings` (роуты
   провайдеров, settings-секция `llm-pi-ai`), `ctx.credentials` (refs-ключи

@@ -245,30 +245,31 @@
 - path: /api/telegram/status
 - auth: bearer
 - request: `{}`
-- response: `{enabled: boolean, configured: boolean, connected: boolean, botUsername?: string, allowedUserId?: number, lastPollAt?: string(ISO), error?: string}`
+- response: `{status: {state: "not-configured" | "disabled" | "connected" | "error", tokenConfigured: boolean, enabled: boolean, allowedUserId?: number,`
+  `botUsername?: string, lastPollAt?: string(ISO), error?: {code: string, message: string}}}`
 - errors: 401
-- notes: token никогда не возвращается; `error` — безопасное сообщение без token
+- notes: token не возвращается никогда — только `tokenConfigured`. `state` выводится из наличия token, `enabled` и состояния poller: работающий polling → `connected`
+  (устаревшая `error` не переводит статус в `error`), fatal `401` от Bot API или `enabled` без работающего polling → `error`. `error.message` — безопасный текст без token
   и stack trace.
 
 ### telegram.save — сохранить настройки
 - method: POST
 - path: /api/telegram/save
 - auth: bearer
-- request: `{token?: string, allowedUserId: number, enabled: boolean}`
+- request: `{token?: string, allowedUserId?: number, enabled?: boolean}` — отсутствующее поле не меняет прежнее значение
 - response: `{status: TelegramStatus}` (форма как в `telegram.status`)
-- errors: 400 (невалидный user ID; enabled без token/user ID; ошибка Bot API), 401
-- notes: отсутствующий token оставляет прежний; token записывается через
-  `ctx.credentials`, значение не возвращается. При enabled=true сервер вызывает
-  `getMe` и запускает/restarts polling без рестарта процесса.
+- errors: 400 `invalid-user-id` (user ID не положительное целое), 400 `invalid-config` (enabled без сохранённого token или положительного user ID), 401
+- notes: token записывается через `ctx.credentials` и не возвращается. `save` не вызывает Bot API: username бота обновляется фоновым `getMe`.
+  Переходы runtime сериализованы и не блокируют ответ — `status` отражает настройки, фактический старт/остановка polling наблюдаются последующим `telegram.status`.
 
-### telegram.test — проверить token
+### telegram.test — проверить сохранённый token
 - method: POST
 - path: /api/telegram/test
 - auth: bearer
 - request: `{}`
-- response: `{ok: true, botUsername: string}`
-- errors: 401, 409 `not-configured`, 502 `telegram-unavailable`
-- notes: не включает polling и не изменяет настройки.
+- response: `{username: string}`
+- errors: 400 `not-configured` (token не сохранён), 400 `invalid-token` (Bot API ответил 401), 502 `telegram-error`, 401
+- notes: вызывает `getMe` сохранённым token; не включает polling и не изменяет настройки.
 
 ### telegram.disable — выключить polling
 - method: POST
@@ -277,7 +278,8 @@
 - request: `{}`
 - response: `{status: TelegramStatus}`
 - errors: 401
-- notes: останавливает polling, token сохраняет.
+- notes: снимает `enabled`, token сохраняет. Остановка не мгновенна: цикл дожидается текущего long poll (до ~50 c на живой сети, до ~180 c при недоступном Bot API),
+  при этом `status` сразу отражает настройки.
 
 ### telegram.clear-token — удалить token
 - method: POST
@@ -286,7 +288,7 @@
 - request: `{}`
 - response: `{status: TelegramStatus}`
 - errors: 401
-- notes: удаляет secret через credentials и автоматически выключает polling.
+- notes: удаляет secret через credentials, автоматически снимает `enabled` и останавливает polling (та же граница остановки, что у `telegram.disable`).
 
 ## Rules & invariants
 

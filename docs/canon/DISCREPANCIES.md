@@ -25,6 +25,20 @@ canon. Запись заводится при обнаружении расхо�
   противоречит, код опровергает «пустой патч».
 - **finding_ids:** F-001
 
+### D-002: Canon описывал поверхность `telegram.*` по черновику дизайна, а не по поставленной реализации
+- **status:** resolved
+- **decision:** docs_stale
+- **canon_paths:** docs/canon/API_CONTRACTS.md, docs/canon/ARCHITECTURE.md, docs/canon/GLOSSARY.md, docs/canon/ADMIN_UI.md, docs/canon/OVERVIEW.md
+- **code_paths:** packages/contracts/src/index.ts, packages/plugins/dsh-balbes-telegram/src/admin.ts, packages/plugins/dsh-balbes-telegram/src/agentTask.ts
+- **evidence:** `API_CONTRACTS.md` (блоки `telegram.*`) описывал плоскую форму статуса `{enabled, configured, connected, botUsername?, allowedUserId?, lastPollAt?, error?: string}`
+  и `telegram.test` как `{ok:true, botUsername}` с `409 not-configured` / `502 telegram-unavailable`, тогда как контракты (`TelegramSettingsStatus`, `TelegramTestResponse`) и ручки
+  отдают `{status:{state, tokenConfigured, enabled, allowedUserId?, botUsername?, lastPollAt?, error?:{code,message}}}` и `{username}` с `400 not-configured` / `400 invalid-token` /
+  `502 telegram-error`; `save` описан как обязательные `allowedUserId`/`enabled` и как вызов `getMe` с синхронным рестартом polling, хотя отсутствующее поле сохраняет прежнее значение,
+  Bot API в `save` не вызывается (username обновляется фоновым `getMe`), а переход runtime сериализован и асинхронен. Дополнительно канон не отражал containment-границу канала
+  (урезанная поверхность инструментов агентской задачи: только файлы воркспейса и планирование) и файл состояния `$DSH_HOME/telegram-state.json`. Сам канон объявляет типы
+  `dsh-balbes-contracts` компиляторным SoT форм и требует правки реестра в том же изменении — поэтому stale-сторона здесь canon (`docs_stale`), вопрос владельцу не требовался.
+- **finding_ids:** F-002
+
 ## Template for new entries
 
 <!--
