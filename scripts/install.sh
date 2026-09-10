@@ -381,7 +381,7 @@ verify_composition() {
 # Сборка идёт ДО рестарта сервиса: при падении install.sh выходит с ошибкой,
 # работающий сервис не трогается.
 build_workspace() {
-    info "Building workspace packages (host, workspaces, models, contracts, admin SPA)..."
+    info "Building workspace packages (host, workspaces, models, telegram, contracts, admin SPA)..."
     ( cd "$REPO_DIR" && pnpm install --frozen-lockfile=false && node scripts/link-core.mjs && pnpm -r --if-present run build ) || die "workspace build failed"
     info "Workspace build OK."
 }
