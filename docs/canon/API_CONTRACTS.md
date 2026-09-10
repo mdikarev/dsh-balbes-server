@@ -15,9 +15,11 @@
   `workspaces.tree`, `workspaces.events`, `models.list`, `models.catalog`,
   `models.save`, `models.delete`, `models.default`, `telegram.status`,
   `telegram.save`, `telegram.test`, `telegram.disable`, `telegram.clear-token`.
-- Вне scope: статика SPA (не API), внутренние сервисные интерфейсы Cordis,
-  streaming-доставка ответов модели (Telegram MVP отправляет финальные
-  сообщения; SSE/WS остаются отдельным этапом).
+- Вне scope: статика SPA (не API), внутренние сервисные интерфейсы Cordis
+  (в т.ч. сервис `balbesModels` и командная поверхность Telegram-канала),
+  streaming-доставка ответов модели (Telegram отправляет финальные сообщения и
+  живую карточку прогресса задачи — ход выполнения, а не текст ответа по мере
+  генерации; SSE/WS остаются отдельным этапом).
 - При расхождении реестра и типов побеждают типы (компилятор); реестр
   правится в том же изменении, что и типы/поведение.
 
