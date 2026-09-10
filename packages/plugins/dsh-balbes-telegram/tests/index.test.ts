@@ -310,7 +310,10 @@ describe("balbes-telegram plugin", () => {
   });
 
   it("never returns the token through the assembled plugin", async () => {
-    apply(makeCtx(), { dshHome: home });
+    // Every route that could touch the bot is pointed at the loopback stub: this
+    // test must never depend on reaching api.telegram.org.
+    const stub = await startStubBot(undefined);
+    apply(makeCtx(), { dshHome: home, apiBase: stub.url });
     await call("/api/telegram/save", { token: TOKEN, allowedUserId: 7 });
     const responses = [
       await call("/api/telegram/status"),
@@ -323,6 +326,26 @@ describe("balbes-telegram plugin", () => {
       expect(response.raw).not.toContain(TOKEN);
       expect(response.raw).not.toMatch(/"token"\s*:/);
       expect(response.raw).not.toContain("botToken");
+    }
+  });
+
+  it("reaches no outbound endpoint on the admin paths that do not poll", async () => {
+    const fetchSpy = vi.fn(() => {
+      throw new Error("unexpected outbound fetch");
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    try {
+      apply(makeCtx(), { dshHome: home });
+      await call("/api/telegram/status");
+      await call("/api/telegram/save", { token: TOKEN, allowedUserId: 7 });
+      await call("/api/telegram/status");
+      await call("/api/telegram/disable");
+      await call("/api/telegram/clear-token");
+      // a connection test without a credential must answer before any client exists
+      await call("/api/telegram/test");
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
     }
   });
 

@@ -292,21 +292,46 @@ export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: stri
     logger: ctx.logger
   });
 
-  const statusExtras = async (): Promise<{ botUsername?: string; lastPollAt?: string }> => {
-    const extras: { botUsername?: string; lastPollAt?: string } = {};
+  const statusExtras = async (): Promise<{
+    botUsername?: string;
+    lastPollAt?: string;
+    runtimeError?: { code: string; message: string };
+  }> => {
+    const extras: {
+      botUsername?: string;
+      lastPollAt?: string;
+      runtimeError?: { code: string; message: string };
+    } = {};
     const username = runtime.botUsername();
     const lastPollAt = runtime.lastPollAt();
+    const runtimeError = runtime.lastError();
     if (username !== undefined) extras.botUsername = username;
     if (lastPollAt !== undefined) extras.lastPollAt = lastPollAt;
+    if (runtimeError !== undefined) extras.runtimeError = runtimeError;
     return extras;
   };
 
   // Every transition waits for the boot restore: starting the poller without
   // the persisted offset would re-deliver updates this process already handled.
+  // The runtime serializes transitions on one tail, so the joinable form below
+  // and the kicked one used by the routes cannot interleave.
   let booted: Promise<void> = Promise.resolve();
-  const applyRuntime = async (): Promise<void> => {
+  /** Joinable: the settings watcher returns this, which serializes commits. */
+  const reconcile = async (): Promise<void> => {
     await booted;
     await runtime.apply();
+  };
+  /**
+   * Fire-and-forget kick for the admin routes: a transition may have to wait out
+   * an in-flight long poll before it can stop the loop, and an HTTP response must
+   * not be held for that (T9-1). The runtime records its own failures (reported
+   * through /status), and this explicit catch keeps an unexpected rejection from
+   * becoming unhandled.
+   */
+  const requestRuntime = (): void => {
+    void reconcile().catch((error: unknown) => {
+      ctx.logger.warn(`balbes-telegram: runtime transition failed: ${reasonOf(error)}`);
+    });
   };
 
   registerTelegramRoutes(http, {
@@ -316,12 +341,12 @@ export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: stri
     botFactory,
     poller,
     statusExtras,
-    applyRuntime
+    applyRuntime: requestRuntime
   } satisfies TelegramAdminDeps);
 
   // "Settings changes start/stop polling without a restart": a commit from the
-  // settings UI reaches the same idempotent reconciliation the routes call.
-  bindRuntimeToSettings(settingsScope, applyRuntime, ctx.logger);
+  // settings UI reaches the same idempotent reconciliation the routes request.
+  bindRuntimeToSettings(settingsScope, reconcile, ctx.logger);
 
   booted = restoreTelegramBoot({
     load: () => state.load(),
@@ -342,7 +367,7 @@ export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: stri
       // every later transition (and every route) still runs.
       ctx.logger.warn(`balbes-telegram: boot restore failed: ${reasonOf(error)}`);
     });
-  void applyRuntime().catch((error: unknown) => {
+  void reconcile().catch((error: unknown) => {
     ctx.logger.warn(`balbes-telegram: runtime start failed: ${reasonOf(error)}`);
   });
 

@@ -91,12 +91,21 @@ export interface TelegramAdminDeps {
   botFactory(token: string): BotClient;
   poller: Poller;
   /** Extra runtime facts for the status body, never secret. */
-  statusExtras(): Promise<{ botUsername?: string; lastPollAt?: string }>;
+  statusExtras(): Promise<{
+    botUsername?: string;
+    lastPollAt?: string;
+    /** Last transition failure of the polling runtime, when it has one. */
+    runtimeError?: { code: string; message: string };
+  }>;
   /**
-   * Reconcile the polling runtime with the current settings and credential.
-   * Idempotent, so a route and a settings commit can both call it.
+   * REQUEST a runtime reconciliation and return at once. The transition is
+   * serialized inside the runtime and contains its own failures (they surface
+   * through the status body), so a route never waits for a `stop()` that can take
+   * as long as an in-flight long poll settles (T9-1): the response reports the
+   * settings plus the current runtime snapshot, and a later `/status` shows where
+   * the loop ended up.
    */
-  applyRuntime(): Promise<void>;
+  applyRuntime(): void;
 }
 
 /** Stable, safe error codes (R-API-1 envelopes). */
@@ -111,6 +120,9 @@ const CODE_TELEGRAM_ERROR = "telegram-error";
 export const CODE_POLLING_NOT_RUNNING = "not-running";
 
 const NOT_RUNNING_MESSAGE = "polling is not running";
+
+/** Reported when a runtime transition itself failed. */
+export const CODE_RUNTIME_ERROR = "runtime-error";
 
 /** Poller timings handed to `createPoller`; keep in sync with poller.ts defaults. */
 const DEFAULT_POLL_IDLE_MS = 300;
@@ -189,7 +201,7 @@ export async function buildTelegramStatus(deps: TelegramAdminDeps): Promise<Tele
     status.state = "connected";
     return status;
   }
-  status.error = poll.lastError ?? { code: CODE_POLLING_NOT_RUNNING, message: NOT_RUNNING_MESSAGE };
+  status.error = poll.lastError ?? extras.runtimeError ?? { code: CODE_POLLING_NOT_RUNNING, message: NOT_RUNNING_MESSAGE };
   return status;
 }
 
@@ -199,6 +211,15 @@ export async function buildTelegramStatus(deps: TelegramAdminDeps): Promise<Tele
  * surface reports `tokenConfigured` and nothing else about the credential.
  */
 export function registerTelegramRoutes(http: HttpSeatLike, deps: TelegramAdminDeps): void {
+  /**
+   * Kick the reconciliation without joining it. A transition may have to wait out
+   * an in-flight `getUpdates` before it can stop the loop (~50s against a healthy
+   * Telegram, minutes on a dead network), and an HTTP response must never be held
+   * for that (T9-1). The runtime serializes transitions and records its own
+   * failures, which the status body then reports.
+   */
+  const kickRuntime = (): void => deps.applyRuntime();
+
   http.post("/api/telegram/status", "bearer", async (_req, res) => {
     try {
       send(res, 200, { status: await buildTelegramStatus(deps) });
@@ -237,7 +258,7 @@ export function registerTelegramRoutes(http: HttpSeatLike, deps: TelegramAdminDe
       // A token-only save changes no setting; writing an empty patch would only
       // add an empty user section to the settings document.
       if (Object.keys(patch).length > 0) await deps.settingsScope.update(patch);
-      await deps.applyRuntime();
+      kickRuntime();
       send(res, 200, { status: await buildTelegramStatus(deps) });
     } catch (error) {
       fail(res, 500, CODE_INTERNAL, reasonOf(error));
@@ -269,7 +290,7 @@ export function registerTelegramRoutes(http: HttpSeatLike, deps: TelegramAdminDe
   http.post("/api/telegram/disable", "bearer", async (_req, res) => {
     try {
       await deps.settingsScope.update({ enabled: false });
-      await deps.applyRuntime();
+      kickRuntime();
       send(res, 200, { status: await buildTelegramStatus(deps) });
     } catch (error) {
       fail(res, 500, CODE_INTERNAL, reasonOf(error));
@@ -282,7 +303,7 @@ export function registerTelegramRoutes(http: HttpSeatLike, deps: TelegramAdminDe
     try {
       await deps.credentials.unset(TELEGRAM_BOT_TOKEN_REF);
       await deps.settingsScope.update({ enabled: false });
-      await deps.applyRuntime();
+      kickRuntime();
       send(res, 200, { status: await buildTelegramStatus(deps) });
     } catch (error) {
       fail(res, 500, CODE_INTERNAL, reasonOf(error));
@@ -391,12 +412,21 @@ export interface TelegramRuntimeDeps {
 }
 
 export interface TelegramRuntime {
-  /** Make the polling loop match the current settings and credential. */
+  /**
+   * Make the polling loop match the current settings and credential. Transitions
+   * are serialized on one internal tail, so a `start` can never overtake the
+   * `stop` that preceded it. Resolves when this transition has settled — which
+   * may be as late as an in-flight long poll does (T9-1) — and never rejects.
+   */
   apply(): Promise<void>;
+  /** Resolves once every transition requested so far has settled. */
+  settled(): Promise<void>;
   /** The client bound to the current token; throws while no token is stored. */
   bot(): BotClient;
   botUsername(): string | undefined;
   lastPollAt(): string | undefined;
+  /** Last transition failure, reported through the status body. */
+  lastError(): { code: string; message: string } | undefined;
   /** Settles when the in-flight identity refresh (if any) has finished. */
   botInfoSettled(): Promise<void>;
 }
@@ -411,9 +441,13 @@ export interface TelegramRuntime {
  * why every forwarding method must keep returning what the real one returned
  * (the chat keys its view snapshots by the `sendMessage` message id).
  *
- * `apply` is idempotent: a call that finds the loop already running with the
- * same client and allowlist does nothing. Any other change awaits `stop()`
- * first, because `start` is deliberately a no-op while running.
+ * Transitions are single-flight on one tail, and each one re-reads the settings
+ * after every await. Two reconciles per settings commit are normal (the route
+ * kick plus the settings watcher), and a transition parked in a `stop()` that
+ * drains an in-flight long poll can be overtaken by a newer intent; without both
+ * guards the older transition would resume and `start()` a loop the current
+ * settings forbid — e.g. the owner disables the bot while an allowlist change is
+ * still winding the loop down.
  */
 export function createTelegramRuntime(deps: TelegramRuntimeDeps): TelegramRuntime {
   let client: BotClient | undefined;
@@ -425,8 +459,33 @@ export function createTelegramRuntime(deps: TelegramRuntimeDeps): TelegramRuntim
   /** The restored offset belongs to the first start only (the poller keeps it after). */
   let firstStart = true;
   let refresh: Promise<void> = Promise.resolve();
+  /** Serialized transition tail; never rejects (see `transition`). */
+  let tail: Promise<void> = Promise.resolve();
+  /**
+   * Bumped when a transition is REQUESTED, not when it starts running: a request
+   * arriving while an earlier transition sits in a slow `stop()` invalidates that
+   * transition at once, before it can act on a stale intent.
+   */
+  let generation = 0;
+  let lastTransitionError: { code: string; message: string } | undefined;
 
   const warn = (message: string): void => deps.logger?.warn(`dsh-balbes-telegram: runtime: ${message}`);
+
+  /** The settings intent a transition must still match when it acts. */
+  interface Intent {
+    enabled: boolean;
+    allowedUserId: number | undefined;
+  }
+
+  function readIntent(): Intent {
+    const section = deps.settingsScope.get();
+    // An absent key is the same "no allowlist" as an explicit null.
+    return { enabled: section.enabled === true, allowedUserId: section.allowedUserId ?? undefined };
+  }
+
+  function sameIntent(a: Intent, b: Intent): boolean {
+    return a.enabled === b.enabled && a.allowedUserId === b.allowedUserId;
+  }
 
   /** Resolve the token and (re)build the client when it changed. */
   async function currentClient(): Promise<BotClient | undefined> {
@@ -469,51 +528,108 @@ export function createTelegramRuntime(deps: TelegramRuntimeDeps): TelegramRuntim
     runningAllowedUserId = undefined;
   }
 
-  async function apply(): Promise<void> {
-    const section = deps.settingsScope.get();
-    const enabled = section.enabled === true;
-    // An absent key is the same "no allowlist" as an explicit null.
-    const allowedUserId = section.allowedUserId ?? undefined;
+  /** True while the loop runs for exactly this client and allowlist. */
+  function isRunningFor(target: BotClient, allowedUserId: number): boolean {
+    return (
+      deps.poller.status().state === "running" && runningClient === target && runningAllowedUserId === allowedUserId
+    );
+  }
+
+  /**
+   * The settings no longer match what this transition was asked to do: queue a
+   * fresh transition instead of acting on the stale intent. This is what makes
+   * the guard independent of the settings watcher's delivery — the newest intent
+   * always ends up applied.
+   */
+  function requeue(): void {
+    warn("settings changed while a transition was in flight; reconciling again");
+    void apply();
+  }
+
+  /** One transition; see {@link createTelegramRuntime} for the staleness rule. */
+  async function runTransition(gen: number): Promise<void> {
+    const intent = readIntent();
     // Resolve the token even while disabled: the runtime's client then matches
     // the stored credential as soon as one exists.
     const target = await currentClient();
 
-    if (!enabled) {
-      await stopPolling();
-      return;
-    }
+    // A newer request decides now; it is already queued behind this one.
+    if (gen !== generation) return;
+    // The owner changed something while the credential was being read.
+    if (!sameIntent(readIntent(), intent)) return requeue();
+
+    if (!intent.enabled) return stopPolling();
     if (target === undefined) {
       warn("enabled without a configured bot token; polling stays off");
-      await stopPolling();
-      return;
+      return stopPolling();
     }
-    if (allowedUserId === undefined) {
+    if (intent.allowedUserId === undefined) {
       warn("enabled without an allowed user id; polling stays off");
-      await stopPolling();
-      return;
+      return stopPolling();
     }
 
     if (username === undefined) refreshIdentity(target);
+    if (isRunningFor(target, intent.allowedUserId)) return;
 
-    if (deps.poller.status().state === "running" && runningClient === target && runningAllowedUserId === allowedUserId) {
-      return;
-    }
+    // `start` is a no-op while running, so a replaced token or allowlist takes
+    // effect only after an awaited stop — which is exactly the window in which a
+    // newer intent can arrive.
     await deps.poller.stop();
+    if (gen !== generation) return;
+    if (!sameIntent(readIntent(), intent)) return requeue();
+
     runningClient = target;
-    runningAllowedUserId = allowedUserId;
+    runningAllowedUserId = intent.allowedUserId;
     const restored = firstStart ? deps.initialOffset?.() : undefined;
     firstStart = false;
-    deps.poller.start({ bot: target, allowedUserId, ...(restored !== undefined ? { offset: restored } : {}) });
+    deps.poller.start({
+      bot: target,
+      allowedUserId: intent.allowedUserId,
+      ...(restored !== undefined ? { offset: restored } : {})
+    });
+  }
+
+  /**
+   * Contain one transition's failure: the tail must stay resolvable (a route
+   * kick is fire-and-forget) and the failure must be reportable, not swallowed.
+   */
+  async function transition(gen: number): Promise<void> {
+    try {
+      await runTransition(gen);
+      lastTransitionError = undefined;
+    } catch (error) {
+      lastTransitionError = { code: CODE_RUNTIME_ERROR, message: reasonOf(error) };
+      warn(`transition failed: ${reasonOf(error)}`);
+    }
+  }
+
+  /** Request a transition; never rejects (see {@link transition}). */
+  function apply(): Promise<void> {
+    const gen = ++generation;
+    const run = tail.then(() => transition(gen));
+    tail = run;
+    return run;
+  }
+
+  /** Wait until the tail stops growing: a transition may re-queue itself. */
+  async function settled(): Promise<void> {
+    let seen: Promise<void>;
+    do {
+      seen = tail;
+      await seen;
+    } while (seen !== tail);
   }
 
   return {
     apply,
+    settled,
     bot(): BotClient {
       if (client === undefined) throw new Error("telegram bot client is not configured");
       return client;
     },
     botUsername: () => username,
     lastPollAt: () => deps.poller.status().lastPollAt,
+    lastError: () => lastTransitionError,
     botInfoSettled: () => refresh
   };
 }
@@ -521,9 +637,14 @@ export function createTelegramRuntime(deps: TelegramRuntimeDeps): TelegramRuntim
 /**
  * Wire the settings namespace to the polling runtime: every committed change
  * reconciles it. This is what makes a settings write from the SPA start or stop
- * polling without a plugin restart; the admin routes call the same reconcile
- * directly, so both paths are idempotent and indistinguishable. A rejection is
- * contained and logged — a settings observer must never take the writer down.
+ * polling without a plugin restart; the admin routes request the same reconcile
+ * directly, so both paths are idempotent and indistinguishable.
+ *
+ * The callback RETURNS the reconcile promise: the settings service awaits each
+ * observer invocation before starting the next one, so returning it serializes
+ * commits on the settings side as well — a commit can never be observed halfway
+ * through the previous one's transition. A rejection is contained and logged: a
+ * settings observer must never take the writer down.
  */
 export function bindRuntimeToSettings(
   settingsScope: Pick<TelegramSettingsScopeLike, "watch">,
@@ -531,7 +652,7 @@ export function bindRuntimeToSettings(
   logger?: { warn(m: string): void }
 ): void {
   settingsScope.watch(() => {
-    void reconcile().catch((error: unknown) => {
+    return reconcile().catch((error: unknown) => {
       logger?.warn(`dsh-balbes-telegram: runtime transition failed: ${reasonOf(error)}`);
     });
   });

@@ -66,9 +66,17 @@ class FakeCredentials {
   refs = new Map<string, string>();
   setCalls: Array<{ ref: string; value: string }> = [];
   unsetCalls: string[] = [];
+  /** When set, resolving the VALUE fails (a broken credential provider). */
+  resolveError: unknown;
 
   async describe(ref: string): Promise<{ configured: boolean; writable: boolean }> {
     return { configured: this.refs.has(ref), writable: true };
+  }
+
+  async resolve(ref: string): Promise<{ value: string; source: string } | undefined> {
+    if (this.resolveError !== undefined) throw this.resolveError;
+    const value = this.refs.get(ref);
+    return value === undefined ? undefined : { value, source: "test" };
   }
 
   async set(ref: string, value: string): Promise<void> {
@@ -86,6 +94,11 @@ class FakePoller implements Poller {
   starts: Array<{ bot: BotClient; allowedUserId: number; offset?: number }> = [];
   stops = 0;
   detail: PollStatusDetail = { state: "stopped" };
+  /**
+   * When set, `stop()` parks on it before settling — the window a real poller
+   * spends waiting for an in-flight long poll to return.
+   */
+  stopGate: Promise<void> | undefined;
 
   start(opts: { bot: BotClient; allowedUserId: number; offset?: number }): void {
     this.starts.push(opts);
@@ -95,6 +108,8 @@ class FakePoller implements Poller {
 
   async stop(): Promise<void> {
     this.stops += 1;
+    const gate = this.stopGate;
+    if (gate !== undefined) await gate;
     const { lastPollAt } = this.detail;
     this.detail = { state: this.detail.state === "error" ? "error" : "stopped", ...(lastPollAt !== undefined ? { lastPollAt } : {}) };
   }
@@ -179,7 +194,7 @@ function harness(opts: { scope?: FakeScope; tokenConfigured?: boolean } = {}): H
   };
   const runtime = createTelegramRuntime({
     settingsScope: scope,
-    resolveToken: async () => credentials.refs.get(TELEGRAM_BOT_TOKEN_REF),
+    resolveToken: async () => (await credentials.resolve(TELEGRAM_BOT_TOKEN_REF))?.value,
     botFactory,
     poller,
     initialOffset: () => 5
@@ -187,17 +202,27 @@ function harness(opts: { scope?: FakeScope; tokenConfigured?: boolean } = {}): H
   const deps: TelegramAdminDeps = {
     settingsScope: scope,
     credentials,
-    resolveToken: async () => credentials.refs.get(TELEGRAM_BOT_TOKEN_REF),
+    resolveToken: async () => (await credentials.resolve(TELEGRAM_BOT_TOKEN_REF))?.value,
     botFactory,
     poller,
     statusExtras: async () => {
-      const extras: { botUsername?: string; lastPollAt?: string } = {};
+      const extras: {
+        botUsername?: string;
+        lastPollAt?: string;
+        runtimeError?: { code: string; message: string };
+      } = {};
       const username = runtime.botUsername();
       const lastPollAt = runtime.lastPollAt();
+      const runtimeError = runtime.lastError();
       if (username !== undefined) extras.botUsername = username;
       if (lastPollAt !== undefined) extras.lastPollAt = lastPollAt;
+      if (runtimeError !== undefined) extras.runtimeError = runtimeError;
       return extras;
     },
+    // The deps type is `() => void` (routes REQUEST a transition, never join it),
+    // but the fake deliberately hands back the joinable promise as well: a route
+    // that started awaiting it would block on a deferred stop, which the
+    // promptness test below then catches.
     applyRuntime: () => runtime.apply()
   };
   registerTelegramRoutes(http, deps);
@@ -385,16 +410,23 @@ describe("POST /api/telegram/save", () => {
     expect(json).toEqual({ error: { code: "invalid-config", message: expect.any(String) } });
   });
 
-  it("enables the bot, starts polling and answers connected in one call", async () => {
+  it("enables the bot and starts polling on the same call", async () => {
     const h = harness({ tokenConfigured: true });
     const { status, json } = await h.call("/api/telegram/save", { allowedUserId: 7, enabled: true });
     expect(status).toBe(200);
     expect(h.scope.updates).toEqual([{ allowedUserId: 7, enabled: true }]);
+    // The response is a snapshot: the transition is requested, not joined, so it
+    // reports the settings and whatever the runtime already shows.
+    expect(json).toMatchObject({ status: { tokenConfigured: true, enabled: true, allowedUserId: 7 } });
+
+    await h.runtime.settled();
     expect(h.poller.starts).toHaveLength(1);
     expect(h.poller.starts[0]?.allowedUserId).toBe(7);
     expect(h.poller.starts[0]?.bot).toBe(h.bots[0]);
     expect(h.poller.starts[0]?.offset).toBe(5);
-    expect(json).toEqual({
+    // a later /status reports where the loop ended up
+    const after = await h.call("/api/telegram/status");
+    expect(after.json).toEqual({
       status: { state: "connected", tokenConfigured: true, enabled: true, allowedUserId: 7 }
     });
   });
@@ -434,13 +466,17 @@ describe("POST /api/telegram/save", () => {
     expect(status).toBe(200);
     expect(h.credentials.refs.get(TELEGRAM_BOT_TOKEN_REF)).toBe(replaced);
     expect(raw).not.toContain("AAHreplacement");
+    expect(json).toMatchObject({ status: { tokenConfigured: true, enabled: true, allowedUserId: 7 } });
+
+    await h.runtime.settled();
     expect(h.bots).toHaveLength(2);
     expect(h.poller.starts).toHaveLength(2);
     expect(h.poller.starts[1]?.bot).toBe(h.bots[1]);
     expect(h.runtime.bot()).toBe(h.bots[1]);
     // the poller keeps its own offset after the first start
     expect(h.poller.starts[1]?.offset).toBeUndefined();
-    expect(json).toEqual({
+    const after = await h.call("/api/telegram/status");
+    expect(after.json).toMatchObject({
       status: { state: "connected", tokenConfigured: true, enabled: true, allowedUserId: 7 }
     });
   });
@@ -520,10 +556,41 @@ describe("POST /api/telegram/disable", () => {
     const { status, json } = await h.call("/api/telegram/disable");
     expect(status).toBe(200);
     expect(h.scope.updates).toEqual([{ enabled: false }]);
-    expect(h.poller.status().state).toBe("stopped");
     expect(json).toEqual({
       status: { state: "disabled", tokenConfigured: true, enabled: false, allowedUserId: 7 }
     });
+
+    await h.runtime.settled();
+    expect(h.poller.status().state).toBe("stopped");
+  });
+
+  it("answers while the stop is still draining an in-flight long poll", async () => {
+    const h = harness({ scope: new FakeScope({ enabled: true, allowedUserId: 7 }), tokenConfigured: true });
+    await h.runtime.apply();
+    expect(h.poller.status().state).toBe("running");
+
+    // The stop parks until the in-flight getUpdates returns.
+    let releaseStop!: () => void;
+    h.poller.stopGate = new Promise<void>((resolve) => {
+      releaseStop = resolve;
+    });
+
+    const { status, json } = await h.call("/api/telegram/disable");
+
+    // the response is built from the settings + the current snapshot, not from
+    // the transition: the loop is still winding down at this point
+    expect(status).toBe(200);
+    expect(json).toEqual({
+      status: { state: "disabled", tokenConfigured: true, enabled: false, allowedUserId: 7 }
+    });
+    expect(h.scope.updates).toEqual([{ enabled: false }]);
+    expect(h.poller.status().state).toBe("running");
+
+    h.poller.stopGate = undefined;
+    releaseStop();
+    await h.runtime.settled();
+    expect(h.poller.status().state).toBe("stopped");
+    expect(h.poller.starts).toHaveLength(1);
   });
 });
 
@@ -537,10 +604,12 @@ describe("POST /api/telegram/clear-token", () => {
     expect(h.credentials.unsetCalls).toEqual([TELEGRAM_BOT_TOKEN_REF]);
     expect(h.credentials.refs.size).toBe(0);
     expect(h.scope.updates).toEqual([{ enabled: false }]);
-    expect(h.poller.status().state).toBe("stopped");
     expect(json).toEqual({
       status: { state: "not-configured", tokenConfigured: false, enabled: false, allowedUserId: 7 }
     });
+
+    await h.runtime.settled();
+    expect(h.poller.status().state).toBe("stopped");
   });
 
   it("keeps the disabled flag when the credential was already gone", async () => {
@@ -701,6 +770,152 @@ describe("createTelegramRuntime", () => {
   });
 });
 
+describe("runtime transition serialization", () => {
+  /** A harness with a loop already running for allowlist 7. */
+  async function running(): Promise<Harness> {
+    const h = harness({ scope: new FakeScope({ enabled: true, allowedUserId: 7 }), tokenConfigured: true });
+    await h.runtime.apply();
+    expect(h.poller.status().state).toBe("running");
+    expect(h.poller.starts).toHaveLength(1);
+    return h;
+  }
+
+  it("does not restart a loop the newest intent forbids when a commit lands mid-stop", async () => {
+    const h = await running();
+
+    // Transition A (allowlist 7 -> 8) parks inside stop(), which in production
+    // waits for the in-flight long poll to return.
+    let releaseStop!: () => void;
+    h.poller.stopGate = new Promise<void>((resolve) => {
+      releaseStop = resolve;
+    });
+    h.scope.value = { enabled: true, allowedUserId: 8 };
+    const changing = h.runtime.apply();
+    await vi.waitFor(() => expect(h.poller.stops).toBe(2));
+
+    // ...and the owner disables the bot inside that window.
+    h.scope.value = { enabled: false, allowedUserId: 8 };
+    const disabling = h.runtime.apply();
+
+    releaseStop();
+    h.poller.stopGate = undefined;
+    await Promise.all([changing, disabling]);
+    await h.runtime.settled();
+
+    // the stale transition must not have started anything: the loop stays off
+    expect(h.poller.status().state).toBe("stopped");
+    expect(h.poller.starts).toHaveLength(1);
+    expect(h.poller.starts[0]?.allowedUserId).toBe(7);
+    const status = await buildTelegramStatus(h.deps);
+    expect(status.state).toBe("disabled");
+  });
+
+  it("bails out of a start when the settings changed under it, even without a newer request", async () => {
+    const h = await running();
+
+    let releaseStop!: () => void;
+    h.poller.stopGate = new Promise<void>((resolve) => {
+      releaseStop = resolve;
+    });
+    h.scope.value = { enabled: true, allowedUserId: 8 };
+    const changing = h.runtime.apply();
+    await vi.waitFor(() => expect(h.poller.stops).toBe(2));
+
+    // The settings flip WITHOUT anyone requesting a transition: the transition's
+    // own re-read after the await is the only thing that can catch this.
+    h.scope.value = { enabled: false, allowedUserId: 8 };
+
+    releaseStop();
+    h.poller.stopGate = undefined;
+    await changing;
+    await h.runtime.settled();
+
+    expect(h.poller.status().state).toBe("stopped");
+    expect(h.poller.starts).toHaveLength(1);
+  });
+
+  it("serializes transitions so a start never overtakes the stop that preceded it", async () => {
+    const h = await running();
+
+    let releaseStop!: () => void;
+    h.poller.stopGate = new Promise<void>((resolve) => {
+      releaseStop = resolve;
+    });
+    h.scope.value = { enabled: true, allowedUserId: 8 };
+    const first = h.runtime.apply();
+    await vi.waitFor(() => expect(h.poller.stops).toBe(2));
+
+    h.scope.value = { enabled: true, allowedUserId: 9 };
+    const second = h.runtime.apply();
+    expect(h.poller.starts).toHaveLength(1);
+
+    releaseStop();
+    h.poller.stopGate = undefined;
+    await Promise.all([first, second]);
+    await h.runtime.settled();
+
+    // exactly one restart, for the newest allowlist, and it happened after the stop
+    expect(h.poller.starts).toHaveLength(2);
+    expect(h.poller.starts[1]?.allowedUserId).toBe(9);
+    expect(h.poller.status().state).toBe("running");
+  });
+
+  it("settled() also waits for a transition that re-queued itself", async () => {
+    const h = await running();
+
+    let releaseStop!: () => void;
+    h.poller.stopGate = new Promise<void>((resolve) => {
+      releaseStop = resolve;
+    });
+    h.scope.value = { enabled: true, allowedUserId: 8 };
+    const changing = h.runtime.apply();
+    await vi.waitFor(() => expect(h.poller.stops).toBe(2));
+
+    // The intent changes again with no newer request: this transition cannot act
+    // on what it was asked for, so it re-queues itself instead.
+    h.scope.value = { enabled: true, allowedUserId: 9 };
+    releaseStop();
+    h.poller.stopGate = undefined;
+    await changing;
+    await h.runtime.settled();
+
+    // the re-queued transition is part of the tail, so `settled()` covers it
+    expect(h.poller.starts).toHaveLength(2);
+    expect(h.poller.starts[1]?.allowedUserId).toBe(9);
+    expect(h.poller.status().state).toBe("running");
+    expect(h.runtime.lastError()).toBeUndefined();
+  });
+
+  it("records a failed transition instead of rejecting, and reports it in the status", async () => {
+    const h = harness({ scope: new FakeScope({ enabled: true, allowedUserId: 7 }), tokenConfigured: true });
+    h.credentials.resolveError = new Error("credentials unavailable");
+
+    // a route kick must not reject, however the transition fails
+    const saved = await h.call("/api/telegram/save", { allowedUserId: 8 });
+    expect(saved.status).toBe(200);
+    await h.runtime.settled();
+
+    expect(h.runtime.lastError()).toEqual({ code: "runtime-error", message: "credentials unavailable" });
+    expect(h.poller.starts).toEqual([]);
+    const broken = await h.call("/api/telegram/status");
+    expect(broken.json).toEqual({
+      status: {
+        state: "error",
+        tokenConfigured: true,
+        enabled: true,
+        allowedUserId: 8,
+        error: { code: "runtime-error", message: "credentials unavailable" }
+      }
+    });
+
+    // a later transition that succeeds clears the recorded failure
+    h.credentials.resolveError = undefined;
+    await h.runtime.apply();
+    expect(h.runtime.lastError()).toBeUndefined();
+    expect(h.poller.status().state).toBe("running");
+  });
+});
+
 describe("bindRuntimeToSettings", () => {
   it("reconciles the runtime on every settings commit and contains failures", async () => {
     const scope = new FakeScope();
@@ -720,6 +935,31 @@ describe("bindRuntimeToSettings", () => {
     await expect(scope.commit({ enabled: false, allowedUserId: 7 }, { enabled: true, allowedUserId: 7 })).resolves.toBeUndefined();
     await vi.waitFor(() => expect(warns).toHaveLength(1));
     expect(warns[0]).toContain("reconcile failed");
+  });
+
+  it("returns the reconcile promise so the settings side can serialize commits", async () => {
+    const scope = new FakeScope();
+    let resolveReconcile!: () => void;
+    const inFlight = new Promise<void>((resolve) => {
+      resolveReconcile = resolve;
+    });
+    const order: string[] = [];
+    bindRuntimeToSettings(scope, async () => {
+      order.push("start");
+      await inFlight;
+      order.push("done");
+    });
+
+    const commit = scope.commit({ enabled: true, allowedUserId: 7 }, { enabled: false, allowedUserId: null });
+    // the watcher body is synchronous up to its first await and hands its promise
+    // back, which is what lets the settings service await one invocation before
+    // starting the next
+    await vi.waitFor(() => expect(order).toEqual(["start"]));
+    expect(scope.watchers).toHaveLength(1);
+
+    resolveReconcile();
+    await commit;
+    expect(order).toEqual(["start", "done"]);
   });
 });
 
