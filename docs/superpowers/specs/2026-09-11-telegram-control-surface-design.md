@@ -85,10 +85,12 @@ reset), очищает очередь, резолвя каждую ожидаю�
 «сброс, а не падение агента» держится на совпадении строк.
 
 **3. `snapshot(ref)`** — read-only сводка для карточки прогресса:
-`{ phase: "idle" | "running" | "queued"; taskText?: string; startedAt?: number;
+`{ phase: "idle" | "running"; taskText?: string; startedAt?: number;
 steps: Array<{ name: string; target?: string; status: "running" | "ok" | "failed" }>;
 todos?: Array<{ text: string; status: "pending" | "in_progress" | "done" }>;
-queued: number }`. Собирается чистой функцией-суммаризатором над срезом лога
+queued: number }`. Фаза описывает только собственный ход воркспейса (`idle` или
+`running`): задача, ждущая очереди, своей фазы не имеет, поэтому её отрисовывает
+чат по `queued`. Собирается чистой функцией-суммаризатором над срезом лога
 сессии текущего turn (`tool/call`, `tool/result`, `todo/write`, `step/start`) —
 рядом с существующим `summarizeTurn` и в том же стиле. Никакого I/O, никаких
 новых подписок.
