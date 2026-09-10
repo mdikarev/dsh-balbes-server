@@ -597,6 +597,8 @@ Smoke without a browser (JWT):
     -d '{"name":"my-project"}'
   curl -fsS -X POST http://127.0.0.1:$BALBES_PORT/api/models/list \\
     -H "authorization: Bearer \$TOKEN"
+  curl -fsS -X POST http://127.0.0.1:$BALBES_PORT/api/telegram/status \\
+    -H "authorization: Bearer \$TOKEN"
 =====================================================================
 EOF
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { apply, name, inject } from "../src/index.js";
@@ -25,7 +26,19 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await rm(home, { recursive: true, force: true });
+  // apply() calls ensureHome() fire-and-forget, so its mkdir/writeFile calls can
+  // land between rm's passes and make it fail with ENOTEMPTY/EBUSY — retry
+  // briefly (<= 550ms) until that apply-time work has settled.
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await rm(home, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (attempt >= 10 || (code !== "ENOTEMPTY" && code !== "EBUSY")) throw error;
+      await delay(10 * attempt);
+    }
+  }
 });
 
 describe("balbes-workspaces plugin", () => {

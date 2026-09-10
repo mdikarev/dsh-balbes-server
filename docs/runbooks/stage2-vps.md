@@ -407,10 +407,12 @@ curl -sS -X POST http://127.0.0.1:8080/api/workspaces/create \
 Соединение сервер не закрывает: heartbeat `: ping` — каждые 25 с. Получив кадр,
 остановите поток в соседнем терминале (Ctrl-C).
 
-Telegram: пять ручек `/api/telegram/*` (все — bearer, все отвечают JSON;
-в сводку установщика этот блок пока не входит). Полный smoke Telegram-канала —
-REAL-тест пакета `dsh-balbes-telegram` (`integration.test.ts`), ниже — то, что
-можно проверить на живом сервере:
+Telegram: пять ручек `/api/telegram/*` (все — bearer, все отвечают JSON); в сводку
+установщика входит строка `/api/telegram/status` — ожидаемый ответ на свежем
+сервере тот же, что у первого curl ниже:
+`{"status":{"state":"not-configured","tokenConfigured":false,"enabled":false}}`.
+Полный smoke Telegram-канала — REAL-тест пакета `dsh-balbes-telegram`
+(`integration.test.ts`), ниже — то, что можно проверить на живом сервере:
 
 ```bash
 # статус на свежем сервере (токена ещё нет)
