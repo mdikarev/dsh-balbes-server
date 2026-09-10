@@ -18,7 +18,9 @@ import {
  * plus the assistant message) and `whenIdle` resolves (optionally parked so a
  * test can observe the runner mid-turn). A parked turn stays OPEN until its park
  * is released: that is when its `turn/end` lands, so a cancel arriving on the
- * park really does stop a running turn.
+ * park really does stop a running turn. `cancelAsNoopTurn` models the other
+ * shape of a stop: a turn stopped before its first step, which ends as a
+ * balanced no-op instead of `aborted` and leaves no answer behind.
  */
 
 const PROJECT_ALPHA: WorkspaceRef = { scope: "project", name: "alpha" };
@@ -44,6 +46,17 @@ interface FakeHandleConfig {
    * 1 fact 9), and every later `whenIdle` rejects.
    */
   disposeStopsLoop?: boolean;
+  /**
+   * Models the stop that lands before the turn's first step. With this on,
+   * `followup` opens the turn but withholds its assistant message (nothing has
+   * been produced yet), and `cancel` closes such an open, answerless turn with
+   * a BALANCED NO-OP reason (`{kind:"completed"}`) instead of `aborted`: dsh
+   * documents that exactly this window cannot be told apart from the balanced
+   * no-op turns a rejection or an empty claim produces, and that `Agent.cancel`
+   * aborts the active turn OR a between-turn task. The withheld answer lands
+   * only if the turn completes normally.
+   */
+  cancelAsNoopTurn?: boolean;
 }
 interface FakeHandle {
   agent: {
@@ -74,6 +87,10 @@ function makeHandle(cfg: FakeHandleConfig = {}): FakeHandle {
    * `aborted` reason.
    */
   let turnOpen = false;
+  /** Whether the open turn has produced an assistant message yet. */
+  let turnHasMessage = false;
+  /** Answer withheld by `cancelAsNoopTurn` until the turn completes. */
+  let pendingAnswer: string | undefined;
   const session = {
     get seq(): number {
       return events.length;
@@ -88,6 +105,23 @@ function makeHandle(cfg: FakeHandleConfig = {}): FakeHandle {
     turnOpen = false;
     events.push({ type: "turn/end", data: { reason } });
   };
+  /** Emit this turn's assistant message (the only thing that gives it text). */
+  const emitAnswer = (text: string) => {
+    events.push({
+      type: "assistant/message",
+      data: { message: { content: [{ type: "text", text }] } }
+    });
+    turnHasMessage = true;
+  };
+  /** End the open turn normally, emitting a withheld answer first. */
+  const finishTurn = () => {
+    if (!turnOpen) return;
+    if (pendingAnswer !== undefined) {
+      emitAnswer(pendingAnswer);
+      pendingAnswer = undefined;
+    }
+    closeTurn({ kind: "completed" });
+  };
   // Declared before the agent object: `cancel` (and `dispose` below) resolve the
   // current park, and the abort convergence must be reachable from both.
   const releaseParked = () => {
@@ -95,7 +129,7 @@ function makeHandle(cfg: FakeHandleConfig = {}): FakeHandle {
     // owner can still stop it, and only an unaborted release completes it. The
     // close happens before the parked `whenIdle` resolves, so the runner always
     // summarizes a session that already carries this turn's end event.
-    closeTurn({ kind: "completed" });
+    finishTurn();
     const pending = parked;
     parked = [];
     for (const resolve of pending) resolve();
@@ -115,25 +149,37 @@ function makeHandle(cfg: FakeHandleConfig = {}): FakeHandle {
     followup: vi.fn(() => {
       const text = cfg.answers?.[answerAt] ?? "fake answer";
       answerAt += 1;
-      events.push(
-        { type: "turn/start", data: {} },
-        {
-          type: "assistant/message",
-          data: { message: { content: [{ type: "text", text }] } }
-        }
-      );
+      events.push({ type: "turn/start", data: {} });
       turnOpen = true;
+      turnHasMessage = false;
+      if (cfg.cancelAsNoopTurn === true) {
+        // The turn is open, but its first step has produced nothing yet: the
+        // message is withheld, so a stop landing here erases an answerless turn
+        // exactly as the engine does.
+        pendingAnswer = text;
+      } else {
+        emitAnswer(text);
+      }
       // A handle that never parks runs its turn to the end synchronously (the
       // same turn/start + assistant/message + turn/end as before). A held
       // handle leaves the turn OPEN until releaseParked(): that is what makes
       // "parked mid-turn" mean it.
-      if (!cfg.holdIdle) closeTurn({ kind: "completed" });
+      if (!cfg.holdIdle) finishTurn();
     }),
     cancel: vi.fn((_cause: unknown, _options?: unknown) => {
       // Реальный Agent.cancel прерывает активный turn и разрешает парковку
       // whenIdle; turn/end с причиной "aborted" появляется только если turn
       // действительно был открыт.
-      closeTurn({ kind: "aborted", reason: { kind: "user" } });
+      if (cfg.cancelAsNoopTurn === true && turnOpen && !turnHasMessage) {
+        // Stopped before the first step: the turn ends as the balanced no-op a
+        // rejection or an empty claim would leave, NOT as `aborted` (dsh's turn
+        // vocabulary cannot express the difference), and the withheld answer
+        // never lands.
+        pendingAnswer = undefined;
+        closeTurn({ kind: "completed" });
+      } else {
+        closeTurn({ kind: "aborted", reason: { kind: "user" } });
+      }
       releaseParked();
     })
   };
@@ -642,6 +688,34 @@ describe("cancel", () => {
     expect(outcome.cancelled).toBe(true);
     await expect(running).resolves.toMatchObject({ ok: false, code: "cancelled" });
     expect(handle.dispose).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Plan-mandated: the stop that lands BEFORE the turn's first step. dsh says
+   * that turn leaves a `turn/end` shaped exactly like the balanced no-op turns
+   * a rejection or an empty claim produces. Reporting `{ ok: true, text: "" }`
+   * for it would tell the owner "задача выполнена" about a task they just
+   * stopped — the one user-visible lie the whole feature exists to avoid.
+   */
+  it("reports the stop that erased the turn before its first step as cancelled", async () => {
+    const { runner, agents } = await makeRunner();
+    agents.cfg({ holdIdle: true, cancelAsNoopTurn: true });
+    const running = runner.run(PROJECT_ALPHA, "долгая");
+    await waitFor(() => agents.created.length === 1);
+    const handle = agents.created[0]!;
+    await waitFor(() => handle.parkedCount === 1);
+    handle.releaseParked();                                 // пропускаем followup
+    await waitFor(() => handle.agent.followup.mock.calls.length === 1);
+    await waitFor(() => handle.parkedCount === 1);          // парковка после followup
+
+    const outcome = await runner.cancel(PROJECT_ALPHA);
+
+    expect(outcome.cancelled).toBe(true);
+    await expect(running).resolves.toMatchObject({ ok: false, code: "cancelled" });
+    // The exact lie this arm removes: an empty success for a stopped task.
+    await expect(running).resolves.not.toMatchObject({ ok: true, text: "" });
+    expect(handle.dispose).not.toHaveBeenCalled();
+    expect(runner.sessionIdOf(PROJECT_ALPHA)).toBeDefined();
   });
 
   it("is a no-op when nothing runs", async () => {

@@ -641,15 +641,27 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
       // stop), this point is reached with a turn that has an outcome of its
       // own: an owner stop that released this park aborted the turn, so the
       // turn carries the `aborted` reason and the reason gate below classifies
-      // it. Deciding "cancelled" from the flag alone would let a cancel landing
-      // as the turn was finishing discard a completed answer.
+      // it — and when the stop erased the turn before its first step (no
+      // `aborted` reason, no answer) that gate classifies it by its emptiness.
+      // Deciding "cancelled" from the flag alone would let a cancel landing as
+      // the turn was finishing discard a completed answer.
       await deps.sessions.flush(agent.session);
 
       const outcome = summarizeTurn(agent.session, firstSeq);
       // Отмена подтверждается ПРИЧИНОЙ turn'а, а не только флагом: cancel,
       // пришедший в момент, когда turn уже завершался, не должен превращать
       // успешный результат в «остановлено».
-      if (entry.cancelled && outcome.reason?.kind === "aborted") {
+      //
+      // The reason alone is not enough. A turn that stops before its first step
+      // leaves a `turn/end` shaped exactly like the balanced no-op turns a
+      // rejection or an empty claim produces — dsh's turn vocabulary cannot
+      // express that case — so an owner stop landing in that window arrives here
+      // with a non-`aborted` reason AND no answer. Answering `{ ok: true, text:
+      // "" }` for it would report the task the owner deliberately stopped as a
+      // completed empty one, which is the one user-visible lie this feature
+      // exists to avoid. An empty turn the owner cancelled is therefore a stop,
+      // while a turn that really answered keeps its result.
+      if (entry.cancelled && (outcome.reason?.kind === "aborted" || outcome.text === "")) {
         return { ok: false, code: "cancelled", message: CANCELLED_MESSAGE };
       }
       if (entry.cancelled) entry.cancelled = false;
