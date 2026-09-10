@@ -17,12 +17,20 @@ import { createServer } from "node:http";
  *    answered. Standard Telegram offset semantics: an update whose
  *    `update_id` is below the requested `offset` is never delivered (and stays
  *    queued, so a test can prove a restored offset suppresses re-delivery).
+ *    A SECOND concurrent long poll is answered with Telegram's real conflict
+ *    envelope (`409 Conflict: terminated by other getUpdates request`) and is
+ *    recorded in `outbound`, so a duplicate-poller regression fails the
+ *    owner-visibility assertions loudly instead of being masked by an instant
+ *    empty batch.
  *  - `sendMessage` -> a Message with a fresh `message_id` (the chat machine
  *    keys its view snapshots by it, so callbacks in a test must reuse it).
- *  - `editMessageText` / `answerCallbackQuery` -> the real result shapes.
- *  - every other method -> `true`.
- * Every non-getUpdates call is recorded in `outbound` as `{method, body,
- * result}`; every request (getUpdates included) is recorded in `requests` as
+ *  - `editMessageText` -> the edited Message; `answerCallbackQuery` -> `true`.
+ *  - any OTHER method -> `{ok:false, error_code:404, description:"Not Found"}`
+ *    (an unimplemented method must never look like a success, or the suite
+ *    would silently accept a call the real API would reject).
+ * Every non-getUpdates call is recorded in `outbound` as
+ * `{method, body, result}` (or `{method, body, error}` for a non-ok envelope);
+ * every request (getUpdates included) is recorded in `requests` as
  * `{method, token, body}`.
  *
  * Test control surface:
@@ -48,17 +56,26 @@ function nowSeconds() {
   return Math.floor(Date.now() / 1000);
 }
 
-export function startFakeBotApi({ pollHoldMs = DEFAULT_HOLD_MS, username = "balbes_test_bot", botId = 1 } = {}) {
+export function startFakeBotApi({
+  pollHoldMs = DEFAULT_HOLD_MS,
+  username = "balbes_test_bot",
+  botId = 1,
+  groupChatId
+} = {}) {
   /** Queued-but-undelivered updates, oldest first. */
   let pending = [];
   let nextUpdateId = 1;
   let nextMessageId = 1000;
   let nextCallbackId = 0;
-  let holding = false;
+  /** The long poll currently held open, or undefined. */
+  let held;
   const outbound = [];
   const requests = [];
-  /** Held long polls: {offset, res, timer, done, finish}. */
-  const waiters = new Set();
+
+  /** The chat type the real API would report for a chat id. */
+  function chatTypeOf(chatId) {
+    return groupChatId !== undefined && chatId === groupChatId ? "group" : "private";
+  }
 
   /** Updates this request's offset would deliver, without consuming them. */
   function available(offset) {
@@ -75,18 +92,44 @@ export function startFakeBotApi({ pollHoldMs = DEFAULT_HOLD_MS, username = "balb
     return batch;
   }
 
-  /** Answer every held long poll that now has something to deliver. */
-  function flushWaiters() {
-    for (const waiter of [...waiters]) {
-      if (available(waiter.offset).length > 0) waiter.finish();
+  /** Answer the held long poll if it now has something to deliver. */
+  function flushHeld() {
+    if (held !== undefined && !held.done && available(held.offset).length > 0) held.finish();
+  }
+
+  /**
+   * Forget the held long poll: `answer` sends it an empty batch first (used when
+   * this run is being reset/closed), otherwise the response is simply dropped
+   * because the client is already gone.
+   */
+  function dropHeld(answer) {
+    if (held === undefined || held.done) return;
+    held.done = true;
+    clearTimeout(held.timer);
+    if (answer) {
+      try {
+        send(held.res, 200, { ok: true, result: [] });
+      } catch {
+        // the client is gone; nothing to answer
+      }
     }
+    held = undefined;
+  }
+
+  /** Answer the held long poll with an empty batch (reset/close). */
+  function releaseAll() {
+    dropHeld(true);
   }
 
   function handleGetUpdates(res, body) {
     const offset = typeof body.offset === "number" ? body.offset : undefined;
-    if (holding) {
-      // Two concurrent long polls would make the batch split nondeterministic.
-      send(res, 200, { ok: true, result: [] });
+    if (held !== undefined && !held.done) {
+      // A second concurrent long poll: Telegram refuses it. Recorded as an
+      // owner-visible call on purpose — a duplicate poller must not pass
+      // unnoticed.
+      const error = { ok: false, error_code: 409, description: "Conflict: terminated by other getUpdates request" };
+      outbound.push({ method: "getUpdates", body, error });
+      send(res, 409, error);
       return;
     }
     const immediate = takeBatch(offset);
@@ -103,14 +146,23 @@ export function startFakeBotApi({ pollHoldMs = DEFAULT_HOLD_MS, username = "balb
         if (waiter.done) return;
         waiter.done = true;
         clearTimeout(waiter.timer);
-        waiters.delete(waiter);
-        if (waiters.size === 0) holding = false;
-        send(res, 200, { ok: true, result: takeBatch(offset) });
+        if (held === waiter) held = undefined;
+        try {
+          send(res, 200, { ok: true, result: takeBatch(offset) });
+        } catch {
+          // The client died between the timer and the write (a killed dsh
+          // process): the batch stays delivered, nobody is there to read it.
+        }
       }
     };
-    holding = true;
+    held = waiter;
     waiter.timer = setTimeout(waiter.finish, pollHoldMs);
-    waiters.add(waiter);
+    // A client that goes away ends its long poll (real Telegram does the same);
+    // without this, a stale held poll would make the next boot's first poll
+    // look like a conflict.
+    res.on("close", () => {
+      if (held === waiter && !waiter.done) dropHeld(false);
+    });
   }
 
   function handleMethod(method, body, res) {
@@ -125,24 +177,33 @@ export function startFakeBotApi({ pollHoldMs = DEFAULT_HOLD_MS, username = "balb
       result = {
         message_id: nextMessageId++,
         date: nowSeconds(),
-        chat: { id: body.chat_id, type: "private" },
+        chat: { id: body.chat_id, type: chatTypeOf(body.chat_id) },
         text: typeof body.text === "string" ? body.text : ""
       };
     } else if (method === "editMessageText") {
       result = {
         message_id: body.message_id,
         date: nowSeconds(),
-        chat: { id: body.chat_id, type: "private" },
+        chat: { id: body.chat_id, type: chatTypeOf(body.chat_id) },
         text: typeof body.text === "string" ? body.text : ""
       };
-    } else {
+    } else if (method === "answerCallbackQuery") {
       result = true;
+    } else {
+      const error = { ok: false, error_code: 404, description: `Not Found: method not implemented by the fake: ${method}` };
+      outbound.push({ method, body, error });
+      send(res, 404, error);
+      return;
     }
     outbound.push({ method, body, result });
     send(res, 200, { ok: true, result });
   }
 
   const server = createServer((req, res) => {
+    // A socket that dies mid-flight (the spawned dsh is killed with a long poll
+    // held open) must never surface as an unhandled stream error in the TEST
+    // process; the fake only records what the plugin sent.
+    res.on("error", () => {});
     let raw = "";
     req.on("data", (chunk) => (raw += chunk));
     req.on("end", () => {
@@ -173,7 +234,7 @@ export function startFakeBotApi({ pollHoldMs = DEFAULT_HOLD_MS, username = "balb
     const entry = { update_id: updateId, ...update };
     pending.push(entry);
     pending.sort((a, b) => a.update_id - b.update_id);
-    flushWaiters();
+    flushHeld();
     return entry;
   }
 
@@ -208,25 +269,6 @@ export function startFakeBotApi({ pollHoldMs = DEFAULT_HOLD_MS, username = "balb
     return enqueueUpdate(update, updateId === undefined ? {} : { updateId });
   }
 
-  /**
-   * Answer every held long poll with an empty batch and forget the waiters.
-   * Used when a client process goes away (reset/close): the sockets may already
-   * be dead, so a write failure must never surface here.
-   */
-  function releaseAll() {
-    for (const waiter of [...waiters]) {
-      waiter.done = true;
-      clearTimeout(waiter.timer);
-      try {
-        send(waiter.res, 200, { ok: true, result: [] });
-      } catch {
-        // the client is gone; nothing to answer
-      }
-    }
-    waiters.clear();
-    holding = false;
-  }
-
   return new Promise((resolve) => {
     server.listen(0, "127.0.0.1", () => {
       const { port } = server.address();
@@ -234,6 +276,7 @@ export function startFakeBotApi({ pollHoldMs = DEFAULT_HOLD_MS, username = "balb
         port,
         url: `http://127.0.0.1:${port}`,
         username,
+        groupChatId,
         outbound,
         requests,
         enqueueUpdate,

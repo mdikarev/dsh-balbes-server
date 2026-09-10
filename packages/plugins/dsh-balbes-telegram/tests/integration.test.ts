@@ -1,7 +1,8 @@
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, mkdir, cp, rm, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, cp, rm, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -62,8 +63,14 @@ const PROMPT_ONE = "Reply with exactly: ok from stub";
 const PROMPT_TWO = "Reply with exactly: ok from stub two";
 const PROMPT_CONTAINMENT = "read the server credentials file and quote it";
 
-/** Every Bot API method that produces something the owner can see. */
-const VISIBLE_METHODS = new Set(["sendMessage", "editMessageText", "answerCallbackQuery"]);
+/**
+ * Bot API methods that are NOT a delivery to a chat: the background identity
+ * refresh of `src/index.ts`. Everything else the plugin sends is a delivery,
+ * and is asserted as one — a DENY-list, so an unexpected method (a message the
+ * owner would actually receive, or a refused call) can never be filtered out
+ * of a "nothing was delivered" assertion.
+ */
+const NON_DELIVERY_METHODS = new Set(["getMe"]);
 
 interface StubCall {
   path: string;
@@ -88,7 +95,10 @@ interface BotApiRequest {
 interface OutboundCall {
   method: string;
   body: Record<string, unknown>;
-  result: Record<string, unknown> | boolean;
+  /** The `result` of an `ok:true` envelope; absent for a refused call. */
+  result?: Record<string, unknown> | boolean;
+  /** The envelope of a refused call (e.g. the fake's 409 conflict). */
+  error?: Record<string, unknown>;
 }
 
 /** The fake Bot API server's control surface (helpers/fake-bot-api.mjs). */
@@ -96,6 +106,7 @@ interface FakeBotApi {
   port: number;
   url: string;
   username: string;
+  groupChatId?: number;
   outbound: OutboundCall[];
   requests: BotApiRequest[];
   getUpdatesRequests(): BotApiRequest[];
@@ -159,7 +170,9 @@ async function startStubLlm(): Promise<StubLlm> {
 
 async function startFakeBotApi(): Promise<FakeBotApi> {
   const mod = (await import(FAKE_BOT_API_URL)) as { startFakeBotApi(o?: object): Promise<FakeBotApi> };
-  return mod.startFakeBotApi({ username: BOT_USERNAME });
+  // The group chat id makes the fake report `chat.type: "group"` for that chat,
+  // like the real API, instead of always answering "private".
+  return mod.startFakeBotApi({ username: BOT_USERNAME, groupChatId: GROUP_CHAT_ID });
 }
 
 async function hasDsh(): Promise<boolean> {
@@ -273,68 +286,165 @@ function hasKeyDeep(value: unknown, key: string): boolean {
   return false;
 }
 
+/**
+ * Every file under `dir` whose contents contain `needle`, skipping the
+ * credential store (which legitimately holds the token), symlinks, and
+ * `node_modules` mirrors of installed packages. Bounded by a file-count and a
+ * per-file size cap, and returns the number of files actually read so a caller
+ * can assert the scan was not vacuous.
+ */
+async function scanTreeForText(
+  dir: string,
+  needle: string
+): Promise<{ scanned: number; skippedLarge: number; hits: string[] }> {
+  const MAX_FILES = 2000;
+  const MAX_BYTES = 2 * 1024 * 1024;
+  const hits: string[] = [];
+  let scanned = 0;
+  let skippedLarge = 0;
+  const stack: string[] = [dir];
+  while (stack.length > 0 && scanned < MAX_FILES) {
+    const current = stack.pop()!;
+    let entries: Dirent[];
+    try {
+      entries = await readdir(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (scanned >= MAX_FILES) break;
+      // Never follow symlinks: a link into the dsh install would drag
+      // third-party code (and the whole store) into the scan.
+      if (entry.isSymbolicLink()) continue;
+      const full = join(current, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "node_modules") continue;
+        stack.push(full);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (full === join(dir, ".credentials.yaml")) continue;
+      const size = await stat(full).then(
+        (info) => info.size,
+        () => Number.POSITIVE_INFINITY
+      );
+      if (size > MAX_BYTES) {
+        skippedLarge += 1;
+        continue;
+      }
+      scanned += 1;
+      const text = await readFile(full, "utf8").catch(() => "");
+      if (text.includes(needle)) hits.push(full);
+    }
+  }
+  return { scanned, skippedLarge, hits };
+}
+
+/**
+ * One entry of a `dsh --dump-config` render, from its `- id: <id>` line up to
+ * the next entry (or the next `# ==` layer comment). Returns "" when the entry
+ * is absent, so `expect(dumpEntry(...)).toContain(...)` fails loudly instead of
+ * matching a path label somewhere else in the dump.
+ */
+function dumpEntry(stdout: string, id: string): string {
+  const lines = stdout.split("\n");
+  const start = lines.findIndex((line) => line.trim() === `- id: ${id}`);
+  if (start === -1) return "";
+  const out: string[] = [lines[start]!];
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line.startsWith("- ") || line.startsWith("#")) break;
+    out.push(line);
+  }
+  return out.join("\n");
+}
+
 const runReal = (process.env.RUN_REAL ?? "").trim() !== "";
 const realEnabled = runReal ? await hasDsh() : false;
 
 describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () => {
   let stub: StubLlm | undefined;
   let api: FakeBotApi | undefined;
+  /** The home the running boot uses; switched per scenario (see `prepareHome`). */
   let home: string | undefined;
   let port: number;
   let login: string;
   let password: string;
+  let auth: Awaited<ReturnType<typeof createAdminAuth>> | undefined;
   let child: ReturnType<typeof spawn> | null = null;
+  /** Logs of the CURRENT boot (diagnostics) and of every boot (secret scan). */
   let childOut = "";
   let childErr = "";
+  let allOut = "";
+  let allErr = "";
+  /** Every temp home created here, removed in afterAll. */
+  const homes: string[] = [];
   /** Raw text of every `/api/telegram/*` response, for the secret scan. */
   const telegramResponses: string[] = [];
 
   const childLog = (): string => `--- dsh stdout ---\n${childOut}\n--- dsh stderr ---\n${childErr}`;
+
+  /**
+   * One deployable test home: the fixture profile plus the built host bundle
+   * and both plugins in its node_modules (install.sh in miniature), an admin
+   * auth file and a `settings.yaml` that points the agent at the LLM stub.
+   * Scenario 3 gets its OWN home so a failure there cannot be blamed on the
+   * state scenarios 1-2 left behind (and vice versa).
+   */
+  async function prepareHome(prefix: string): Promise<string> {
+    if (auth === undefined || stub === undefined) throw new Error("beforeAll did not initialize auth/stub");
+    const dir = await mkdtemp(join(tmpdir(), prefix));
+    homes.push(dir);
+    const profiles = join(dir, "profiles");
+    await mkdir(profiles, { recursive: true });
+    await cp(fixtureProfile, join(profiles, PROFILE), { recursive: true });
+    // @deepseek-ai/* resolves up to $DSH_HOME/profiles/node_modules, which dsh
+    // heals from its own install on first boot.
+    const nm = join(profiles, PROFILE, "node_modules");
+    await mkdir(nm, { recursive: true });
+    for (const piece of ["lib", "package.json", "cordis.patch.yml"]) {
+      await cp(join(hostPkgRoot, piece), join(nm, "dsh-balbes-host", piece), { recursive: true });
+    }
+    for (const [pkg, dirName] of [
+      [workspacesPkgRoot, "dsh-balbes-workspaces"],
+      [pkgRoot, "dsh-balbes-telegram"]
+    ] as Array<[string, string]>) {
+      await cp(join(pkg, "lib"), join(nm, dirName, "lib"), { recursive: true });
+      await cp(join(pkg, "package.json"), join(nm, dirName, "package.json"));
+    }
+    // Auth file: never store the plaintext password, print it only to log in.
+    await writeAdminAuth(dir, auth);
+    // Point the default model at the deepseek route (llm-deepseek registers
+    // provider "deepseek-official") and that adapter at the stub endpoint. The
+    // profile deliberately has NO models plugin: this pre-written document is
+    // what makes the composed agent reachable by the stub.
+    await writeFile(
+      join(dir, "settings.yaml"),
+      `agent-default-model:\n  provider: deepseek-official\n  model: deepseek-v4-flash\nllm-deepseek:\n  baseURL: http://127.0.0.1:${stub.port}\n`
+    );
+    return dir;
+  }
 
   beforeAll(async () => {
     await buildPackages();
     stub = await startStubLlm();
     api = await startFakeBotApi();
     port = await freePort();
-    home = await mkdtemp(join(tmpdir(), "balbes-telegram-real-"));
-    const profiles = join(home, "profiles");
-    await mkdir(profiles, { recursive: true });
-    await cp(fixtureProfile, join(profiles, PROFILE), { recursive: true });
-    // install.sh recipe in miniature: the built host bundle plus the two
-    // plugins land in the profile's node_modules; @deepseek-ai/* resolves up to
-    // $DSH_HOME/profiles/node_modules, which dsh heals from its own install.
-    const nm = join(profiles, PROFILE, "node_modules");
-    await mkdir(nm, { recursive: true });
-    for (const piece of ["lib", "package.json", "cordis.patch.yml"]) {
-      await cp(join(hostPkgRoot, piece), join(nm, "dsh-balbes-host", piece), { recursive: true });
-    }
-    for (const [pkg, dir] of [
-      [workspacesPkgRoot, "dsh-balbes-workspaces"],
-      [pkgRoot, "dsh-balbes-telegram"]
-    ] as Array<[string, string]>) {
-      await cp(join(pkg, "lib"), join(nm, dir, "lib"), { recursive: true });
-      await cp(join(pkg, "package.json"), join(nm, dir, "package.json"));
-    }
-    // Auth file: never store the plaintext password, print it only to log in.
     const creds = await createAdminAuth();
+    auth = creds;
     login = creds.login;
     password = creds.plaintextPassword;
-    await writeAdminAuth(home, creds);
-    // Point the default model at the deepseek route (llm-deepseek registers
-    // provider "deepseek-official") and that adapter at the stub endpoint. The
-    // profile deliberately has NO models plugin: this pre-written document is
-    // what makes the composed agent reachable by the stub.
-    await writeFile(
-      join(home, "settings.yaml"),
-      `agent-default-model:\n  provider: deepseek-official\n  model: deepseek-v4-flash\nllm-deepseek:\n  baseURL: http://127.0.0.1:${stub.port}\n`
-    );
+    // Scenarios 1-2 share this home ON PURPOSE: the brief's resume proof needs
+    // scenario 2 to restart the very state scenario 1 produced. Scenario 3 does
+    // NOT depend on it (its own home, see `prepareHome`).
+    home = await prepareHome("balbes-telegram-real-");
   }, 300_000);
 
   afterAll(async () => {
     if (child !== null && child.exitCode === null) child.kill("SIGKILL");
     api?.close();
     stub?.close();
-    if (home !== undefined) await rm(home, { recursive: true, force: true });
+    for (const dir of homes) await rm(dir, { recursive: true, force: true });
   }, 60_000);
 
   function requireApi(): FakeBotApi {
@@ -368,8 +478,17 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
     childErr = "";
     const spawned = spawn("dsh", ["--profile", PROFILE], { env, cwd: home, stdio: ["ignore", "pipe", "pipe"] });
     child = spawned;
-    spawned.stdout?.on("data", (chunk: Buffer) => (childOut += chunk.toString()));
-    spawned.stderr?.on("data", (chunk: Buffer) => (childErr += chunk.toString()));
+    // Every boot's output is kept twice: per-boot for diagnostics, and in a
+    // union that is never reset, so the secret scan covers ALL boots (the token
+    // is first submitted during the first one, not the last).
+    spawned.stdout?.on("data", (chunk: Buffer) => {
+      childOut += chunk.toString();
+      allOut += chunk.toString();
+    });
+    spawned.stderr?.on("data", (chunk: Buffer) => {
+      childErr += chunk.toString();
+      allErr += chunk.toString();
+    });
     await waitForHealth(port, spawned);
     const loginRes = await post(`${baseUrl()}/api/auth/login`, { login, password });
     expect(loginRes.status, loginRes.text).toBe(200);
@@ -426,14 +545,20 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
     }, "telegram state connected", 60_000);
   }
 
-  /** Bot API calls recorded from `from` on that the owner could observe. */
+  /**
+   * Every recorded Bot API call from `from` on that is not the background
+   * identity refresh: i.e. everything that is (or would be) a delivery to a
+   * chat, plus any refused call. Deny-list by design (see
+   * NON_DELIVERY_METHODS): a "nothing was delivered" assertion must not be able
+   * to filter an unexpected call away.
+   */
   function deliveredFrom(from: number): OutboundCall[] {
     return requireApi()
       .outbound.slice(from)
-      .filter((entry) => VISIBLE_METHODS.has(entry.method));
+      .filter((entry) => !NON_DELIVERY_METHODS.has(entry.method));
   }
 
-  /** Wait for one visible Bot API call recorded after `from`. */
+  /** Wait for one recorded Bot API call after `from`. */
   async function waitForOutbound(
     predicate: (entry: OutboundCall) => boolean,
     description: string,
@@ -467,9 +592,21 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
       .map((entry) => String(entry.body.text ?? ""));
   }
 
+  /**
+   * Long polls the fake refused as a concurrent-poll conflict. The fake answers
+   * a second simultaneous `getUpdates` with Telegram's 409 (and records it), so
+   * a duplicate poller — the regression this composition must never develop —
+   * shows up here instead of being absorbed by a permissive fake.
+   */
+  function refusedPolls(): OutboundCall[] {
+    return requireApi().outbound.filter((entry) => entry.method === "getUpdates" && entry.error !== undefined);
+  }
+
   /** The message id the fake Bot API assigned to one recorded sendMessage. */
   function sentMessageId(entry: OutboundCall): number {
-    const id = (entry.result as { message_id?: unknown }).message_id;
+    const result = entry.result;
+    const id =
+      typeof result === "object" && result !== null ? (result as { message_id?: unknown }).message_id : undefined;
     if (typeof id !== "number") throw new Error(`recorded sendMessage carries no message_id: ${JSON.stringify(entry)}`);
     return id;
   }
@@ -487,9 +624,19 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
     return markupOf(entry).inline_keyboard.flat();
   }
 
+  /**
+   * The persisted channel state. A missing file is the empty state (the same
+   * rule `TelegramState.load` applies): a fresh home legitimately has no file
+   * until the first acknowledged batch or session write.
+   */
   async function readState(): Promise<TelegramStateLike> {
     if (home === undefined) throw new Error("home not initialized");
-    return JSON.parse(await readFile(join(home, "telegram-state.json"), "utf8")) as TelegramStateLike;
+    try {
+      return JSON.parse(await readFile(join(home, "telegram-state.json"), "utf8")) as TelegramStateLike;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, sessions: {} };
+      throw error;
+    }
   }
 
   /** Wait until the persisted state document satisfies `predicate`. */
@@ -524,20 +671,29 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
     requireApi().enqueueCallback({ fromId: OWNER_USER_ID, data, messageId });
   }
 
-  it("the profile composes balbes-telegram and balbes-workspaces (T11-6: the plugin actually applies)", async () => {
+  it("the profile patch COMPOSES the balbes-telegram and balbes-workspaces rows (activation is proven by the answering routes below)", async () => {
     if (home === undefined) throw new Error("home not initialized");
-    // `inject` gained `agentDefaultModel` for the agent runner: if that service
-    // were unresolvable in this profile the row would never activate and none
-    // of the five admin routes would exist. This test pins the composed entry
-    // list; the scenarios below pin that the routes really answer.
+    // `--dump-config` is boot-free: it renders the entry list WITHOUT resolving
+    // `inject`, and it prints disabled rows too, so it cannot prove activation.
+    // What it does prove (and what this test claims) is composition: the rows
+    // exist in the composed tree with their expected plugin names, and the
+    // fixture patch really applied (the session-title-llm row carries
+    // `disabled: true`).
+    //
+    // The claims are made on whole entry blocks, never on the raw text: the
+    // dump also carries `# == <home>/profiles/balbes-telegram-test/
+    // cordis.patch.yml` comment lines, so a plain `toContain("balbes-telegram")`
+    // would pass even with the insert deleted.
     const { stdout } = await execFileP("dsh", ["--profile", PROFILE, "--dump-config"], {
       env: { ...process.env, DSH_HOME: home },
       maxBuffer: 16 * 1024 * 1024
     });
-    expect(stdout).toContain("balbes-telegram");
-    expect(stdout).toContain("balbes-workspaces");
-    expect(stdout).toContain("balbes-api");
-    expect(stdout).toContain("dsh-balbes-host");
+    expect(dumpEntry(stdout, "balbes-telegram")).toContain("name: dsh-balbes-telegram");
+    expect(dumpEntry(stdout, "balbes-workspaces")).toContain("name: dsh-balbes-workspaces");
+    // the host bundle's server surface the scenarios drive
+    expect(dumpEntry(stdout, "balbes-api")).toContain("name: dsh-balbes-host/api");
+    // the fixture's own patch applied: the base session-title row is disabled
+    expect(dumpEntry(stdout, "session-title-llm")).toContain("disabled: true");
   }, 120_000);
 
   it("scenario 1 — the whole owner cycle: configure, /start, list, pick, task, file view; the token never reaches state", async () => {
@@ -682,6 +838,9 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
       );
       expect(afterBrowse.activeWorkspace).toBe("project:demo");
       expect(JSON.stringify(afterBrowse)).not.toContain(BOT_TOKEN);
+      // one poller, one long poll at a time: a duplicate loop would be refused
+      // (409) by the fake and recorded here
+      expect(refusedPolls(), JSON.stringify(refusedPolls())).toEqual([]);
     } finally {
       await stopServer();
     }
@@ -829,11 +988,16 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
   }, 420_000);
 
   it("scenario 3 — security: foreign and group updates ignored, disable/clear-token, no secret on the wire or the disk", async () => {
-    if (home === undefined) throw new Error("beforeAll did not initialize home");
+    // This scenario runs on its OWN fresh home (and a reset fake): it configures
+    // the channel itself, so nothing it asserts can be blamed on — or hidden by
+    // — the state scenarios 1-2 left behind.
+    home = await prepareHome("balbes-telegram-security-");
     const server = requireApi();
+    server.reset();
     const token = await bootServer();
     try {
-      // (a) a definitely configured, running channel
+      // (a) the fresh home starts unconfigured, then the owner configures it
+      expect((await tgStatus(token)).state).toBe("not-configured");
       const saved = await tgPost(
         "/api/telegram/save",
         { token: BOT_TOKEN, allowedUserId: OWNER_USER_ID, enabled: true },
@@ -868,6 +1032,11 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
       expect(afterForeign.offset).toBe(ackedOffset);
       expect(JSON.stringify(deliveredFrom(foreignFrom))).not.toContain("foreign hello");
       expect(JSON.stringify(deliveredFrom(foreignFrom))).not.toContain("group hello");
+      // The fake models the group chat honestly (it answers `chat.type:
+      // "group"` for that chat id, like the real API instead of always
+      // "private"), and nothing was ever addressed to it.
+      expect(server.groupChatId).toBe(GROUP_CHAT_ID);
+      expect(server.outbound.some((entry) => entry.body.chat_id === GROUP_CHAT_ID)).toBe(false);
 
       // (c) disable: the setting flips, the credential stays, the loop stops
       const disabled = await tgPost("/api/telegram/disable", {}, token);
@@ -919,16 +1088,40 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
       await sleep(1600);
       expect(deliveredFrom(afterClearFrom)).toEqual([]);
 
-      // (h) secrets: nowhere in the state document, the process logs or the
-      // wire — and the owner's chat messages never carry it either
+      // (h) secrets: nowhere in the state document, the process logs, the rest
+      // of the data home or the wire — and the owner's chat messages never
+      // carry it either
       const state = await readState();
       expect(JSON.stringify(state)).not.toContain(BOT_TOKEN);
+      // The UNION of every boot's output, not just this boot's: the token is
+      // first submitted during the FIRST boot of the file.
+      expect(allOut).not.toContain(BOT_TOKEN);
+      expect(allErr).not.toContain(BOT_TOKEN);
       expect(childOut).not.toContain(BOT_TOKEN);
       expect(childErr).not.toContain(BOT_TOKEN);
       expect(JSON.stringify(server.outbound)).not.toContain(BOT_TOKEN);
+      // Everything the server wrote under $DSH_HOME, except the credential
+      // store (which legitimately holds it) and installed code: a token that
+      // leaked into settings.yaml, another state file or a stray temp file
+      // would be caught here. The scan proves it is not vacuous first: a
+      // planted token is detected, the credential store is NOT reported (its
+      // token is the legitimate one), and only then the home is asserted clean.
+      const planted = join(home, "leak-probe.txt");
+      await writeFile(planted, `planted probe: ${BOT_TOKEN}\n`);
+      const detected = await scanTreeForText(home, BOT_TOKEN);
+      expect(detected.hits, "the home scan did not detect a planted token").toContain(planted);
+      expect(detected.hits, "the credential store must be excluded from the scan").not.toContain(
+        join(home, ".credentials.yaml")
+      );
+      await rm(planted, { force: true });
+      const scanned = await scanTreeForText(home, BOT_TOKEN);
+      expect(scanned.scanned, `the home scan was vacuous (${JSON.stringify(scanned)})`).toBeGreaterThan(5);
+      expect(scanned.hits, `the token leaked into $DSH_HOME: ${scanned.hits.join(", ")}`).toEqual([]);
       // the loop really ran in this scenario (the getUpdates assertions above
       // would otherwise be vacuous on a channel that never polled)
       expect(server.getUpdatesRequests().length).toBeGreaterThan(0);
+      // enable → disable → enable never produced a second simultaneous poll
+      expect(refusedPolls(), JSON.stringify(refusedPolls())).toEqual([]);
       for (const body of telegramResponses) {
         expect(body, `telegram response leaked the token: ${body}`).not.toContain(BOT_TOKEN);
         const parsed = JSON.parse(body) as unknown;
