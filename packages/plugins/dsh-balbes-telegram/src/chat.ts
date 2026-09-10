@@ -1,5 +1,5 @@
 import type { AgentTaskRunner, WorkspaceRef } from "./agentTask.js";
-import { workspaceRefKey } from "./agentTask.js";
+import { QUEUE_MAX_WAITING, workspaceRefKey } from "./agentTask.js";
 import type { BotClient } from "./bot.js";
 import {
   fileKeyboard,
@@ -148,7 +148,11 @@ const DEFAULT_FILE_PAGE_CHARS = 3000;
 const DEFAULT_MAX_FILE_BYTES = 256 * 1024;
 /** Headroom kept free on a file page for its header and the truncation note. */
 const FILE_PAGE_HEADROOM = 256;
-/** Bound on remembered rendered views: a long-lived chat cannot grow forever. */
+/**
+ * Bound on remembered rendered views: a long-lived chat cannot grow forever.
+ * Eviction drops the LEAST RECENTLY USED entry, so a listing the owner keeps
+ * pressing stays pressable while unattended ones fall out.
+ */
 const MAX_SNAPSHOTS = 64;
 
 const WELCOME = "Привет! Я агент твоего сервера.";
@@ -160,8 +164,14 @@ const NO_ACTIVE_HINT = "Воркспейс не выбран — нажмите 
 const TASK_ACCEPTED = "Задача принята…";
 const TASK_HINT =
   "Отправьте задачу текстом — я выполню её в этом воркспейсе.";
+/**
+ * Stated with the runner's own constant: the queue depth is the runner's
+ * contract, and a copy that hardcoded "3" would lie the moment it changed.
+ * (The Russian plural is written for the current value; changing the constant
+ * to 1 or 5 needs the wording revisited — chat.test.ts pins the rendered text.)
+ */
 const QUEUE_FULL =
-  "В этом воркспейсе уже 3 задачи в очереди — дождитесь завершения";
+  `В этом воркспейсе уже ${QUEUE_MAX_WAITING} задачи в очереди — дождитесь завершения`;
 const BUSY = "Задача уже выполняется…";
 const WORKSPACE_GONE = "Воркспейс удалён — выберите другой";
 const RESET_CONFIRM =
@@ -353,10 +363,17 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
    * The snapshot of one rendered message. The chat is checked as well as the
    * message id: `message_id` is only unique per chat, and a lookup that mixed
    * two chats would render one chat's data into the other.
+   *
+   * A hit is re-inserted so the map's insertion order is recency order, which
+   * is what {@link putSnapshot}'s eviction relies on (LRU). `Map.set` alone
+   * does NOT refresh an existing key's position, so the delete is required.
    */
   function snapshotOf(chatId: number, messageId: number): Snapshot | undefined {
     const snapshot = snapshots.get(messageId);
-    return snapshot !== undefined && snapshot.chatId === chatId ? snapshot : undefined;
+    if (snapshot === undefined || snapshot.chatId !== chatId) return undefined;
+    snapshots.delete(messageId);
+    snapshots.set(messageId, snapshot);
+    return snapshot;
   }
 
   function applyActive(ref: WorkspaceRef | undefined): void {

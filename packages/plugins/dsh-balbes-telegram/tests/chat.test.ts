@@ -493,6 +493,26 @@ describe("chat machine: picking a workspace", () => {
     expect(h.machine.activeWorkspace()).toEqual(project("alpha"));
   });
 
+  it("evicts the least recently USED snapshot, so a pressed listing survives the next overflow", async () => {
+    const h = makeHarness();
+    h.workspaces.projects.push("alpha");
+    // 1) the listing the owner will keep pressing
+    const keep = 800;
+    await h.machine.onCallback(callback("ws", keep));
+    // 2) fill the bound (64 remembered snapshots) with newer listings
+    for (let i = 1; i < 64; i++) await h.machine.onCallback(callback("ws", keep + i));
+    // 3) press the oldest listing: resolving it must refresh its recency
+    await h.machine.onCallback(callback("ws:pick:1", keep));
+    expect(h.machine.activeWorkspace()).toEqual(project("alpha"));
+    // 4) one more render overflows the bound and evicts the true LRU entry
+    await h.machine.onCallback(callback("ws", 900));
+    // 5) the pressed listing is still pressable. Without the recency refresh it
+    //    would still have been the oldest entry, and step 4 would have dropped it.
+    await h.machine.onCallback(callback("ws:pick:0", keep));
+    expect(h.machine.activeWorkspace()).toEqual(HOME);
+    expect(h.bot.answers.at(-1)!.text ?? "").not.toContain("устарел");
+  });
+
   it("keeps the active workspace across a boot restore without persisting it again", () => {
     const h = makeHarness();
 
