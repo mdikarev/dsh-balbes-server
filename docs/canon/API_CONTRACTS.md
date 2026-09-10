@@ -14,7 +14,8 @@
   `workspaces.list`, `workspaces.create`, `workspaces.delete`,
   `workspaces.tree`, `workspaces.events`, `models.list`, `models.catalog`,
   `models.save`, `models.delete`, `models.default`, `telegram.status`,
-  `telegram.save`, `telegram.test`, `telegram.disable`, `telegram.clear-token`.
+  `telegram.save`, `telegram.test`, `telegram.disable`, `telegram.clear-token`,
+  `sessions.list`.
 - Вне scope: статика SPA (не API), внутренние сервисные интерфейсы Cordis
   (в т.ч. сервис `balbesModels` и командная поверхность Telegram-канала),
   streaming-доставка ответов модели (Telegram отправляет финальные сообщения и
@@ -291,6 +292,17 @@
 - response: `{status: TelegramStatus}`
 - errors: 401
 - notes: удаляет secret через credentials, автоматически снимает `enabled` и останавливает polling (та же граница остановки, что у `telegram.disable`).
+
+### sessions.list — сессии воркспейса
+- method: POST
+- path: /api/sessions/list
+- auth: bearer
+- request: `{scope: "home" | "project", name?: string}` (`name` обязателен для `project`, запрещён для `home`)
+- response: `{sessions: [{id: string, title: string | null, channel: string, createdAt: string(ISO)}]}` (новейшие первыми)
+- errors: 400 (битая форма тела/scope/лишний name), 401, 404 (проект не найден), 500 (реестр нечитаем/битый, отказ движка)
+- notes: список — записи серверного реестра воркспейса (`$DSH_HOME/workspace-sessions.json`);
+  заголовок и `createdAt` берутся из движка одним вызовом `sessionQuery.readTitleSnapshots`;
+  `id`, неизвестный движку, из ответа выпадает; реестр чтением не переписывается.
 
 ## Rules & invariants
 
