@@ -697,4 +697,34 @@ describe("composeAgentSetup tool surface", () => {
       composeAgentSetup(makeAgentCtx(undefined), { root: "/tmp/ws-root", selection: SELECTION })
     ).not.toThrow();
   });
+
+  /**
+   * The runner hands the SAME setup callback to `agents.create` and
+   * `agents.resume`; this drives each one exactly as the registry would and
+   * shows the restriction (and the guard) landing in the agent scope either
+   * way, so a resumed session cannot come back with the full tool surface.
+   */
+  it("installs the restriction and the guard in both the create and the resume setup", async () => {
+    const registered = [...KEPT_BY_CONTRACT, "bash", "str_replace_editor", "web_fetch"];
+    const created = await makeRunner();
+    await created.runner.run(PROJECT_ALPHA, "first task");
+    expect(created.agents.createOpts).toHaveLength(1);
+    const createTools = makeTools(registered);
+    created.agents.createOpts[0]!.setup(makeAgentCtx(createTools));
+    expect(createTools.restrictions).toEqual([{ allow: KEPT_BY_CONTRACT }]);
+    expect(createTools.guards).toHaveLength(1);
+    // The setup carries the resolved workspace root of the key.
+    expect(createTools.guards[0]!({ name: "read", arguments: { file_path: "../x" } })).toContain(
+      "outside the workspace root"
+    );
+
+    const resumed = await makeRunner();
+    await resumed.runner.run(PROJECT_BRAVO, "resume me", { sessionId: "session-known" });
+    expect(resumed.agents.resumeOpts).toHaveLength(1);
+    expect(resumed.agents.createOpts).toHaveLength(0);
+    const resumeTools = makeTools(registered);
+    resumed.agents.resumeOpts[0]!.setup(makeAgentCtx(resumeTools));
+    expect(resumeTools.restrictions).toEqual([{ allow: KEPT_BY_CONTRACT }]);
+    expect(resumeTools.guards).toHaveLength(1);
+  });
 });
