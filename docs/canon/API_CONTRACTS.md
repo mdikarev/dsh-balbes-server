@@ -143,7 +143,9 @@
 - errors: 401
 - notes: отдаёт состояние движка: роуты провайдеров (settings-секция
   `llm-pi-ai`); встроенный `deepseek-official` в списке всегда, его модели —
-  из рантайм-каталога движка dsh (`deepseek-v4-flash`, `deepseek-v4-pro`,
+  объединение builtin-каталога pi-ai и нативного каталога движка
+  `dsh-llm-deepseek` без дублей: 4 модели (`deepseek-flash` — дефолт свежего
+  профиля движка 0.1.5, `deepseek-v4-flash`, `deepseek-v4-pro`,
   `deepseek-v4-flash-vision-exp`); pinned-список DeepSeek — только fallback
   при недоступности рантайм-каталога, синхронизируется по движку.
   Пресеты (`kind: "preset"`) — подключения по каталоговым провайдерам
@@ -169,12 +171,14 @@
 - response: `{provider: string, models: [{id: string, name?: string}]}`
 - errors: 400 `invalid-provider` (провайдер вне каталога движка: не
   `deepseek-official` и не один из 11 пресетов, в т.ч. custom), 401
-- notes: список моделей провайдера — из рантайм-каталога движка dsh (pi-ai
-  builtin + каталог dsh-llm-deepseek); модели не хардкодятся как основной
+- notes: список моделей провайдера — из рантайм-каталога движка dsh
+  (builtin-каталог pi-ai, а для `deepseek-official` — его объединение с
+  нативным каталогом `dsh-llm-deepseek`); модели не хардкодятся как основной
   источник (pinned-список DeepSeek — только fallback при недоступности
   рантайм-каталога).
-  DeepSeek официальный — 3 модели каталога движка (`deepseek-v4-flash`,
-  `deepseek-v4-pro`, `deepseek-v4-flash-vision-exp`); пресеты (11
+  DeepSeek официальный — 4 модели каталога движка (`deepseek-flash`,
+  `deepseek-v4-flash`, `deepseek-v4-pro`,
+  `deepseek-v4-flash-vision-exp`); пресеты (11
   каталоговых провайдеров) — модели их builtin-каталога в движке. Ручка —
   источник для выбора моделей при подключении/правке провайдера в UI
   (ADMIN_UI.md); выбранные модели подключения (chosen) остаются источником
@@ -198,7 +202,8 @@
   роут обновляется, отсутствующий создаётся. Правка, убирающая модель,
   на которой стоит дефолт, → 409 `default-in-use`: владелец сначала меняет
   дефолтную модель. Для deepseek сохраняется только ключ (URL фиксирован;
-  модели — из рантайм-каталога движка dsh: `deepseek-v4-flash`,
+  модели — объединение builtin-каталога pi-ai и нативного каталога
+  `dsh-llm-deepseek` без дублей: `deepseek-flash`, `deepseek-v4-flash`,
   `deepseek-v4-pro`, `deepseek-v4-flash-vision-exp`; pinned-список —
   только fallback при недоступности каталога, синхронизируется по движку). Валидация: baseURL — валидный http(s)-URL;
   модели custom — ≥ 1 id без пробелов/запятых. `key` передан — пишет ref
