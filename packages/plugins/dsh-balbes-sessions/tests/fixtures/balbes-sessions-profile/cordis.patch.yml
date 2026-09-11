@@ -1,0 +1,7 @@
+# Тестовая композиция: dsh-base + host-бандл (из package.json) + воркспейсы
+# (нужны и для /api/workspaces/create, и как зависимость balbes-sessions).
+- insert:
+    - id: balbes-workspaces
+      name: 'dsh-balbes-workspaces'
+    - id: balbes-sessions
+      name: 'dsh-balbes-sessions'

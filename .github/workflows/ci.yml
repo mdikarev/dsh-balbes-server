@@ -133,3 +133,9 @@ jobs:
         env:
           RUN_REAL: "1"
         run: bash node_modules/.bin/vitest run tests/agentTask.real.test.ts tests/integration.test.ts
+
+      - name: REAL suites — workspace sessions (registry + sessions.list)
+        working-directory: packages/plugins/dsh-balbes-sessions
+        env:
+          RUN_REAL: "1"
+        run: bash node_modules/.bin/vitest run tests/integration.test.ts
