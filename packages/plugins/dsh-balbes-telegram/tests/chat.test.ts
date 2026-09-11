@@ -45,14 +45,17 @@ function markupOf(extra: { reply_markup?: unknown } | undefined): Markup | undef
   return extra?.reply_markup as Markup | undefined;
 }
 
-function makeBot(opts: { failEdits?: number; failSends?: number } = {}): {
+function makeBot(opts: { failEdits?: number; failEditPlan?: boolean[]; failSends?: number; deferEditAt?: number } = {}): {
   bot: BotClient;
   sent: SentCall[];
   edits: EditCall[];
+  landed: EditCall[];
   answers: Array<{ id: string; text: string | undefined }>;
   texts: () => string[];
   editTexts: () => string[];
   lastEdit: () => EditCall;
+  messageText: (messageId: number) => string | undefined;
+  releaseDeferredEdit: () => void;
   buttons: (markup: Markup | undefined) => MarkupButton[];
   data: (markup: Markup | undefined) => string[];
   buttonByData: (markup: Markup | undefined, data: string) => MarkupButton | undefined;
@@ -66,9 +69,26 @@ function makeBot(opts: { failEdits?: number; failSends?: number } = {}): {
   let nextSentId = 900_000;
   // The progress-card tests need a Telegram that refuses work: `failEdits`
   // refuses the first N edits (a live card gives up after three of them),
-  // `failSends` the first N sends (a task whose card was never sent).
+  // `failEditPlan` refuses exactly the attempts where the plan says so — the
+  // only way to script a fail/succeed/fail mix — and `failSends` the first N
+  // sends (a task whose card was never sent).
   let editFailures = opts.failEdits ?? 0;
   let sendFailures = opts.failSends ?? 0;
+  const plan = opts.failEditPlan;
+  let attempts = 0;
+  /**
+   * What each card message actually SAYS, and the edits that got there in the
+   * order they landed. A message changes only once Telegram answered, so a call
+   * that is still in flight (see `deferEditAt`) has changed nothing yet: this is
+   * what makes a late tick detectable at all.
+   */
+  const messages = new Map<number, string>();
+  const landed: EditCall[] = [];
+  let deferred = 0;
+  let releaseDeferred!: () => void;
+  const deferredGate = new Promise<void>((resolve) => {
+    releaseDeferred = resolve;
+  });
   const bot: BotClient = {
     async getMe() {
       return {};
@@ -83,16 +103,23 @@ function makeBot(opts: { failEdits?: number; failSends?: number } = {}): {
       }
       const messageId = nextSentId++;
       sent.push({ chatId, messageId, text, markup: markupOf(extra) });
+      messages.set(messageId, text);
       return messageId;
     },
     async editMessageText(chatId, messageId, text, extra) {
+      const call = { chatId, messageId, text, markup: markupOf(extra) };
       // Recorded BEFORE the refusal: the attempted calls are what the
       // give-up-after-three-edits test counts.
-      edits.push({ chatId, messageId, text, markup: markupOf(extra) });
-      if (editFailures > 0) {
-        editFailures -= 1;
-        throw new Error("editMessageText failed");
+      edits.push(call);
+      const attempt = ++attempts;
+      const refused = plan === undefined ? editFailures-- > 0 : plan[attempt - 1] === true;
+      if (refused) throw new Error("editMessageText failed");
+      if (opts.deferEditAt === attempt) {
+        deferred += 1;
+        await deferredGate;
       }
+      landed.push(call);
+      messages.set(messageId, text);
     },
     async answerCallbackQuery(callbackQueryId, opts) {
       answers.push({ id: callbackQueryId, text: opts?.text });
@@ -106,10 +133,15 @@ function makeBot(opts: { failEdits?: number; failSends?: number } = {}): {
     bot,
     sent,
     edits,
+    landed,
     answers,
     texts: () => sent.map((call) => call.text),
     editTexts: () => edits.map((call) => call.text),
     lastEdit: () => edits[edits.length - 1]!,
+    messageText: (messageId) => messages.get(messageId),
+    releaseDeferredEdit: () => {
+      if (deferred > 0) releaseDeferred();
+    },
     buttons,
     data: (markup) => buttons(markup).map((button) => button.callback_data ?? ""),
     buttonByData: (markup, data) => buttons(markup).find((button) => button.callback_data === data),
@@ -319,12 +351,16 @@ function makeHarness(
     models?: ModelsFake;
     progressIntervalMs?: number;
     failEdits?: number;
+    failEditPlan?: boolean[];
     failSends?: number;
+    deferEditAt?: number;
   } = {}
 ): Harness {
   const bot = makeBot({
     ...(opts.failEdits === undefined ? {} : { failEdits: opts.failEdits }),
-    ...(opts.failSends === undefined ? {} : { failSends: opts.failSends })
+    ...(opts.failEditPlan === undefined ? {} : { failEditPlan: opts.failEditPlan }),
+    ...(opts.failSends === undefined ? {} : { failSends: opts.failSends }),
+    ...(opts.deferEditAt === undefined ? {} : { deferEditAt: opts.deferEditAt })
   });
   const workspaces = makeWorkspaces();
   const runner = makeRunner();
@@ -744,8 +780,8 @@ describe("chat machine: tasks", () => {
       "⏳ Дом агента · 0:00",
       "В этом воркспейсе уже 3 задачи в очереди — дождитесь завершения"
     ]);
-    // Refused before it ran: the card stops claiming a task is on its way.
-    expect(h.bot.lastEdit().text).toBe("✅ Готово · 0:00 · 0 шагов");
+    // Refused before it ran: the card must not assert a success (ruling 16).
+    expect(h.bot.lastEdit().text).toBe("⚠️ Ошибка · 0:00: очередь заполнена");
     expect(h.machine.activeWorkspace()).toEqual(HOME);
   });
 
@@ -758,7 +794,7 @@ describe("chat machine: tasks", () => {
     await settle();
 
     expect(h.bot.texts()).toEqual(["⏳ Дом агента · 0:00", "Задача уже выполняется…"]);
-    expect(h.bot.lastEdit().text).toBe("✅ Готово · 0:00 · 0 шагов");
+    expect(h.bot.lastEdit().text).toBe("⚠️ Ошибка · 0:00: задача уже выполняется");
     expect(h.machine.activeWorkspace()).toEqual(HOME);
   });
 
@@ -1147,6 +1183,95 @@ describe("chat machine: progress card", () => {
       expect(h.runner.runs).toEqual([{ ref: HOME, text: "долгая" }]);
       expect(h.bot.sent.at(-1)!.text).toBe("готово");
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("counts three failures IN A ROW, not three failures ever", async () => {
+    vi.useFakeTimers();
+    try {
+      // fail / fail / ok / fail / fail / ok / ok: four failures in total, but
+      // never three consecutive ones, so the poll must keep the card alive. A
+      // counter that is never cleared would give up on tick 4 and silence a card
+      // that was working perfectly well.
+      const h = makeHarness({
+        progressIntervalMs: 3500,
+        failEditPlan: [true, true, false, true, true, false, false]
+      });
+      withActive(h);
+      const gate = h.runner.hold();
+      await h.machine.onMessage(message("долгая"));
+      const cardId = h.bot.sent[0]!.messageId;
+      h.runner.progress.mockReturnValue({
+        phase: "running", taskText: "долгая", startedAt: Date.now(), steps: [{ name: "read", status: "running" }], queued: 0
+      });
+
+      for (let i = 0; i < 7; i++) await vi.advanceTimersByTimeAsync(3500);
+
+      // Every tick was attempted: the successful edits cleared the failure count.
+      expect(h.bot.edits).toHaveLength(7);
+      expect(h.warns.filter((line) => line.includes("progress card edit failed"))).toHaveLength(4);
+      // …and the ticks that DID land kept the card live and up to date.
+      expect(h.bot.landed).toHaveLength(3);
+      expect(h.bot.messageText(cardId)).toContain("⏳ Дом агента");
+
+      gate.release({ ok: true, text: "готово", sessionId: "s-1" });
+      await drain();
+      expect(h.bot.sent.at(-1)!.text).toBe("готово");
+      expect(h.bot.messageText(cardId)).toContain("✅ Готово");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never lets a tick in flight land after the receipt", async () => {
+    // Built before the fake clock so the `finally` below can always release the
+    // held edit, even if an assertion above it failed.
+    const h = makeHarness({ progressIntervalMs: 3500, deferEditAt: 1 });
+    vi.useFakeTimers();
+    try {
+      // The first card edit's Telegram round-trip stays open: it is still on the
+      // wire when the run settles. Two edits to one message have no ordering
+      // guarantee, and on the cancelled path the receipt is the owner's ONLY
+      // notification, so the run must wait for that tick before stamping.
+      withActive(h);
+      const gate = h.runner.hold();
+      await h.machine.onMessage(message("долгая"));
+      const cardId = h.bot.sent[0]!.messageId;
+      h.runner.progress.mockReturnValue({
+        phase: "running", taskText: "долгая", startedAt: Date.now(), steps: [{ name: "read", status: "running" }], queued: 0
+      });
+
+      await vi.advanceTimersByTimeAsync(3500);
+      expect(h.bot.edits).toHaveLength(1);
+      expect(h.bot.edits[0]!.text).toContain("⏳ Дом агента");
+
+      // A second tick comes due while that edit is still on the wire: the
+      // interval does not wait for the previous round-trip, so two ticks CAN
+      // overlap, and the next one is held back until the first has landed.
+      await vi.advanceTimersByTimeAsync(3500);
+      expect(h.bot.edits).toHaveLength(1);
+
+      gate.release({ ok: false, code: "cancelled", message: "task cancelled by the owner" });
+      await drain();
+
+      // No receipt yet: the card is not idle, so nothing may be stamped.
+      expect(h.bot.landed).toHaveLength(0);
+      expect(h.bot.messageText(cardId)).toBe(HOME_CARD);
+
+      h.bot.releaseDeferredEdit();
+      await drain();
+
+      // Both late ticks landed first, and the receipt — not a stale live card —
+      // is what the message ends up saying.
+      expect(h.bot.landed).toHaveLength(3);
+      expect(h.bot.landed[0]!.text).toContain("⏳ Дом агента · 0:03");
+      expect(h.bot.landed[1]!.text).toContain("⏳ Дом агента · 0:07");
+      expect(h.bot.landed.at(-1)!.text).toBe("⏹ Остановлено владельцем · 0:07");
+      expect(h.bot.messageText(cardId)).toBe("⏹ Остановлено владельцем · 0:07");
+    } finally {
+      // A test that fails before the release must not leave the tick hanging.
+      h.bot.releaseDeferredEdit();
       vi.useRealTimers();
     }
   });

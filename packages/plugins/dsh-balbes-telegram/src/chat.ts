@@ -286,6 +286,13 @@ const STOP_DROPPED = (count: number): string => `Отменено задач в 
 const QUEUE_FULL =
   `В этом воркспейсе уже ${QUEUE_MAX_WAITING} задачи в очереди — дождитесь завершения`;
 const BUSY = "Задача уже выполняется…";
+/**
+ * The same refusals said short enough for the receipt line that carries them
+ * (`⚠️ Ошибка · 0:12: очередь заполнена`). A task that never started is an
+ * error, not a success: «✅ Готово» would assert a run that never happened.
+ */
+const QUEUE_FULL_DETAIL = "очередь заполнена";
+const BUSY_DETAIL = "задача уже выполняется";
 const WORKSPACE_GONE = "Воркспейс удалён — выберите другой";
 /**
  * The same fact as the message above, said short enough for the receipt line
@@ -482,6 +489,15 @@ interface ProgressCardHandle {
    */
   steps(): number;
   stop(): void;
+  /**
+   * Resolves when the tick that is in flight right now (if any) has finished its
+   * Telegram round-trip. {@link ProgressCardHandle.stop} only prevents NEW ticks,
+   * so a receipt stamped without awaiting this can be overtaken by an edit that
+   * was already on the wire — and on the cancelled/reset paths that receipt is
+   * the owner's only notification. `runTask` therefore stops the card and then
+   * waits for it to be idle before writing the receipt.
+   */
+  idle(): Promise<void>;
 }
 
 /**
@@ -1057,7 +1073,8 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
    * is exactly what lets a queue card turn itself live the moment the runner
    * starts reporting this task's own text — no second timer, no shared state.
    * An unchanged text is never re-sent, and the poll gives up after three
-   * consecutive failures without touching the task itself.
+   * consecutive failed edits (a success clears the count) without touching the
+   * task itself.
    */
   function startProgressCard(
     chatId: number,
@@ -1070,8 +1087,15 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
     let lastText = initialText;
     let seenSteps = 0;
     let failures = 0;
-    const timer = setInterval(() => {
-      void (async () => {
+    /** The tick in flight, or a settled promise: what {@link idle} waits for. */
+    let pending: Promise<void> = Promise.resolve();
+    /**
+     * One poll. Never rejects: a tick that threw would otherwise become an
+     * unhandled rejection, and `runTask` awaits the tick before stamping the
+     * receipt, so a rejection here must not cost the owner their receipt.
+     */
+    const tick = async (): Promise<void> => {
+      try {
         const progress = deps.runner.progress(ref);
         // A foreign task (or nothing) is running: this card stays whatever it
         // was until the runner reports this task's own text.
@@ -1090,16 +1114,34 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
         try {
           await deps.bot.editMessageText(chatId, messageId, view.text, { reply_markup: view.keyboard });
           lastText = view.text;
+          // An edit that landed proves the card works again: three failures
+          // EVER would silence a long task that merely hiccuped three times.
+          failures = 0;
         } catch (error) {
           failures += 1;
           if (failures >= MAX_CARD_EDIT_FAILURES) clearInterval(timer);
           warn(`progress card edit failed (${codeOf(error)})`);
         }
-      })();
+      } catch (error) {
+        warn(`progress card tick failed (${codeOf(error)})`);
+      }
+    };
+    const timer = setInterval(() => {
+      // Chained, not fired loose: `idle` must cover EVERY edit on the wire, and a
+      // Telegram round-trip slower than the interval would otherwise leave two
+      // ticks overlapping with only the newest one tracked — the same
+      // out-of-order write the receipt wait exists to prevent.
+      pending = pending.then(() => tick());
     }, progressIntervalMs);
     // A card is not a reason to keep the process alive.
     timer.unref?.();
-    return { messageId, startedAt, steps: () => seenSteps, stop: () => clearInterval(timer) };
+    return {
+      messageId,
+      startedAt,
+      steps: () => seenSteps,
+      stop: () => clearInterval(timer),
+      idle: () => pending
+    };
   }
 
   /**
@@ -1108,8 +1150,8 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
    * Every way this run can end is written into the SAME message the task was
    * announced in: `card` is this task's own progress card (or `undefined` when
    * that message could not be sent, in which case there is nothing to stamp).
-   * The timer dies in the `finally`, so the receipt is the last thing the card
-   * ever shows, whatever the outcome.
+   * The `finally` stops the timer and then WAITS for the card to be idle, so the
+   * receipt is the last thing the card ever shows, whatever the outcome.
    */
   async function runTask(
     chatId: number,
@@ -1152,13 +1194,14 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
         return;
       }
       if (result.code === "queue-full") {
-        // Refused before it ever ran: the card stops claiming a task is coming.
-        receipt = { kind: "done", steps: 0 };
+        // Refused before it ever ran, so the card must not claim success
+        // (ruling 16): the short detail says why, the message says it in full.
+        receipt = { kind: "error", steps: 0, detail: QUEUE_FULL_DETAIL };
         await send(chatId, QUEUE_FULL);
         return;
       }
       if (result.code === "busy") {
-        receipt = { kind: "done", steps: 0 };
+        receipt = { kind: "error", steps: 0, detail: BUSY_DETAIL };
         await send(chatId, BUSY);
         return;
       }
@@ -1183,7 +1226,12 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
       receipt = { kind: "error", steps: 0, detail: phrase };
       await send(chatId, `Агент не смог выполнить задачу: ${phrase}`);
     } finally {
+      // Stop the card AND wait for the tick that is already on the wire: `stop()`
+      // alone prevents only new ticks, and two edits to one message have no
+      // ordering guarantee — a late tick would overwrite the receipt the owner
+      // has nothing else to go by (the cancelled path sends no message at all).
       card?.stop();
+      await card?.idle();
       if (card !== undefined && receipt !== undefined) {
         const view = receiptCard({ ...receipt, elapsedMs: Date.now() - card.startedAt });
         await edit(chatId, card.messageId, view.text, view.keyboard);
