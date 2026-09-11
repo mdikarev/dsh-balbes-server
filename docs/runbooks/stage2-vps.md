@@ -509,12 +509,38 @@ curl -sS -X POST http://127.0.0.1:8080/api/sessions/list \
 curl -sS -X POST http://127.0.0.1:8080/api/sessions/list \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"scope":"project","name":"nope"}' -w '\nHTTP %{http_code}\n'
-#    ожидается: HTTP 404 {"error":{"code":"not-found",...}}
+#    ожидается: HTTP 404
+#    {"error":{"code":"not-found","message":"project not found: nope"}}
+#    сообщение здесь обязательно, а не «как получится»: код not-found отдаёт и
+#    сам хост-сит, когда маршрута нет вовсе — с текстом
+#    "no route POST /api/sessions/list". Поэтому код в одиночку не отличает
+#    «проект не найден» от «плагин сессий не попал в профиль» (второй случай —
+#    см. «404 на /api/telegram/status»); если в ответе чужой message,
+#    повторите установщик.
 
 # без токена
 curl -sS -X POST http://127.0.0.1:8080/api/sessions/list \
   -H 'content-type: application/json' -d '{"scope":"home"}' -w '\nHTTP %{http_code}\n'
 #    ожидается: HTTP 401
+```
+
+Файл реестра на диске — права и форма (в стиле «Данные на диске» из чеклиста
+Telegram). Важно: **на свежей установке файла ещё нет** — `No such file or
+directory` здесь правильно, потому что реестр создаёт первая
+зарегистрированная сессия (первая задача агенту в воркспейсе). Поэтому сначала
+выполните задачу через Telegram, а потом проверяйте; если сессий в воркспейсе
+нет вообще, проверка не применяется — сверьтесь с `{"sessions":[]}` выше:
+
+```bash
+ls -l "$DSH_HOME/workspace-sessions.json"
+#    ожидается: -rw------- (600), владелец — пользователь сервиса;
+#    "No such file or directory" на свежем сервере — норма (см. абзац выше)
+
+# форма документа: version и карта workspaces с ключами home / project:<имя>
+node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log(d.version,JSON.stringify(Object.keys(d.workspaces)))' \
+  "$DSH_HOME/workspace-sessions.json"
+#    ожидается: 1 ["home"] — или ключи вида "project:alpha";
+#    в записях только sessionId и channel (заголовки и время — из логов сессий)
 ```
 
 Telegram: пять ручек `/api/telegram/*` (все — bearer, все отвечают JSON); в сводку
