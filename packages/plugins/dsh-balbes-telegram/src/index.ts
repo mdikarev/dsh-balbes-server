@@ -22,6 +22,7 @@ import {
 } from "./agentTask.js";
 import { createBotClient, type BotClient } from "./bot.js";
 import { createChatMachine, type ChatDeps, type ChatMachine, type WorkspaceFileResult, type WorkspaceTreeEntry } from "./chat.js";
+import { TELEGRAM_COMMANDS } from "./commands.js";
 import { createPoller } from "./poller.js";
 import { TelegramState, type TelegramStateData } from "./state.js";
 import { classify } from "./updates.js";
@@ -40,7 +41,17 @@ import { classify } from "./updates.js";
  */
 export const name = "balbes-telegram";
 
-/** Services this plugin depends on; the Loader injects them before apply. */
+/**
+ * Services this plugin depends on; the Loader injects them before apply.
+ *
+ * `balbesModels` is provided by the dsh-balbes-models plugin (the same
+ * list/current/saveDefault slice the chat consumes) and `balbesSessions` by the
+ * dsh-balbes-sessions plugin (the workspace session registry the channel
+ * registers its sessions in). Every name here is REQUIRED by Cordis: a profile
+ * that composes this channel must also compose both plugins — as the
+ * deployable `balbes` profile does — or this entry stays pending and the
+ * profile boot fails.
+ */
 export const inject = [
   "balbesHttp",
   "settings",
@@ -49,7 +60,8 @@ export const inject = [
   "balbesSessions",
   "agents",
   "sessions",
-  "agentDefaultModel"
+  "agentDefaultModel",
+  "balbesModels"
 ];
 
 export { TELEGRAM_BOT_TOKEN_REF, type TelegramStatus };
@@ -152,6 +164,14 @@ export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: stri
   const settings = ctx.get("settings") as SettingsLike;
   const credentials = ctx.get("credentials") as CredentialsServiceLike;
   const workspaces = ctx.get("balbesWorkspaces") as WorkspacesServiceLike | undefined;
+  // The models plugin's service, whose members are exactly the chat's `models`
+  // slice. `inject` above makes that service MANDATORY (Cordis 4 has no
+  // optional inject): a profile that composes this channel must also compose
+  // the models plugin, and dropping the `balbesModels` entry from `inject`
+  // breaks the channel instead of degrading it. This read is therefore the
+  // chat's defensive slice and nothing more — an absent service here means the
+  // composition is already broken, not that a models-less profile is supported.
+  const balbesModels = ctx.get("balbesModels") as ChatDeps["models"] | undefined;
   const sessionsRegistry = ctx.get("balbesSessions") as SessionsRegistryLike | undefined;
   if (sessionsRegistry === undefined) {
     ctx.logger.warn("balbes-telegram: balbesSessions service is not available; sessions will not be listed in the admin");
@@ -253,7 +273,9 @@ export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: stri
     getUpdates: (opts) => runtime.bot().getUpdates(opts),
     sendMessage: (chatId, text, extra) => runtime.bot().sendMessage(chatId, text, extra),
     editMessageText: (chatId, messageId, text, extra) => runtime.bot().editMessageText(chatId, messageId, text, extra),
-    answerCallbackQuery: (callbackQueryId, opts) => runtime.bot().answerCallbackQuery(callbackQueryId, opts)
+    answerCallbackQuery: (callbackQueryId, opts) => runtime.bot().answerCallbackQuery(callbackQueryId, opts),
+    setMyCommands: (commands) => runtime.bot().setMyCommands(commands),
+    setChatMenuButton: (button) => runtime.bot().setChatMenuButton(button)
   };
 
   const runnerWithSessions: AgentTaskRunner = (() => {
@@ -301,6 +323,21 @@ export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: stri
                   )
                 );
             }
+            return result;
+          }
+          // A cancelled run keeps its session (the stop's own copy promises
+          // «Контекст сохранён»), but its TaskResult carries no id — a rejected
+          // result has no sessionId field. Read it from the live handle and
+          // persist it: otherwise a workspace whose FIRST task was stopped has
+          // no mapping on disk, and a restart before any successful task starts
+          // a fresh session, which contradicts the answer the owner just got.
+          if (result.code === "cancelled") {
+            const sessionId = runner.sessionIdOf(ref);
+            // The same empty-id guard as above, for the same reason.
+            if (sessionId !== undefined && sessionId !== "" && live.sessions[key] !== sessionId) {
+              live.sessions[key] = sessionId;
+              persist();
+            }
           }
           return result;
         });
@@ -315,6 +352,12 @@ export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: stri
           persist();
         }
       },
+      async cancel(ref) {
+        // A soft stop: unlike reset below, the session mapping is KEPT, because
+        // the handle and its session survive the cancellation.
+        return runner.cancel(ref);
+      },
+      progress: (ref) => runner.progress(ref),
       sessionIdOf: (ref) => runner.sessionIdOf(ref),
       snapshot: () => runner.snapshot()
     };
@@ -325,6 +368,7 @@ export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: stri
     runner: runnerWithSessions,
     bot: chatBot,
     maxFileBytes,
+    ...(balbesModels !== undefined ? { models: balbesModels } : {}),
     onActiveChange: (ref) => {
       // An absent key is the only representation of "no workspace": the state
       // store rejects an empty string.
@@ -359,10 +403,44 @@ export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: stri
   // The runtime serializes transitions on one tail, so the joinable form below
   // and the kicked one used by the routes cannot interleave.
   let booted: Promise<void> = Promise.resolve();
+
+  /**
+   * Push the command list and the native «Меню» button to Telegram.
+   *
+   * Best-effort by design: the chat works without them (the owner can still
+   * type every command), so a rejected call must never take polling down — it
+   * only records a warning. Idempotent: the same table is pushed on every
+   * successful transition, and Telegram keeps the last write.
+   */
+  async function registerCommands(): Promise<void> {
+    let client: BotClient;
+    try {
+      client = runtime.bot();
+    } catch {
+      return; // no token stored yet: nothing to register against
+    }
+    try {
+      await client.setMyCommands(
+        TELEGRAM_COMMANDS.map((spec) => ({ command: spec.command, description: spec.description }))
+      );
+      await client.setChatMenuButton();
+    } catch (error) {
+      // bot.ts masks the token in every error it raises, so this line names the
+      // failure without leaking the credential.
+      ctx.logger.warn(`balbes-telegram: command registration failed: ${reasonOf(error)}`);
+    }
+  }
+
   /** Joinable: the settings watcher returns this, which serializes commits. */
   const reconcile = async (): Promise<void> => {
     await booted;
     await runtime.apply();
+    // The list belongs to a live channel: registering on a transition that
+    // leaves the loop OFF (no token, disabled, no allowlist) would make an
+    // admin path that does not poll call Telegram — and the settings watcher
+    // awaits this promise, so that call would be charged to the SPA's commit.
+    // Canon says it plainly: registered «на каждом успешном старте polling».
+    if (poller.status().state === "running") await registerCommands();
   };
   /**
    * Fire-and-forget kick for the admin routes: a transition may have to wait out

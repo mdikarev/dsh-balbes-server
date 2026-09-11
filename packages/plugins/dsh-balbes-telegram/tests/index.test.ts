@@ -158,36 +158,101 @@ async function call(path: string, body: unknown = {}): Promise<{ status: number;
   return { status: box.status, raw: box.raw, json: JSON.parse(box.raw) as unknown };
 }
 
-/** Answer the two Bot API methods the plugin calls, over loopback. */
-async function startStubBot(updateId: number | undefined): Promise<{ url: string; methods: string[] }> {
+interface StubCall {
+  method: string;
+  body: Record<string, unknown>;
+}
+
+interface StubBotOptions {
+  /** Methods answered with a Telegram error envelope instead of success. */
+  failMethods?: string[];
+}
+
+interface StubBot {
+  url: string;
+  /** Every method name the plugin called, in call order. */
+  methods: string[];
+  calls: StubCall[];
+  lastCall(method: string): StubCall | undefined;
+  /** True once the stub has answered one more getUpdates: the loop is alive. */
+  polling(timeoutMs?: number): Promise<boolean>;
+}
+
+/**
+ * Answer the Bot API over loopback and record every call.
+ *
+ * The queued update batch belongs to `getUpdates` ALONE: a registration call
+ * (`setMyCommands` / `setChatMenuButton`) that was handed the batch would
+ * corrupt this file's delivery assertions instead of reporting the mistake.
+ * Every other method therefore answers the plain `true` Telegram sends.
+ */
+async function startStubBot(updateId: number | undefined, options: StubBotOptions = {}): Promise<StubBot> {
   const methods: string[] = [];
+  const calls: StubCall[] = [];
+  const failMethods = options.failMethods ?? [];
   let delivered = false;
   const server = createServer((req, res) => {
     const method = (req.url ?? "").split("/").pop() ?? "";
     methods.push(method);
-    req.on("data", () => {});
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
     req.on("end", () => {
-      let result: unknown = [];
-      if (method === "getMe") result = { username: "stub_bot", id: 1 };
-      else if (updateId !== undefined && !delivered) {
-        delivered = true;
-        result = [
-          {
-            update_id: updateId,
-            message: { message_id: 1, chat: { id: 5, type: "private" }, from: { id: 999, is_bot: false }, text: "hello" }
-          }
-        ];
+      let body: Record<string, unknown> = {};
+      try {
+        const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        if (typeof parsed === "object" && parsed !== null) body = parsed as Record<string, unknown>;
+      } catch {
+        body = {};
       }
-      const payload = JSON.stringify({ ok: true, result });
+      calls.push({ method, body });
+
+      if (failMethods.includes(method)) {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error_code: 400, description: `stub rejected ${method}` }));
+        return;
+      }
+
+      let result: unknown = true;
+      if (method === "getMe") result = { username: "stub_bot", id: 1 };
+      else if (method === "getUpdates") {
+        result = [];
+        if (updateId !== undefined && !delivered) {
+          delivered = true;
+          result = [
+            {
+              update_id: updateId,
+              message: { message_id: 1, chat: { id: 5, type: "private" }, from: { id: 999, is_bot: false }, text: "hello" }
+            }
+          ];
+        }
+      }
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(payload);
+      res.end(JSON.stringify({ ok: true, result }));
     });
   });
   servers.push(server);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (address === null || typeof address === "string") throw new Error("stub server has no port");
-  return { url: `http://127.0.0.1:${address.port}`, methods };
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    methods,
+    calls,
+    lastCall(method: string): StubCall | undefined {
+      for (let i = calls.length - 1; i >= 0; i--) if (calls[i]!.method === method) return calls[i];
+      return undefined;
+    },
+    async polling(timeoutMs = 2000): Promise<boolean> {
+      const polls = (): number => methods.filter((name) => name === "getUpdates").length;
+      const seen = polls();
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (polls() > seen) return true;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      return false;
+    }
+  };
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -226,7 +291,9 @@ describe("balbes-telegram plugin", () => {
         "balbesWorkspaces",
         "agents",
         "sessions",
-        "agentDefaultModel"
+        "agentDefaultModel",
+        // the models plugin's service: without it /model answers MODELS_UNAVAILABLE
+        "balbesModels"
       ])
     );
     expect(typeof Config).toBe("function");
@@ -486,5 +553,54 @@ describe("balbes-telegram polling runtime (loopback Bot API)", () => {
 
     await sleep(900);
     expect(stub.methods.filter((method) => method === "getUpdates")).toHaveLength(polls);
+  });
+
+  it("pushes the command list on every successful runtime transition", async () => {
+    const stub = await startStubBot(undefined);
+    // Enabled from boot onward: the boot transition starts the loop, and the
+    // registration must ride that same transition rather than wait for a commit.
+    settings.scope = new FakeScope({ enabled: true, allowedUserId: 7 });
+    credentials.refs.set(TELEGRAM_BOT_TOKEN_REF, TOKEN);
+    apply(makeCtx(), { dshHome: home, apiBase: stub.url });
+
+    await vi.waitFor(() => expect(stub.methods).toContain("setMyCommands"), { timeout: 2000 });
+
+    // The list the owner sees is the command table, in order and nothing else.
+    const call = stub.lastCall("setMyCommands")!;
+    const commands = call.body.commands as Array<{ command: string; description: string }>;
+    expect(commands.map((entry) => entry.command)).toEqual([
+      "menu",
+      "status",
+      "ws",
+      "model",
+      "reset",
+      "stop",
+      "help"
+    ]);
+    expect(commands.every((entry) => entry.description.trim() !== "")).toBe(true);
+    // …and the native «Меню» button is switched on with it.
+    await vi.waitFor(() => expect(stub.methods).toContain("setChatMenuButton"), { timeout: 2000 });
+
+    // A later successful transition (the allowlist moves) registers again.
+    const registered = stub.calls.filter((entry) => entry.method === "setMyCommands").length;
+    await settings.scope.commit({ enabled: true, allowedUserId: 9 }, { enabled: true, allowedUserId: 7 });
+    await vi.waitFor(
+      () => expect(stub.calls.filter((entry) => entry.method === "setMyCommands").length).toBeGreaterThan(registered),
+      { timeout: 2000 }
+    );
+  });
+
+  it("keeps polling alive when command registration fails", async () => {
+    const stub = await startStubBot(undefined, { failMethods: ["setMyCommands"] });
+    credentials.refs.set(TELEGRAM_BOT_TOKEN_REF, TOKEN);
+    apply(makeCtx(), { dshHome: home, apiBase: stub.url });
+
+    await settings.scope.commit({ enabled: true, allowedUserId: 7 }, { enabled: false, allowedUserId: null });
+
+    expect(warns.some((line) => line.includes("command registration failed"))).toBe(true);
+    // The failure trace names the failure and never the credential.
+    expect(warns.join("\n")).not.toContain(TOKEN);
+    // The rejected registration is best-effort: the loop keeps polling.
+    await expect(stub.polling()).resolves.toBe(true);
   });
 });

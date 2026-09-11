@@ -25,6 +25,8 @@ import { createServer } from "node:http";
  *  - `sendMessage` -> a Message with a fresh `message_id` (the chat machine
  *    keys its view snapshots by it, so callbacks in a test must reuse it).
  *  - `editMessageText` -> the edited Message; `answerCallbackQuery` -> `true`.
+ *  - `setMyCommands` / `setChatMenuButton` -> `true` (the bot's command list
+ *    and its menu button; the payload is recorded in `outbound`).
  *  - any OTHER method -> `{ok:false, error_code:404, description:"Not Found"}`
  *    (an unimplemented method must never look like a success, or the suite
  *    would silently accept a call the real API would reject).
@@ -187,6 +189,10 @@ export function startFakeBotApi({
         chat: { id: body.chat_id, type: chatTypeOf(body.chat_id) },
         text: typeof body.text === "string" ? body.text : ""
       };
+    } else if (method === "setMyCommands") {
+      result = true;
+    } else if (method === "setChatMenuButton") {
+      result = true;
     } else if (method === "answerCallbackQuery") {
       result = true;
     } else {

@@ -1,10 +1,14 @@
 import z from "@deepseek-ai/schemastery";
 import {
-  ModelConnection, DEEPSEEK_OFFICIAL_ROUTE, DEEPSEEK_API_KEY_REF,
+  DEEPSEEK_OFFICIAL_ROUTE, DEEPSEEK_API_KEY_REF,
   routeIdFromName, refNameForRoute, validateCustomPayload,
-  PROVIDER_PRESETS, isPresetProviderId, validatePresetPayload,
+  PROVIDER_PRESETS, validatePresetPayload,
   ModelCatalogReader, createEngineCatalogReader, catalogKeyForRoute, isCatalogProvider
 } from "./models.js";
+import {
+  LLM_PI_AI_NS, ModelsServiceError, createModelsService, readConnections, routeProviders,
+  type ModelsCredentialsLike, type ModelsDefaultLike, type ModelsSettingsLike
+} from "./service.js";
 
 export const name = "balbes-models";
 export const inject = ["balbesHttp", "settings", "credentials", "agentDefaultModel"];
@@ -12,20 +16,6 @@ export const Config = z.object({});
 
 export interface HttpSeatLike {
   post(path: string, auth: "public" | "bearer", handler: (req: unknown, res: ResLike, body: unknown) => Promise<void> | void): void;
-}
-interface SettingsLike {
-  get(ns: string): unknown;
-  update(ns: string, patch: object): Promise<void>;
-  replace(ns: string, section: object): Promise<void>;
-}
-interface CredentialsLike {
-  describe(ref: string): Promise<{ configured: boolean; writable: boolean }>;
-  set(ref: string, value: string): Promise<void>;
-  unset(ref: string): Promise<void>;
-}
-interface AgentDefaultModelLike {
-  currentSelection(): { provider: string; model: string };
-  saveSelection(next: { provider: string; model: string }): Promise<void>;
 }
 export interface ResLike {
   writeHead(status: number, headers?: Record<string, string>): void;
@@ -36,7 +26,6 @@ export interface ResLike {
   writableEnded: boolean;
 }
 
-const LLM_PI_AI_NS = "llm-pi-ai";
 const CUSTOM_WIRE_API = "openai-completions"; // pi-ai wire protocol for OpenAI-compatible routes
 
 /** Engine catalog reader shared by every route (one per plugin instance). */
@@ -53,67 +42,14 @@ function send(res: ResLike, status: number, body: unknown): void {
 function fail(res: ResLike, status: number, code: string, message: string): void {
   send(res, status, { error: { code, message } });
 }
-function routeProviders(settings: SettingsLike): Record<string, unknown> {
-  const section = settings.get(LLM_PI_AI_NS) as { providers?: Record<string, unknown> } | undefined;
-  return section?.providers ?? {};
-}
 /** settings.update is a NON-DELETING deep merge (dsh mergeLayers never removes
  *  keys), so a route save must fully replace the stored route entry — dropping
  *  a removed baseURL override and replacing the models list. Write the whole
  *  llm-pi-ai section via settings.replace like the delete handler does. */
-async function writeRouteConfig(settings: SettingsLike, route: string, routeConfig: Record<string, unknown>): Promise<void> {
+async function writeRouteConfig(settings: ModelsSettingsLike, route: string, routeConfig: Record<string, unknown>): Promise<void> {
   const section = settings.get(LLM_PI_AI_NS) as Record<string, unknown> | undefined;
   const providers = { ...((section?.providers ?? {}) as Record<string, unknown>) };
   await settings.replace(LLM_PI_AI_NS, { ...(section ?? {}), providers: { ...providers, [route]: routeConfig } });
-}
-function modelIdsOf(entry: unknown): string[] {
-  const models = (entry as { models?: Array<{ id?: string }> })?.models;
-  if (!Array.isArray(models)) return [];
-  const ids: string[] = [];
-  for (const m of models) if (typeof m?.id === "string") ids.push(m.id);
-  return ids;
-}
-async function readConnections(
-  credentials: CredentialsLike,
-  settings: SettingsLike,
-  defaultModel: AgentDefaultModelLike,
-  reader: ModelCatalogReader = engineCatalogReader
-): Promise<ModelConnection[]> {
-  const selection = defaultModel.currentSelection();
-  const providers = routeProviders(settings);
-  // The deepseek connection's models come from the runtime engine catalog
-  // (primary) with the pinned DEEPSEEK_OFFICIAL_MODELS list as its fallback.
-  const deepseekModels = (await reader.list(catalogKeyForRoute(DEEPSEEK_OFFICIAL_ROUTE))).map((m) => m.id);
-  const out: ModelConnection[] = [{
-    routeId: DEEPSEEK_OFFICIAL_ROUTE,
-    kind: "deepseek",
-    displayName: "DeepSeek (официальный)",
-    hasKey: (await credentials.describe(DEEPSEEK_API_KEY_REF)).configured,
-    models: deepseekModels,
-    isDefault: selection.provider === DEEPSEEK_OFFICIAL_ROUTE
-  }];
-  for (const [route, entry] of Object.entries(providers)) {
-    if (route === DEEPSEEK_OFFICIAL_ROUTE) continue;
-    const e = entry as { displayName?: string; baseURL?: string; apiKeyEnv?: string; api?: unknown };
-    const hasKey = typeof e.apiKeyEnv === "string" && (await credentials.describe(e.apiKeyEnv)).configured;
-    // Kind classification: a route whose config carries an api field was written
-    // by the v1 custom writer -> custom. A preset route's config has no api
-    // field; when its id is an allowlisted catalog provider -> preset, otherwise
-    // an api-less unknown route is still shown as a custom connection.
-    const isPreset = e.api === undefined && isPresetProviderId(route);
-    const connection: ModelConnection = {
-      routeId: route,
-      kind: isPreset ? "preset" : "custom",
-      ...(isPreset ? { providerId: route } : {}),
-      displayName: e.displayName ?? route,
-      hasKey,
-      models: modelIdsOf(entry),
-      isDefault: selection.provider === route
-    };
-    if (typeof e.baseURL === "string" && e.baseURL !== "") connection.baseURL = e.baseURL;
-    out.push(connection);
-  }
-  return out;
 }
 
 /** Registers the bearer POST /api/models/catalog route (models.catalog): a
@@ -135,21 +71,35 @@ export function registerModelsCatalogRoute(http: HttpSeatLike, reader: ModelCata
   });
 }
 
-export function apply(ctx: { get(key: string): unknown; logger: { warn(m: string): void } }, _config: unknown): void {
+export function apply(ctx: {
+  get(key: string): unknown;
+  provide(key: string, value: unknown): void;
+  logger: { warn(m: string): void };
+}, _config: unknown): void {
   const http = ctx.get("balbesHttp") as HttpSeatLike | undefined;
   if (http === undefined) {
     ctx.logger.warn("balbes-models: balbesHttp service missing; routes not registered");
     return;
   }
-  const settings = ctx.get("settings") as SettingsLike;
-  const credentials = ctx.get("credentials") as CredentialsLike;
-  const defaultModel = ctx.get("agentDefaultModel") as AgentDefaultModelLike;
+  const settings = ctx.get("settings") as ModelsSettingsLike;
+  const credentials = ctx.get("credentials") as ModelsCredentialsLike;
+  const defaultModel = ctx.get("agentDefaultModel") as ModelsDefaultLike;
+
+  // In-process facade for the Telegram channel: the same reading and the same
+  // validation as the /api/models/* routes below.
+  const modelsService = createModelsService({
+    settings,
+    credentials,
+    defaultModel,
+    reader: engineCatalogReader
+  });
+  ctx.provide("balbesModels", modelsService);
 
   registerModelsCatalogRoute(http, engineCatalogReader);
 
   http.post("/api/models/list", "bearer", async (_req, res) => {
     try {
-      send(res, 200, { connections: await readConnections(credentials, settings, defaultModel), default: defaultModel.currentSelection() });
+      send(res, 200, { connections: await modelsService.list(), default: modelsService.current() });
     } catch (error) {
       fail(res, 500, "internal", error instanceof Error ? error.message : String(error));
     }
@@ -161,7 +111,7 @@ export function apply(ctx: { get(key: string): unknown; logger: { warn(m: string
       if (b.kind === "deepseek") {
         if (typeof b.key !== "string" || b.key.trim() === "") return fail(res, 400, "invalid-key", "key is required");
         await credentials.set(DEEPSEEK_API_KEY_REF, b.key.trim());
-        send(res, 200, { connection: (await readConnections(credentials, settings, defaultModel)).find((c) => c.routeId === DEEPSEEK_OFFICIAL_ROUTE) });
+        send(res, 200, { connection: (await readConnections(credentials, settings, defaultModel, engineCatalogReader)).find((c) => c.routeId === DEEPSEEK_OFFICIAL_ROUTE) });
         return;
       }
       if (b.kind === "preset") {
@@ -192,7 +142,7 @@ export function apply(ctx: { get(key: string): unknown; logger: { warn(m: string
         await writeRouteConfig(settings, route, routeConfig);
         if (payload.key === null) await credentials.unset(apiKeyEnv);
         else if (typeof payload.key === "string" && payload.key !== "") await credentials.set(apiKeyEnv, payload.key);
-        const connection = (await readConnections(credentials, settings, defaultModel)).find((c) => c.routeId === route);
+        const connection = (await readConnections(credentials, settings, defaultModel, engineCatalogReader)).find((c) => c.routeId === route);
         send(res, 200, { connection });
         return;
       }
@@ -222,7 +172,7 @@ export function apply(ctx: { get(key: string): unknown; logger: { warn(m: string
       await writeRouteConfig(settings, route, routeConfig);
       if (payload.key === null) await credentials.unset(apiKeyEnv);
       else if (typeof payload.key === "string" && payload.key !== "") await credentials.set(apiKeyEnv, payload.key);
-      const connection = (await readConnections(credentials, settings, defaultModel)).find((c) => c.routeId === route);
+      const connection = (await readConnections(credentials, settings, defaultModel, engineCatalogReader)).find((c) => c.routeId === route);
       send(res, 200, { connection });
     } catch (error) {
       fail(res, 500, "internal", error instanceof Error ? error.message : String(error));
@@ -254,12 +204,9 @@ export function apply(ctx: { get(key: string): unknown; logger: { warn(m: string
       const b = body as { provider?: unknown; model?: unknown };
       const provider = typeof b.provider === "string" ? b.provider : "";
       const model = typeof b.model === "string" ? b.model : "";
-      const connection = (await readConnections(credentials, settings, defaultModel)).find((c) => c.routeId === provider);
-      if (connection === undefined) return fail(res, 400, "invalid-route", "no such provider connection");
-      if (!connection.models.includes(model)) return fail(res, 400, "invalid-model", "model " + model + " is not offered by " + provider);
-      await defaultModel.saveSelection({ provider, model });
-      send(res, 200, { default: { provider, model } });
+      send(res, 200, { default: await modelsService.saveDefault(provider, model) });
     } catch (error) {
+      if (error instanceof ModelsServiceError) return fail(res, 400, error.code, error.message);
       fail(res, 500, "internal", error instanceof Error ? error.message : String(error));
     }
   });

@@ -1,14 +1,19 @@
 # Profile patch of the telegram REAL composition: dsh-base + the balbes host
-# bundle (from package.json), plus the three plugins under test.
+# bundle (from package.json), plus the four standalone plugins this scenario
+# needs.
 #
 # `balbes-workspaces` provides the `balbesWorkspaces` service AND the
 # /api/workspaces/* routes the scenario drives to create projects;
 # `balbes-sessions` provides the `balbesSessions` service the plugin under test
 # registers its workspace sessions in (and owns $DSH_HOME/workspace-sessions.json);
+# `balbes-models` provides the `balbesModels` service the /model picker writes
+# through (`saveDefault`) and the /api/models/* routes;
 # `balbes-telegram` is the plugin under test (its `inject` list needs
 # `balbesHttp`, `settings`, `credentials`, `balbesWorkspaces`, `balbesSessions`,
-# `agents`, `sessions` and `agentDefaultModel` — the last one is a dsh-base row,
-# so this profile composes without the models plugin).
+# `agents`, `sessions`, `agentDefaultModel` and `balbesModels` — Cordis has no
+# optional inject, so a profile that composes this channel MUST also compose
+# both the sessions and the models plugins, exactly as the deployable `balbes`
+# profile does).
 #
 # `session-title-llm` is disabled for stub determinism: a fresh session
 # otherwise fires an EXTRA first-prompt model request (Task 1 seam fact 10),
@@ -24,5 +29,7 @@
       name: 'dsh-balbes-workspaces'
     - id: balbes-sessions
       name: 'dsh-balbes-sessions'
+    - id: balbes-models
+      name: 'dsh-balbes-models'
     - id: balbes-telegram
       name: 'dsh-balbes-telegram'

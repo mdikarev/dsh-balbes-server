@@ -2,10 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   fileKeyboard,
   listingKeyboard,
-  menuKeyboard,
+  menuRow,
   paginationRow,
   resetConfirmKeyboard,
-  workspaceActionsKeyboard,
   workspacesKeyboard
 } from "../src/keyboards.js";
 
@@ -20,19 +19,16 @@ function data(markup: { inline_keyboard: Array<Array<{ callback_data: string }>>
 }
 
 describe("keyboard builders", () => {
-  it("menuKeyboard carries the single ws code", () => {
-    expect(menuKeyboard()).toEqual({ inline_keyboard: [[{ text: "Воркспейсы", callback_data: "ws" }]] });
+  it("menuRow is the one «⬅ Меню» row every sub-card shares", () => {
+    expect(menuRow()).toEqual([{ text: "⬅ Меню", callback_data: "mnu" }]);
   });
 
-  it("workspaceActionsKeyboard carries the four active-workspace actions", () => {
-    expect(data(workspaceActionsKeyboard())).toEqual(["act:task", "act:files", "act:reset", "act:ws"]);
+  it("resetConfirmKeyboard carries reset:yes, reset:no and the way back to the menu", () => {
+    expect(data(resetConfirmKeyboard())).toEqual(["reset:yes", "reset:no", "mnu"]);
+    expect(resetConfirmKeyboard().inline_keyboard.at(-1)).toEqual(menuRow());
   });
 
-  it("resetConfirmKeyboard carries reset:yes and reset:no", () => {
-    expect(data(resetConfirmKeyboard())).toEqual(["reset:yes", "reset:no"]);
-  });
-
-  it("workspacesKeyboard renders one row per workspace with global indices", () => {
+  it("workspacesKeyboard renders one row per workspace with global indices and the menu", () => {
     const markup = workspacesKeyboard({
       rows: [
         { index: 0, label: "Дом агента" },
@@ -44,23 +40,27 @@ describe("keyboard builders", () => {
 
     expect(markup.inline_keyboard).toEqual([
       [{ text: "Дом агента", callback_data: "ws:pick:0" }],
-      [{ text: "Проект: alpha", callback_data: "ws:pick:1" }]
+      [{ text: "Проект: alpha", callback_data: "ws:pick:1" }],
+      menuRow()
     ]);
   });
 
   it("workspacesKeyboard adds ws:pg arrows only when there are several pages", () => {
     const rows = [{ index: 0, label: "Дом агента" }];
-    expect(data(workspacesKeyboard({ rows, page: 0, pages: 1 }))).toEqual(["ws:pick:0"]);
+    expect(data(workspacesKeyboard({ rows, page: 0, pages: 1 }))).toEqual(["ws:pick:0", "mnu"]);
 
     const paged = workspacesKeyboard({
       rows: [{ index: 8, label: "Проект: i" }],
       page: 1,
       pages: 2
     });
-    expect(paged.inline_keyboard.at(-1)).toEqual([
+    // Pagination, then the menu: the return row is always last, so it cannot be
+    // pushed around by the size of the page.
+    expect(paged.inline_keyboard.at(-2)).toEqual([
       { text: "◀", callback_data: "ws:pg:0" },
       { text: "▶", callback_data: "ws:pg:1" }
     ]);
+    expect(paged.inline_keyboard.at(-1)).toEqual(menuRow());
   });
 
   it("paginationRow clamps both arrows to the available pages", () => {

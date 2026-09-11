@@ -31,11 +31,67 @@ export function workspaceRefKey(ref: WorkspaceRef): string {
 
 export type TaskResult =
   | { ok: true; text: string; sessionId: string }
-  | { ok: false; code: "workspace-gone" | "agent-error" | "queue-full" | "busy"; message: string };
+  | {
+      ok: false;
+      code: "workspace-gone" | "agent-error" | "queue-full" | "busy" | "cancelled";
+      message: string;
+    };
+
+/** One tool invocation of the turn a progress read describes. */
+export interface TaskProgressStep {
+  name: string;
+  /**
+   * At most one short argument, and only for a whitelisted tool (see {@link
+   * PROGRESS_TARGET_ARG}); absent for everything else. Never file content.
+   */
+  target?: string;
+  status: "running" | "ok" | "failed";
+}
+
+/** One entry of the agent's todo list of the turn a progress read describes. */
+export interface TaskProgressTodo {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
+/**
+ * A read-only snapshot of one workspace's running turn, for the progress card.
+ *
+ * It is deliberately small and content-free: the step names plus one whitelisted
+ * short argument each, the agent's own todo list, the step number, the start
+ * time and the queue depth. Tool RESULTS are never read and the assistant's text
+ * never appears — this is a sign of life, not a stream of the answer.
+ */
+export interface TaskProgress {
+  /** The workspace's own turn: a task waiting in the queue has no phase. */
+  phase: "idle" | "running";
+  taskText?: string;
+  startedAt?: number;
+  step?: number;
+  steps: TaskProgressStep[];
+  todos?: TaskProgressTodo[];
+  queued: number;
+}
 
 export interface AgentTaskRunner {
   run(ref: WorkspaceRef, text: string, opts?: { sessionId?: string }): Promise<TaskResult>;
   reset(ref: WorkspaceRef): Promise<void>;
+  /**
+   * The soft stop: abort the active turn and drop every waiting task of one
+   * workspace, but KEEP the agent handle and its session — the owner's next
+   * task continues the same conversation. Contrast {@link reset}, which is the
+   * hard stop that disposes the session. Returns whether a turn was actually
+   * stopped and how many waiting tasks were dropped.
+   */
+  cancel(ref: WorkspaceRef): Promise<{ cancelled: boolean; dropped: number }>;
+  /**
+   * The summarised progress of this workspace's RUNNING turn, or an `idle`
+   * snapshot with the queue depth when nothing of its own is running. Read-only
+   * and cheap by construction: no I/O, no locks, no agent call — it reads the
+   * live session log the runner already holds and never starts, waits for or
+   * touches a turn.
+   */
+  progress(ref: WorkspaceRef): TaskProgress;
   sessionIdOf(ref: WorkspaceRef): string | undefined;
   /** Live session mapping, for persisting across restarts (tasks 8/11). */
   snapshot(): Array<{ key: string; sessionId: string }>;
@@ -82,14 +138,51 @@ export const QUEUE_MAX_WAITING = 3;
 const BUSY_MESSAGE = "a task for this workspace is already running";
 const QUEUE_FULL_MESSAGE = `the workspace task queue is full (${QUEUE_MAX_WAITING} waiting tasks max)`;
 const AGENT_ERROR_MESSAGE = "agent task failed";
-const RESET_DROP_MESSAGE = "task dropped because the workspace context was reset";
-const RESET_ABORT_MESSAGE = "task aborted because the workspace context was reset";
+/**
+ * The two phrases a run interrupted by the owner's own «Сбросить контекст»
+ * settles with: the turn that was in flight ("aborted") and a task that was
+ * still waiting in the queue ("dropped"). A reset is not a stop — the session
+ * is destroyed, and the chat answers with its own reset copy — but the runner
+ * has no `reset` result code, so the reset path genuinely reports itself BY
+ * MESSAGE.
+ *
+ * They are exported for exactly one reason: the chat matches them, and a
+ * matcher that restated the literals could drift out of sync with the raiser
+ * and start reporting an intentional reset as an agent crash. ONE source, two
+ * readers — never a copy (the drift this file's own review flagged).
+ */
+export const RESET_DROP_MESSAGE = "task dropped because the workspace context was reset";
+export const RESET_ABORT_MESSAGE = "task aborted because the workspace context was reset";
+/**
+ * The `cancelled` code and this message are what a deliberate owner stop
+ * reports. It is deliberately NOT shaped like the reset phrases (chat.ts maps
+ * those to the reset copy by exact string) and is never matched by string
+ * anywhere in the runner: the outcome of a stop is decided by the turn's own
+ * `aborted` reason, so a real agent failure can never be mistaken for a stop.
+ */
+export const CANCELLED_MESSAGE = "task cancelled by the owner";
 
 interface SessionEventLike {
   type: string;
   data: {
-    message?: { content?: Array<{ type: string; text?: string }> };
+    message?: {
+      content?: Array<{ type: string; text?: string; toolCallId?: string; isError?: boolean }>;
+      /**
+       * The message source. A tool result carries its `callId` here
+       * (`{ kind: "tool", callId }`) — the event itself has none.
+       */
+      source?: { kind?: string; callId?: string };
+    };
     reason?: unknown;
+    step?: number;
+    callId?: string;
+    name?: string;
+    /** The raw argument JSON string of a `tool/call`, exactly as the model wrote it. */
+    arguments?: string;
+    /** The harness failure identity of a `tool/result` (`{ name, code }`), when it has one. */
+    error?: unknown;
+    /** The whole-list snapshot of a `todo/write`; the latest write wins. */
+    todos?: TaskProgressTodo[];
   };
 }
 
@@ -97,6 +190,15 @@ interface SessionEventLike {
 interface AgentLike {
   whenIdle(): Promise<void>;
   followup(message: unknown): void;
+  /**
+   * The stock dsh seam for stopping work: it aborts the ACTIVE turn (or the
+   * between-turn task) and clears queued/steering work unless `keepInbox` is
+   * set, and is a no-op when the agent has no activity. It never tears the
+   * session down — only `dispose()` does (Task 4 facts). `keepInbox: true` is
+   * what makes the stop soft: work already sitting in the agent's own inbox (a
+   * message the next task queued) survives, so the conversation continues.
+   */
+  cancel(cause: { kind: "user" }, options?: { keepInbox?: boolean }): void;
   session: {
     seq: number;
     eventAt(seq: unknown): SessionEventLike | undefined;
@@ -137,6 +239,21 @@ interface KeyedEntry {
    * (hang risk) or disposing the same handle twice.
    */
   retired: boolean;
+  /**
+   * Set by cancel() for the current turn; cleared when that turn settles. A
+   * SEPARATE flag from `retired` on purpose: a cancel keeps the entry, the
+   * handle and the session alive, so the checkpoints answer "cancelled" where
+   * the retired ones answer "reset aborted and the handle was disposed".
+   */
+  cancelled: boolean;
+  /**
+   * The session sequence the RUNNING turn starts at, and when it started. Both
+   * are set for the moment the turn is submitted and cleared the moment it
+   * settles, so a progress read can neither summarize a turn that is only being
+   * set up nor one that is already over.
+   */
+  firstSeq: number | undefined;
+  startedAt: number | undefined;
 }
 
 function errorMessage(error: unknown, fallback = "unknown error"): string {
@@ -192,6 +309,134 @@ function summarizeTurn(session: AgentLike["session"], firstSeq: number): TurnOut
   const outcome: TurnOutcome = { text };
   if (reason !== undefined) outcome.reason = reason;
   return outcome;
+}
+
+/**
+ * Arguments worth showing in the progress card, by tool. Everything else is
+ * omitted: `write`/`edit` arguments carry whole file bodies, and a card that
+ * rendered them would push workspace content into the chat. The whitelist is
+ * consulted FIRST, so no tool outside it can contribute an argument at all.
+ *
+ * A `Map` and not an object literal: `PROGRESS_TARGET_ARG["constructor"]` on a
+ * plain object answers with an inherited member, so a tool the model named
+ * after a prototype member would slip PAST the "whitelist first" rule and could
+ * contribute an argument the card must never render. A Map has no prototype
+ * chain to inherit from.
+ */
+const PROGRESS_TARGET_ARG = new Map<string, string>([
+  ["read", "file_path"],
+  ["read_image", "file_path"],
+  ["write", "file_path"],
+  ["edit", "file_path"],
+  ["glob", "path"],
+  ["grep", "path"],
+  ["web_search", "query"]
+]);
+/** Longest target the card may show, before the ellipsis. */
+const PROGRESS_TARGET_MAX = 80;
+/** How many of the turn's newest steps a progress read returns. */
+const PROGRESS_STEP_MAX = 5;
+
+/**
+ * The one argument of `tool` the card may show, or nothing.
+ *
+ * Every failure to answer is `undefined` — a tool outside the whitelist, a
+ * malformed argument string (never re-parsed leniently), a missing or non-string
+ * or blank value. The result is whitespace-collapsed and capped, because a path
+ * may be long, multi-line or contain the model's own newlines.
+ */
+function progressTarget(tool: string, rawArguments: string): string | undefined {
+  const argName = PROGRESS_TARGET_ARG.get(tool);
+  if (argName === undefined) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawArguments);
+  } catch {
+    return undefined;
+  }
+  const value = (parsed as Record<string, unknown> | undefined)?.[argName];
+  if (typeof value !== "string" || value === "") return undefined;
+  const collapsed = value.replace(/\s+/g, " ").trim();
+  if (collapsed === "") return undefined;
+  return collapsed.length > PROGRESS_TARGET_MAX ? `${collapsed.slice(0, PROGRESS_TARGET_MAX)}…` : collapsed;
+}
+
+/**
+ * The call identity of a `tool/result`. The engine puts it on the model-facing
+ * result message, not on the event: `message.source.callId` is the required tool
+ * source of that message and the `tool-result` block repeats it as
+ * `toolCallId` (@deepseek-ai/dsh-llm `createToolResultMessage`, appended by
+ * dsh-agent-loop's `appendToolResult`). A result whose identity cannot be read
+ * is left unpaired — a step keeps reporting "running" rather than being
+ * credited to the wrong call.
+ */
+function resultCallId(message: SessionEventLike["data"]["message"]): string | undefined {
+  const source = message?.source;
+  if (source?.kind === "tool" && typeof source.callId === "string") return source.callId;
+  const block = message?.content?.[0];
+  return block?.type === "tool-result" && typeof block.toolCallId === "string" ? block.toolCallId : undefined;
+}
+
+/**
+ * A `tool/result` reports a failed call when the tool itself said so (the
+ * model-facing result block is an error) or when the harness attached a failure
+ * identity. Both matter: a path-guard denial — the containment this deployment
+ * relies on — is an `isError` result with NO identity, so reading only the
+ * identity would render a denied read as a success.
+ */
+function resultFailed(event: SessionEventLike): boolean {
+  return event.data.message?.content?.[0]?.isError === true || event.data.error !== undefined;
+}
+
+/**
+ * Steps, todo list and step number of one turn's event slice: the pure half of
+ * {@link AgentTaskRunner.progress}. `firstSeq` is the session sequence the turn
+ * started at, so the slice is exactly the turn's own events (the leading
+ * `turn/start` is the gate the rest of the file uses too).
+ *
+ * Only tool NAMES, one whitelisted argument per call, todo text and step numbers
+ * are read: no tool result, no assistant text, no event the slice does not own.
+ * Steps are returned oldest first, capped to the newest `limit` of them.
+ */
+export function summarizeProgress(
+  session: AgentLike["session"],
+  firstSeq: number,
+  limit = PROGRESS_STEP_MAX
+): { steps: TaskProgressStep[]; todos?: TaskProgressTodo[]; step?: number } {
+  const byCallId = new Map<string, TaskProgressStep>();
+  const steps: TaskProgressStep[] = [];
+  let todos: TaskProgressTodo[] | undefined;
+  let step: number | undefined;
+  let started = false;
+  for (let seq = firstSeq; seq < session.seq; seq++) {
+    const event = session.eventAt(SessionSeq(seq));
+    if (event === undefined) continue;
+    if (event.type === "turn/start") started = true;
+    if (!started) continue;
+    const data = event.data;
+    if (event.type === "step/start" && typeof data.step === "number") step = data.step;
+    if (event.type === "todo/write" && Array.isArray(data.todos)) {
+      todos = data.todos.map((todo) => ({ content: todo.content, status: todo.status }));
+    }
+    if (event.type === "tool/call" && typeof data.callId === "string" && typeof data.name === "string") {
+      const line: TaskProgressStep = { name: data.name, status: "running" };
+      const target = progressTarget(data.name, data.arguments ?? "");
+      if (target !== undefined) line.target = target;
+      byCallId.set(data.callId, line);
+      steps.push(line);
+    }
+    if (event.type === "tool/result") {
+      const callId = resultCallId(data.message);
+      const line = callId === undefined ? undefined : byCallId.get(callId);
+      if (line !== undefined) line.status = resultFailed(event) ? "failed" : "ok";
+    }
+  }
+  const out: { steps: TaskProgressStep[]; todos?: TaskProgressTodo[]; step?: number } = {
+    steps: steps.slice(Math.max(0, steps.length - limit))
+  };
+  if (todos !== undefined) out.todos = todos;
+  if (step !== undefined) out.step = step;
+  return out;
 }
 
 /**
@@ -259,8 +504,18 @@ function summarizeTurn(session: AgentLike["session"], firstSeq: number): TurnOut
 export interface AgentSetupOptions {
   /** The workspace root the session cwd resolves under (meta.cwd seed). */
   root: string;
-  /** The model selection captured from agentDefaultModel at create/resume. */
-  selection: { provider: string; model: string };
+  /**
+   * The LIVE model selection of the session. dsh's `installModelSelection`
+   * reads `current` at prompt-assembly time and owns the `assembled` slot, so
+   * the runner passes the ref itself (never a snapshot of it).
+   */
+  selection: ModelSelectionRefLike;
+}
+
+/** The mutable selection dsh's installModelSelection reads per step. */
+export interface ModelSelectionRefLike {
+  current?: { provider: string; model: string } | undefined;
+  assembled?: { provider: string; model: string } | undefined;
 }
 
 /**
@@ -330,13 +585,20 @@ const FALLBACK_DENIED_TOOL_NAMES = [
   "list_agents"
 ] as const;
 
-/** Model-facing tools whose string path argument must stay inside the root. */
-const READ_PATH_ARG_BY_TOOL: Record<string, string> = {
-  read: "file_path",
-  read_image: "file_path",
-  glob: "path",
-  grep: "path"
-};
+/**
+ * Model-facing tools whose string path argument must stay inside the root.
+ *
+ * A `Map`, like {@link PROGRESS_TARGET_ARG}: this one is the containment guard,
+ * and an inherited prototype member answering for a tool named e.g.
+ * `constructor` would make the guard read a path argument out of a name it was
+ * never meant to guard. Only the own entries of this table may ever match.
+ */
+const READ_PATH_ARG_BY_TOOL = new Map<string, string>([
+  ["read", "file_path"],
+  ["read_image", "file_path"],
+  ["glob", "path"],
+  ["grep", "path"]
+]);
 
 /** A path-taking tool execution as the registry guard sees it. */
 interface GuardExecLike {
@@ -428,14 +690,34 @@ function restrictToolSurface(tools: ToolsSurface): void {
   if (denied.length > 0) tools.restrict({ deny: denied });
 }
 
+/**
+ * The live selection of one keyed session: `agentOptions` needs a concrete pair
+ * at create/resume time, but every later request must read the CURRENT global
+ * default, so a change made from the admin page or the chat reaches a session
+ * that is already alive. The `assembled` slot stays owned by dsh.
+ */
+function liveSelection(defaultModel: AgentTaskDeps["defaultModel"]): {
+  ref: ModelSelectionRefLike;
+  initial: { provider: string; model: string };
+} {
+  const initial = defaultModel?.currentSelection() ?? { provider: "", model: "" };
+  const ref: ModelSelectionRefLike = {
+    get current(): { provider: string; model: string } {
+      return defaultModel?.currentSelection() ?? initial;
+    },
+    assembled: undefined
+  };
+  return { ref, initial };
+}
+
 export function composeAgentSetup(agentCtx: unknown, options: AgentSetupOptions): void {
-  installModelSelection(agentCtx as never, { current: options.selection, assembled: undefined });
+  installModelSelection(agentCtx as never, options.selection as never);
   const tools = (agentCtx as { get(key: string): unknown }).get("tools") as ToolsSurface | undefined;
   if (tools === undefined) return;
   restrictToolSurface(tools);
   const escapes = rootEscapes(options.root);
   tools.guard((exec) => {
-    const argName = READ_PATH_ARG_BY_TOOL[exec.name];
+    const argName = READ_PATH_ARG_BY_TOOL.get(exec.name);
     if (argName === undefined) return undefined;
     const raw = (exec.arguments as Record<string, unknown> | undefined)?.[argName];
     if (typeof raw !== "string" || raw === "") return undefined;
@@ -454,15 +736,15 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
     root: string,
     opts: { sessionId?: string } | undefined
   ): Promise<{ handle: AgentHandleLike; sessionId: string }> {
-    const selection = deps.defaultModel?.currentSelection() ?? { provider: "", model: "" };
+    const selection = liveSelection(deps.defaultModel);
     const setup = (agentCtx: unknown): void => {
-      composeAgentSetup(agentCtx, { root, selection });
+      composeAgentSetup(agentCtx, { root, selection: selection.ref });
     };
     if (opts?.sessionId !== undefined) {
       try {
         const handle = await deps.agents.resume({
           resumeSessionId: opts.sessionId,
-          agentOptions: selection,
+          agentOptions: selection.initial,
           setup
         });
         return { handle, sessionId: opts.sessionId };
@@ -478,7 +760,7 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
     const handle = await deps.agents.create({
       sessionId,
       meta: { cwd: root },
-      agentOptions: selection,
+      agentOptions: selection.initial,
       setup
     });
     return { handle, sessionId };
@@ -532,6 +814,13 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
         }
         entry.handle = handle;
         entry.sessionId = sessionId;
+        // A cancel may have landed while create/resume was still resolving:
+        // there was no handle to abort yet, only the entry flag. Keep the handle
+        // (unlike the retired path above) so the session survives the stop.
+        if (entry.cancelled) {
+          entry.cancelled = false;
+          return { ok: false, code: "cancelled", message: CANCELLED_MESSAGE };
+        }
       } else {
         handle = entry.handle;
         sessionId = entry.sessionId;
@@ -546,7 +835,17 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
       if (entry.retired) {
         return { ok: false, code: "agent-error", message: RESET_ABORT_MESSAGE };
       }
+      // Checked AFTER the retired branch on purpose: when a reset and a cancel
+      // race, the reset owns the outcome (its abort phrase, its disposal).
+      if (entry.cancelled) {
+        entry.cancelled = false;
+        return { ok: false, code: "cancelled", message: CANCELLED_MESSAGE };
+      }
       const firstSeq = agent.session.seq;
+      // The progress read of THIS turn starts here (progress() reads the pair
+      // back); `agent.followup` below is what puts its first event into the log.
+      entry.firstSeq = firstSeq;
+      entry.startedAt = Date.now();
       agent.followup(
         createUserMessage({
           content: [{ type: "text", text }],
@@ -557,9 +856,35 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
       if (entry.retired) {
         return { ok: false, code: "agent-error", message: RESET_ABORT_MESSAGE };
       }
+      // No flag-only checkpoint here on purpose. Unlike the two checkpoints
+      // above (where no turn exists yet, so the flag is the only evidence of a
+      // stop), this point is reached with a turn that has an outcome of its
+      // own: an owner stop that released this park aborted the turn, so the
+      // turn carries the `aborted` reason and the reason gate below classifies
+      // it — and when the stop erased the turn before its first step (no
+      // `aborted` reason, no answer) that gate classifies it by its emptiness.
+      // Deciding "cancelled" from the flag alone would let a cancel landing as
+      // the turn was finishing discard a completed answer.
       await deps.sessions.flush(agent.session);
 
       const outcome = summarizeTurn(agent.session, firstSeq);
+      // Отмена подтверждается ПРИЧИНОЙ turn'а, а не только флагом: cancel,
+      // пришедший в момент, когда turn уже завершался, не должен превращать
+      // успешный результат в «остановлено».
+      //
+      // The reason alone is not enough. A turn that stops before its first step
+      // leaves a `turn/end` shaped exactly like the balanced no-op turns a
+      // rejection or an empty claim produces — dsh's turn vocabulary cannot
+      // express that case — so an owner stop landing in that window arrives here
+      // with a non-`aborted` reason AND no answer. Answering `{ ok: true, text:
+      // "" }` for it would report the task the owner deliberately stopped as a
+      // completed empty one, which is the one user-visible lie this feature
+      // exists to avoid. An empty turn the owner cancelled is therefore a stop,
+      // while a turn that really answered keeps its result.
+      if (entry.cancelled && (outcome.reason?.kind === "aborted" || outcome.text === "")) {
+        return { ok: false, code: "cancelled", message: CANCELLED_MESSAGE };
+      }
+      if (entry.cancelled) entry.cancelled = false;
       if (outcome.reason?.kind === "error") {
         return {
           ok: false,
@@ -602,6 +927,15 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
     } finally {
       entry.busy = false;
       entry.activeText = undefined;
+      // The progress read is scoped to the turn that just settled: clearing it
+      // BEFORE the next queued task is set up is what keeps a later read from
+      // summarizing a turn that is over (the next task's own window has no
+      // events yet, so it must report no phase at all).
+      entry.firstSeq = undefined;
+      entry.startedAt = undefined;
+      // The stop flag is scoped to the turn it stopped: a cancel that landed as
+      // this turn was settling must not misreport the NEXT queued task.
+      entry.cancelled = false;
       const next = entry.queue.shift();
       if (next !== undefined && !entry.retired && cache.get(key) === entry) {
         void startTurn(key, entry, next.ref, next.text, next.opts).then(next.resolve, (error) => {
@@ -623,7 +957,10 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
           busy: false,
           activeText: undefined,
           queue: [],
-          retired: false
+          retired: false,
+          cancelled: false,
+          firstSeq: undefined,
+          startedAt: undefined
         };
         cache.set(key, entry);
       }
@@ -662,6 +999,63 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
       if (entry.handle !== undefined) {
         await disposeQuietly(entry.handle, "reset dispose failed");
       }
+    },
+
+    /**
+     * The soft stop, the counterpart of reset(): abort the active turn of this
+     * workspace and settle every waiting task as `cancelled`, but keep the
+     * handle, the session and the transcript — the owner loses the task, never
+     * the context. A cancel with nothing running (or nothing cached) is a no-op
+     * that still drains the queue, so a caller can always await it safely.
+     */
+    async cancel(ref: WorkspaceRef): Promise<{ cancelled: boolean; dropped: number }> {
+      // The same readiness gate run() waits on, and the reason it matters here:
+      // a task accepted a moment ago is registered on that same tick, so the
+      // drain below sees it and settles it as cancelled instead of letting it
+      // start as the follow-up turn of a stop the owner already asked for.
+      await deps.loader?.await();
+      const key = workspaceRefKey(ref);
+      const entry = cache.get(key);
+      if (entry === undefined) return { cancelled: false, dropped: 0 };
+      let dropped = 0;
+      while (entry.queue.length > 0) {
+        entry.queue.shift()!.resolve({ ok: false, code: "cancelled", message: CANCELLED_MESSAGE });
+        dropped += 1;
+      }
+      if (!entry.busy) return { cancelled: false, dropped };
+      // Мягкая отмена: сессия и хэндл остаются живыми, инбокс задач не чистится
+      // (keepInbox), поэтому следующая задача продолжает ту же сессию.
+      entry.cancelled = true;
+      entry.handle?.agent.cancel({ kind: "user" }, { keepInbox: true });
+      return { cancelled: true, dropped };
+    },
+
+    /**
+     * The progress of the workspace's own running turn. Deliberately free of
+     * side effects — no loader gate, no lock, no agent call — because a chat
+     * poll may read it while a turn is mid-flight. The turn is summarized from
+     * the live session log the runner already owns, from the sequence the turn
+     * started at; a task that is merely WAITING is reported as queue depth, and
+     * a task still being set up (no turn of its own yet) has no phase at all.
+     */
+    progress(ref: WorkspaceRef): TaskProgress {
+      const entry = cache.get(workspaceRefKey(ref));
+      if (entry === undefined) return { phase: "idle", steps: [], queued: 0 };
+      const queued = entry.queue.length;
+      if (!entry.busy || entry.handle === undefined || entry.firstSeq === undefined) {
+        return { phase: "idle", steps: [], queued };
+      }
+      const summary = summarizeProgress(entry.handle.agent.session, entry.firstSeq);
+      const out: TaskProgress = {
+        phase: "running",
+        steps: summary.steps,
+        queued,
+        startedAt: entry.startedAt ?? Date.now()
+      };
+      if (entry.activeText !== undefined) out.taskText = entry.activeText;
+      if (summary.step !== undefined) out.step = summary.step;
+      if (summary.todos !== undefined) out.todos = summary.todos;
+      return out;
     },
 
     sessionIdOf(ref: WorkspaceRef): string | undefined {

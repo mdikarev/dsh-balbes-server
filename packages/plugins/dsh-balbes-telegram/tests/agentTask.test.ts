@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   composeAgentSetup,
   createAgentTaskRunner,
+  summarizeProgress,
   workspaceRefKey,
   type AgentTaskDeps,
   type TaskResult,
@@ -14,9 +15,13 @@ import {
 /**
  * Hermetic unit suite for the workspace-aware agent task runner. Everything
  * below is fake: no real dsh agent, no LLM, no network. The fake `agents`
- * service emulates dsh's AgentHandle seam — after `followup` the fake session
- * gains turn/assistant/turn-end events and `whenIdle` resolves (optionally
- * parked so a test can observe the runner mid-turn).
+ * service emulates dsh's AgentHandle seam — `followup` starts a turn (turn/start
+ * plus the assistant message) and `whenIdle` resolves (optionally parked so a
+ * test can observe the runner mid-turn). A parked turn stays OPEN until its park
+ * is released: that is when its `turn/end` lands, so a cancel arriving on the
+ * park really does stop a running turn. `cancelAsNoopTurn` models the other
+ * shape of a stop: a turn stopped before its first step, which ends as a
+ * balanced no-op instead of `aborted` and leaves no answer behind.
  */
 
 const PROJECT_ALPHA: WorkspaceRef = { scope: "project", name: "alpha" };
@@ -42,6 +47,17 @@ interface FakeHandleConfig {
    * 1 fact 9), and every later `whenIdle` rejects.
    */
   disposeStopsLoop?: boolean;
+  /**
+   * Models the stop that lands before the turn's first step. With this on,
+   * `followup` opens the turn but withholds its assistant message (nothing has
+   * been produced yet), and `cancel` closes such an open, answerless turn with
+   * a BALANCED NO-OP reason (`{kind:"completed"}`) instead of `aborted`: dsh
+   * documents that exactly this window cannot be told apart from the balanced
+   * no-op turns a rejection or an empty claim produces, and that `Agent.cancel`
+   * aborts the active turn OR a between-turn task. The withheld answer lands
+   * only if the turn completes normally.
+   */
+  cancelAsNoopTurn?: boolean;
 }
 interface FakeHandle {
   agent: {
@@ -62,6 +78,20 @@ function makeHandle(cfg: FakeHandleConfig = {}): FakeHandle {
   let parked: Array<() => void> = [];
   let answerAt = 0;
   let loopDead = false;
+  /**
+   * Whether the current turn still lacks its `turn/end`. A real turn is OPEN
+   * from the moment `followup` starts it until it really finishes; the fake
+   * therefore keeps it open while the run is parked and closes it only when the
+   * park is released (or when `cancel` aborts it). A fake that closed the turn
+   * inside `followup` would leave an agent that is genuinely mid-turn with no
+   * open turn, so a cancel landing on that park could never produce an honest
+   * `aborted` reason.
+   */
+  let turnOpen = false;
+  /** Whether the open turn has produced an assistant message yet. */
+  let turnHasMessage = false;
+  /** Answer withheld by `cancelAsNoopTurn` until the turn completes. */
+  let pendingAnswer: string | undefined;
   const session = {
     get seq(): number {
       return events.length;
@@ -69,6 +99,41 @@ function makeHandle(cfg: FakeHandleConfig = {}): FakeHandle {
     eventAt(seq: unknown): EventLike | undefined {
       return events[Number(seq)];
     }
+  };
+  /** Append the closing `turn/end` of the open turn; a no-op when none is open. */
+  const closeTurn = (reason: unknown) => {
+    if (!turnOpen) return;
+    turnOpen = false;
+    events.push({ type: "turn/end", data: { reason } });
+  };
+  /** Emit this turn's assistant message (the only thing that gives it text). */
+  const emitAnswer = (text: string) => {
+    events.push({
+      type: "assistant/message",
+      data: { message: { content: [{ type: "text", text }] } }
+    });
+    turnHasMessage = true;
+  };
+  /** End the open turn normally, emitting a withheld answer first. */
+  const finishTurn = () => {
+    if (!turnOpen) return;
+    if (pendingAnswer !== undefined) {
+      emitAnswer(pendingAnswer);
+      pendingAnswer = undefined;
+    }
+    closeTurn({ kind: "completed" });
+  };
+  // Declared before the agent object: `cancel` (and `dispose` below) resolve the
+  // current park, and the abort convergence must be reachable from both.
+  const releaseParked = () => {
+    // Releasing the park is what ENDS the held turn: while it is held open the
+    // owner can still stop it, and only an unaborted release completes it. The
+    // close happens before the parked `whenIdle` resolves, so the runner always
+    // summarizes a session that already carries this turn's end event.
+    finishTurn();
+    const pending = parked;
+    parked = [];
+    for (const resolve of pending) resolve();
   };
   const agent = {
     session,
@@ -85,21 +150,39 @@ function makeHandle(cfg: FakeHandleConfig = {}): FakeHandle {
     followup: vi.fn(() => {
       const text = cfg.answers?.[answerAt] ?? "fake answer";
       answerAt += 1;
-      events.push(
-        { type: "turn/start", data: {} },
-        {
-          type: "assistant/message",
-          data: { message: { content: [{ type: "text", text }] } }
-        },
-        { type: "turn/end", data: { reason: { kind: "completed" } } }
-      );
+      events.push({ type: "turn/start", data: {} });
+      turnOpen = true;
+      turnHasMessage = false;
+      if (cfg.cancelAsNoopTurn === true) {
+        // The turn is open, but its first step has produced nothing yet: the
+        // message is withheld, so a stop landing here erases an answerless turn
+        // exactly as the engine does.
+        pendingAnswer = text;
+      } else {
+        emitAnswer(text);
+      }
+      // A handle that never parks runs its turn to the end synchronously (the
+      // same turn/start + assistant/message + turn/end as before). A held
+      // handle leaves the turn OPEN until releaseParked(): that is what makes
+      // "parked mid-turn" mean it.
+      if (!cfg.holdIdle) finishTurn();
     }),
-    cancel: vi.fn()
-  };
-  const releaseParked = () => {
-    const pending = parked;
-    parked = [];
-    for (const resolve of pending) resolve();
+    cancel: vi.fn((_cause: unknown, _options?: unknown) => {
+      // Реальный Agent.cancel прерывает активный turn и разрешает парковку
+      // whenIdle; turn/end с причиной "aborted" появляется только если turn
+      // действительно был открыт.
+      if (cfg.cancelAsNoopTurn === true && turnOpen && !turnHasMessage) {
+        // Stopped before the first step: the turn ends as the balanced no-op a
+        // rejection or an empty claim would leave, NOT as `aborted` (dsh's turn
+        // vocabulary cannot express the difference), and the withheld answer
+        // never lands.
+        pendingAnswer = undefined;
+        closeTurn({ kind: "completed" });
+      } else {
+        closeTurn({ kind: "aborted", reason: { kind: "user" } });
+      }
+      releaseParked();
+    })
   };
   return {
     agent,
@@ -564,6 +647,452 @@ describe("agentTask runner (fake deps)", () => {
 });
 
 /**
+ * The soft stop: cancel() aborts the active turn and drops the waiting queue
+ * while the handle and its session stay alive — the whole point of having a
+ * second stop next to reset(), which disposes the session (losing context).
+ */
+describe("cancel", () => {
+  it("cancels the active turn and clears the queue while keeping the session", async () => {
+    const { runner, agents } = await makeRunner();
+    agents.cfg({ holdIdle: true });
+    const running = runner.run(PROJECT_ALPHA, "долгая");
+    await waitFor(() => agents.created.length === 1);
+    const handle = agents.created[0]!;
+    await waitFor(() => handle.parkedCount === 1);
+
+    const queued = runner.run(PROJECT_ALPHA, "в очереди");
+    const outcome = await runner.cancel(PROJECT_ALPHA);
+
+    expect(outcome).toEqual({ cancelled: true, dropped: 1 });
+    await expect(queued).resolves.toMatchObject({ ok: false, code: "cancelled" });
+    await expect(running).resolves.toMatchObject({ ok: false, code: "cancelled" });
+    // The stop is the stock dsh seam, and `keepInbox` is what makes it soft:
+    // work already in the agent's inbox survives, so the session goes on.
+    expect(handle.agent.cancel).toHaveBeenCalledWith({ kind: "user" }, { keepInbox: true });
+    expect(handle.dispose).not.toHaveBeenCalled();
+    expect(runner.sessionIdOf(PROJECT_ALPHA)).toBeDefined();
+  });
+
+  it("settles a turn that was already running as cancelled", async () => {
+    const { runner, agents } = await makeRunner();
+    agents.cfg({ holdIdle: true });
+    const running = runner.run(PROJECT_ALPHA, "долгая");
+    await waitFor(() => agents.created.length === 1);
+    const handle = agents.created[0]!;
+    await waitFor(() => handle.parkedCount === 1);
+    handle.releaseParked();                                 // пропускаем followup
+    await waitFor(() => handle.agent.followup.mock.calls.length === 1);
+    await waitFor(() => handle.parkedCount === 1);          // парковка после followup
+
+    const outcome = await runner.cancel(PROJECT_ALPHA);
+
+    expect(outcome.cancelled).toBe(true);
+    await expect(running).resolves.toMatchObject({ ok: false, code: "cancelled" });
+    expect(handle.dispose).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Plan-mandated: the stop that lands BEFORE the turn's first step. dsh says
+   * that turn leaves a `turn/end` shaped exactly like the balanced no-op turns
+   * a rejection or an empty claim produces. Reporting `{ ok: true, text: "" }`
+   * for it would tell the owner "задача выполнена" about a task they just
+   * stopped — the one user-visible lie the whole feature exists to avoid.
+   */
+  it("reports the stop that erased the turn before its first step as cancelled", async () => {
+    const { runner, agents } = await makeRunner();
+    agents.cfg({ holdIdle: true, cancelAsNoopTurn: true });
+    const running = runner.run(PROJECT_ALPHA, "долгая");
+    await waitFor(() => agents.created.length === 1);
+    const handle = agents.created[0]!;
+    await waitFor(() => handle.parkedCount === 1);
+    handle.releaseParked();                                 // пропускаем followup
+    await waitFor(() => handle.agent.followup.mock.calls.length === 1);
+    await waitFor(() => handle.parkedCount === 1);          // парковка после followup
+
+    const outcome = await runner.cancel(PROJECT_ALPHA);
+
+    expect(outcome.cancelled).toBe(true);
+    await expect(running).resolves.toMatchObject({ ok: false, code: "cancelled" });
+    // The exact lie this arm removes: an empty success for a stopped task.
+    await expect(running).resolves.not.toMatchObject({ ok: true, text: "" });
+    expect(handle.dispose).not.toHaveBeenCalled();
+    expect(runner.sessionIdOf(PROJECT_ALPHA)).toBeDefined();
+  });
+
+  it("is a no-op when nothing runs", async () => {
+    const { runner } = await makeRunner();
+    await expect(runner.cancel(PROJECT_ALPHA)).resolves.toEqual({ cancelled: false, dropped: 0 });
+  });
+
+  /**
+   * The race the reason gate exists for: cancel() lands AFTER the runner's last
+   * checkpoint of the turn (here: while the session flush is in flight), so the
+   * turn had already completed normally. The flag alone must not rewrite a
+   * finished turn into "cancelled" — only an aborted turn may be reported as
+   * one. The flush gate makes that window deterministic instead of a timing
+   * accident.
+   */
+  it("does not turn a turn that already completed into cancelled", async () => {
+    const base = await mkdtemp(join(tmpdir(), "agenttask-"));
+    const agents = makeAgents();
+    let flushStarted!: () => void;
+    const flushing = new Promise<void>((resolve) => {
+      flushStarted = resolve;
+    });
+    let releaseFlush!: () => void;
+    const flushGate = new Promise<void>((resolve) => {
+      releaseFlush = resolve;
+    });
+    const deps: AgentTaskDeps = {
+      agents: agents as unknown as AgentTaskDeps["agents"],
+      sessions: {
+        flush: vi.fn(async () => {
+          flushStarted();
+          await flushGate;
+        })
+      },
+      defaultModel: { currentSelection: () => SELECTION },
+      workspaces: makeWorkspaces(base) as unknown as AgentTaskDeps["workspaces"],
+      logger: { warn: vi.fn() }
+    };
+    const runner = createAgentTaskRunner(deps);
+    agents.cfg({ holdIdle: true, answers: ["готовый ответ"] });
+    const running = runner.run(PROJECT_ALPHA, "долгая");
+    await waitFor(() => agents.created.length === 1);
+    const handle = agents.created[0]!;
+    // Through the pre-followup park, then the post-followup park.
+    await waitFor(() => handle.parkedCount === 1);
+    handle.releaseParked();
+    await waitFor(() => handle.agent.followup.mock.calls.length === 1);
+    await waitFor(() => handle.parkedCount === 1);
+    handle.releaseParked();
+    // The turn is complete and the runner is now inside flush: cancel arrives
+    // too late to stop anything (the fake's turn is closed, so no aborted
+    // reason is ever appended).
+    await flushing;
+    const outcome = await runner.cancel(PROJECT_ALPHA);
+    expect(outcome.cancelled).toBe(true);
+    releaseFlush();
+
+    await expect(running).resolves.toMatchObject({ ok: true, text: "готовый ответ" });
+    expect(handle.dispose).not.toHaveBeenCalled();
+    expect(runner.sessionIdOf(PROJECT_ALPHA)).toBeDefined();
+  });
+});
+
+/**
+ * The progress summary is a PURE reading of one turn's event slice, so this
+ * suite builds that slice by hand: every arm — the target whitelist, the cap and
+ * its ordering, ok/failed, the latest todo list — is then deterministic and
+ * reachable without a real agent. `fakeSessionWith` mirrors the fake session
+ * inside `makeHandle`; `SessionSeqLike` is the same boundary cast the runner
+ * performs with the real `SessionSeq`.
+ */
+function fakeSessionWith(events: EventLike[]): Parameters<typeof summarizeProgress>[0] {
+  return {
+    get seq(): number {
+      return events.length;
+    },
+    eventAt: (seq: unknown) => events[Number(seq)] as never
+  };
+}
+const SessionSeqLike = (n: number): never => n as never;
+
+/**
+ * One `tool/call` in the engine's own shape (dsh-session `SessionEventMap`):
+ * `arguments` is the RAW JSON string exactly as the model produced it. A string
+ * is passed through unchanged, which is how a malformed-arguments case is built.
+ */
+function toolCall(callId: string, name: string, args: unknown, step = 1): EventLike {
+  return {
+    type: "tool/call",
+    data: {
+      turn: 1,
+      step,
+      callId,
+      name,
+      arguments: typeof args === "string" ? args : JSON.stringify(args)
+    }
+  };
+}
+
+/**
+ * One `tool/result` in the engine's own shape. The engine does NOT put `callId`
+ * on this event (`'tool/result': { turn, step, message, error?, meta? }` in
+ * @deepseek-ai/dsh-session): the call identity rides the model-facing result
+ * message — `message.source.callId` and the `tool-result` block's `toolCallId`
+ * (dsh-llm `createToolResultMessage`). The event-level `error` is the harness
+ * failure IDENTITY (`{name, code}`), which dsh-agent-loop attaches only when the
+ * failure carries one, so it is not the only sign of a failed call: a path-guard
+ * denial is an `isError` result with no identity.
+ */
+function toolResult(
+  callId: string,
+  opts: { isError?: boolean; text?: string; identity?: { name: string; code: string } } = {}
+): EventLike {
+  return {
+    type: "tool/result",
+    data: {
+      turn: 1,
+      step: 1,
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: callId,
+            content: [{ type: "text", text: opts.text ?? "result" }],
+            isError: opts.isError ?? false
+          }
+        ],
+        source: { kind: "tool", callId }
+      },
+      ...(opts.identity !== undefined ? { error: opts.identity } : {})
+    }
+  };
+}
+
+describe("task progress", () => {
+  it("summarizes steps, targets and todos of the running turn", () => {
+    const session = fakeSessionWith([
+      { type: "turn/start", data: {} },
+      { type: "step/start", data: { turn: 1, step: 1 } },
+      toolCall("c1", "read", { file_path: "notes.txt" }),
+      toolResult("c1"),
+      toolCall("c2", "write", { file_path: "out.txt", content: "a\nb" }, 2),
+      { type: "todo/write", data: { todos: [{ content: "Разобрать логи", status: "completed" }] } }
+    ]);
+
+    const progress = summarizeProgress(session, SessionSeqLike(0), 5);
+
+    expect(progress.steps).toEqual([
+      { name: "read", target: "notes.txt", status: "ok" },
+      { name: "write", target: "out.txt", status: "running" }
+    ]);
+    expect(progress.todos).toEqual([{ content: "Разобрать логи", status: "completed" }]);
+  });
+
+  it("never renders file content or long targets", () => {
+    const long = "x".repeat(500);
+    const session = fakeSessionWith([
+      { type: "turn/start", data: {} },
+      {
+        type: "tool/call",
+        data: {
+          turn: 1,
+          step: 1,
+          callId: "c1",
+          name: "write",
+          arguments: JSON.stringify({ file_path: `${long}\n\nsecret`, content: "СОДЕРЖИМОЕ" })
+        }
+      }
+    ]);
+
+    const line = summarizeProgress(session, SessionSeqLike(0), 5).steps[0]!;
+
+    expect(line.target).toBe(`${"x".repeat(80)}…`);
+    expect(JSON.stringify(line)).not.toContain("СОДЕРЖИМОЕ");
+  });
+
+  it("reports an idle phase and the queue depth", async () => {
+    const { runner } = await makeRunner();
+    expect(runner.progress(PROJECT_ALPHA)).toEqual({ phase: "idle", steps: [], queued: 0 });
+  });
+
+  it("keeps only the newest steps of a long turn, oldest first", () => {
+    const events: EventLike[] = [
+      { type: "turn/start", data: {} },
+      { type: "step/start", data: { turn: 1, step: 2 } }
+    ];
+    for (let n = 1; n <= 7; n++) events.push(toolCall(`c${n}`, "read", { file_path: `file-${n}.txt` }, n));
+
+    const progress = summarizeProgress(fakeSessionWith(events), SessionSeqLike(0));
+
+    // The cap keeps where the task IS, not its whole history, and the kept five
+    // stay in the order the model called them.
+    expect(progress.steps.map((step) => step.target)).toEqual([
+      "file-3.txt",
+      "file-4.txt",
+      "file-5.txt",
+      "file-6.txt",
+      "file-7.txt"
+    ]);
+    expect(progress.steps.every((step) => step.status === "running")).toBe(true);
+    expect(progress.step).toBe(2);
+  });
+
+  it("pairs a result with its call by callId and never reads the result text", () => {
+    const session = fakeSessionWith([
+      { type: "turn/start", data: {} },
+      toolCall("c1", "read", { file_path: "notes.txt" }),
+      toolCall("c2", "write", { file_path: "out.txt", content: "СОДЕРЖИМОЕ" }),
+      toolCall("c3", "glob", { path: "src" }),
+      toolResult("c1"),
+      // A result whose call is not in the slice must not rewrite any step.
+      toolResult("c-unknown", { isError: true }),
+      toolResult("c2", { isError: true, text: "СЕКРЕТ-ИЗ-РЕЗУЛЬТАТА" }),
+      toolResult("c3", { isError: true, identity: { name: "AbortError", code: "tool_aborted" } })
+    ]);
+
+    const progress = summarizeProgress(session, SessionSeqLike(0));
+
+    expect(progress.steps).toEqual([
+      { name: "read", target: "notes.txt", status: "ok" },
+      { name: "write", target: "out.txt", status: "failed" },
+      { name: "glob", target: "src", status: "failed" }
+    ]);
+    // Tool RESULTS are not part of the summary at all, only the fact that the
+    // call ended.
+    expect(JSON.stringify(progress)).not.toContain("СЕКРЕТ-ИЗ-РЕЗУЛЬТАТА");
+  });
+
+  it("reports the todo list of the latest todo/write", () => {
+    const session = fakeSessionWith([
+      { type: "turn/start", data: {} },
+      { type: "todo/write", data: { todos: [{ content: "первое", status: "pending" }] } },
+      {
+        type: "todo/write",
+        data: {
+          todos: [
+            { content: "первое", status: "completed" },
+            { content: "второе", status: "in_progress" }
+          ]
+        }
+      }
+    ]);
+
+    const progress = summarizeProgress(session, SessionSeqLike(0));
+
+    expect(progress.todos).toEqual([
+      { content: "первое", status: "completed" },
+      { content: "второе", status: "in_progress" }
+    ]);
+    // Nothing else is invented for a turn with no calls: no steps key, no step
+    // number, no percentage, no timing.
+    expect(Object.keys(progress).sort()).toEqual(["steps", "todos"]);
+  });
+
+  it("ignores the events that precede the turn's own turn/start", () => {
+    const session = fakeSessionWith([
+      toolCall("old", "read", { file_path: "старый.txt" }),
+      { type: "todo/write", data: { todos: [{ content: "старое", status: "completed" }] } },
+      { type: "turn/start", data: {} },
+      toolCall("new", "read", { file_path: "новый.txt" })
+    ]);
+
+    const progress = summarizeProgress(session, SessionSeqLike(0));
+
+    expect(progress.steps).toEqual([{ name: "read", target: "новый.txt", status: "running" }]);
+    expect(progress.todos).toBeUndefined();
+  });
+
+  it("exposes no target for a foreign tool, malformed JSON or a blank value, and collapses whitespace", () => {
+    const session = fakeSessionWith([
+      { type: "turn/start", data: {} },
+      toolCall("c1", "todo_write", { todos: [{ content: "СЕКРЕТ-ПЛАНА", status: "pending" }] }),
+      toolCall("c2", "read", "{не json"),
+      toolCall("c3", "read", { file_path: 42 }),
+      toolCall("c4", "read", { file_path: "   " }),
+      toolCall("c5", "read", { file_path: "a\n\n  b.txt" })
+    ]);
+
+    const progress = summarizeProgress(session, SessionSeqLike(0));
+
+    expect(progress.steps).toEqual([
+      { name: "todo_write", status: "running" },
+      { name: "read", status: "running" },
+      { name: "read", status: "running" },
+      { name: "read", status: "running" },
+      { name: "read", target: "a b.txt", status: "running" }
+    ]);
+    expect(JSON.stringify(progress)).not.toContain("СЕКРЕТ-ПЛАНА");
+  });
+
+  /**
+   * The runner's own contract: the summary is scoped to the turn of THIS
+   * workspace, so a task being set up (busy, no turn of its own yet) has no
+   * phase, and the turn that already settled is never reported again — the
+   * window where a stale slice would otherwise be summarized is the next
+   * queued task's set-up.
+   */
+  /**
+   * The whitelist is consulted FIRST, so a tool outside it can never contribute
+   * an argument to the card — and "outside it" has to include the names a plain
+   * object INHERITS. `PROGRESS_TARGET_ARG["constructor"]` on an object literal
+   * answers with a member of Object.prototype, which is not `undefined`, so the
+   * old lookup walked straight past the whitelist for a tool the model named
+   * after a prototype member. A Map has no prototype chain to inherit from.
+   */
+  it("renders no target for a tool named after a prototype member", () => {
+    // The argument key the inherited lookup would have answered with: the
+    // stringified member becomes the property name it reads.
+    const nativeKey = (name: string): string =>
+      String((Object.prototype as unknown as Record<string, unknown>)[name] as object);
+    const session = fakeSessionWith([
+      { type: "turn/start", data: {} },
+      toolCall("c1", "toString", { [nativeKey("toString")]: "/etc/shadow" }),
+      toolCall("c2", "constructor", { [nativeKey("constructor")]: "/etc/passwd" }),
+      toolCall("c3", "hasOwnProperty", { [nativeKey("hasOwnProperty")]: "/etc/hosts" })
+    ]);
+
+    const progress = summarizeProgress(session, SessionSeqLike(0));
+
+    expect(progress.steps).toEqual([
+      { name: "toString", status: "running" },
+      { name: "constructor", status: "running" },
+      { name: "hasOwnProperty", status: "running" }
+    ]);
+    // Nothing the whitelist does not name reached the card, paths included.
+    expect(JSON.stringify(progress)).not.toContain("/etc/");
+  });
+
+  it("reports the running turn and never the turn that already settled", async () => {
+    const { agents, runner } = await makeRunner();
+    agents.cfg({ holdIdle: true, answers: ["первый ответ", "второй ответ"] });
+    const running = runner.run(PROJECT_ALPHA, "долгая задача");
+    await waitFor(() => agents.created.length === 1);
+    const handle = agents.created[0]!;
+    await waitFor(() => handle.agent.whenIdle.mock.calls.length === 1);
+
+    // Busy, but the turn has not started: no phase and no task text of a turn.
+    expect(runner.progress(PROJECT_ALPHA)).toEqual({ phase: "idle", steps: [], queued: 0 });
+
+    handle.releaseParked(); // пропускаем followup
+    await waitFor(() => handle.agent.followup.mock.calls.length === 1);
+    await waitFor(() => handle.parkedCount === 1);
+    const queued = runner.run(PROJECT_ALPHA, "в очереди");
+    // run() registers the accepted task after its own readiness await.
+    await waitFor(() => runner.progress(PROJECT_ALPHA).queued === 1);
+
+    // The waited task is counted, never given a phase of its own.
+    expect(runner.progress(PROJECT_ALPHA)).toEqual({
+      phase: "running",
+      taskText: "долгая задача",
+      startedAt: expect.any(Number),
+      steps: [],
+      queued: 1
+    });
+
+    handle.releaseParked(); // завершаем первый turn
+    // The queued task is now being set up, and the settled turn is gone for good.
+    await waitFor(() => handle.agent.whenIdle.mock.calls.length === 3);
+    await waitFor(() => handle.parkedCount === 1);
+    expect(runner.progress(PROJECT_ALPHA)).toEqual({ phase: "idle", steps: [], queued: 0 });
+
+    handle.releaseParked(); // пропускаем followup второго turn
+    await waitFor(() => handle.agent.followup.mock.calls.length === 2);
+    await waitFor(() => handle.parkedCount === 1);
+    handle.releaseParked(); // завершаем второй turn
+
+    const first = expectOk(await withTimeout(running, 2000, "the first run never settled"));
+    const second = expectOk(await withTimeout(queued, 2000, "the queued run never settled"));
+    expect(first.text).toBe("первый ответ");
+    expect(second.text).toBe("второй ответ");
+    expect(runner.progress(PROJECT_ALPHA)).toEqual({ phase: "idle", steps: [], queued: 0 });
+  });
+});
+
+/**
  * `composeAgentSetup` surface restriction, hermetic: a fake tools runtime stands
  * in for dsh-tools' `ToolRuntime` and records what the setup asked for. dsh's
  * own `restrict()` rejects a name the composition does not register (and
@@ -614,6 +1143,42 @@ function makeAgentCtx(tools: unknown): { on(): () => void; get(key: string): unk
 }
 
 /**
+ * The agent-scope context a real `setup` callback receives, recording the two
+ * waterfall listeners `installModelSelection` installs so a test can drive one
+ * prompt-assembly + request round by hand.
+ */
+function makeRecordingAgentCtx(): {
+  ctx: { on(event: string, listener: never): () => void; get(key: string): unknown };
+  appliedModel(): Promise<string | undefined>;
+} {
+  const listeners = new Map<string, unknown>();
+  const tools = makeTools([]);
+  return {
+    ctx: {
+      on(event: string, listener: never): () => void {
+        listeners.set(event, listener);
+        return () => listeners.delete(event);
+      },
+      get: (key: string) => (key === "tools" ? tools : undefined)
+    },
+    async appliedModel(): Promise<string | undefined> {
+      const assemble = listeners.get("system-prompt/assemble") as unknown as (
+        assembly: unknown,
+        context: unknown,
+        next: () => Promise<unknown>
+      ) => Promise<unknown>;
+      const request = listeners.get("agent/request") as unknown as (
+        payload: unknown,
+        next: () => Promise<unknown>
+      ) => Promise<unknown>;
+      await assemble({}, {}, async () => ({ variables: {} }));
+      const resolved = (await request({}, async () => ({ provider: "p", model: "m" }))) as { model?: string };
+      return resolved.model;
+    }
+  };
+}
+
+/**
  * The allow list `composeAgentSetup` must apply on this deployment, name by
  * name. `web_search` is kept on purpose (internet search); `web_fetch` is NOT:
  * it is an egress channel to an arbitrary URL.
@@ -656,7 +1221,7 @@ describe("composeAgentSetup tool surface", () => {
       "some_future_shell"
     ];
     const tools = makeTools(registered);
-    composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: SELECTION });
+    composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: { current: SELECTION } });
 
     expect(tools.restrictions).toHaveLength(1);
     // An allow filter, not a deny list: the unlisted future tool is removed by
@@ -672,6 +1237,31 @@ describe("composeAgentSetup tool surface", () => {
   });
 
   /**
+   * The containment guard's table is security-relevant, so it is a Map too: on
+   * an object literal, `READ_PATH_ARG_BY_TOOL["constructor"]` answers with an
+   * inherited member and the guard would judge a call for a tool name it never
+   * listed. Only the OWN names of the table may ever be guarded.
+   */
+  it("guards a path argument only for the tool names of its own table", () => {
+    const tools = makeTools([...KEPT_BY_CONTRACT]);
+    composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: { current: SELECTION } });
+    const guard = tools.guards[0]!;
+    const nativeKey = String(
+      (Object.prototype as unknown as Record<string, unknown>)["constructor"] as object
+    );
+
+    // Not a path tool of the table: its arguments are none of the guard's
+    // business, however they are named.
+    expect(guard({ name: "constructor", arguments: { [nativeKey]: "../../etc/passwd" } })).toBeUndefined();
+    expect(guard({ name: "toString", arguments: { [nativeKey]: "../../etc/passwd" } })).toBeUndefined();
+    // A tool the table DOES name is still judged exactly as before.
+    expect(guard({ name: "read", arguments: { file_path: "../../etc/passwd" } })).toContain(
+      "outside the workspace root"
+    );
+    expect(guard({ name: "read", arguments: { file_path: "notes.txt" } })).toBeUndefined();
+  });
+
+  /**
    * Owner decision (containment split): a Telegram task may SEARCH the internet
    * but may not FETCH an arbitrary URL. `web_search` is a provider-mediated
    * search that cannot post data to an attacker's address; `web_fetch` is an
@@ -684,7 +1274,7 @@ describe("composeAgentSetup tool surface", () => {
     // and `web_fetch` on the live registry), and only search survives.
     const registered = [...KEPT_BY_CONTRACT, "web_fetch", "bash"];
     const tools = makeTools(registered);
-    composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: SELECTION });
+    composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: { current: SELECTION } });
 
     expect(registered).toContain("web_search");
     expect(registered).toContain("web_fetch");
@@ -704,14 +1294,14 @@ describe("composeAgentSetup tool surface", () => {
     // dsh reject the whole restriction and fail every task.
     const tools = makeTools(["read", "write", "pwsh", "web_fetch"]);
     expect(() =>
-      composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: SELECTION })
+      composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: { current: SELECTION } })
     ).not.toThrow();
     expect(tools.restrictions).toEqual([{ allow: ["read", "write"] }]);
   });
 
   it("degrades to the names it knows must never be exposed when no kept tool is registered", () => {
     const tools = makeTools(["bash", "pwsh", "web_fetch", "skill", "interrupt_agent"]);
-    composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: SELECTION });
+    composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: { current: SELECTION } });
     // No allow filter is possible (nothing to keep would be an empty surface):
     // the fallback still removes every name it knows the surface must never
     // expose — and only those, which is its weaker guarantee.
@@ -721,13 +1311,13 @@ describe("composeAgentSetup tool surface", () => {
 
   it("asks for no restriction when the deployment registers nothing it knows", () => {
     const tools = makeTools(["totally_unknown_tool"]);
-    composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: SELECTION });
+    composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: { current: SELECTION } });
     expect(tools.restrictions).toEqual([]);
   });
 
   it("is a no-op without a tools service", () => {
     expect(() =>
-      composeAgentSetup(makeAgentCtx(undefined), { root: "/tmp/ws-root", selection: SELECTION })
+      composeAgentSetup(makeAgentCtx(undefined), { root: "/tmp/ws-root", selection: { current: SELECTION } })
     ).not.toThrow();
   });
 
@@ -759,5 +1349,75 @@ describe("composeAgentSetup tool surface", () => {
     resumed.agents.resumeOpts[0]!.setup(makeAgentCtx(resumeTools));
     expect(resumeTools.restrictions).toEqual([{ allow: KEPT_BY_CONTRACT }]);
     expect(resumeTools.guards).toHaveLength(1);
+  });
+});
+
+describe("live model selection", () => {
+  it("resolves every request through the current global default", async () => {
+    let selection = { provider: "deepseek-official", model: "deepseek-v4-flash" };
+    const recorder = makeRecordingAgentCtx();
+
+    composeAgentSetup(recorder.ctx, {
+      root: "/tmp/ws-root",
+      selection: {
+        get current() {
+          return selection;
+        },
+        assembled: undefined
+      }
+    });
+
+    expect(await recorder.appliedModel()).toBe("deepseek-v4-flash");
+
+    selection = { provider: "deepseek-official", model: "deepseek-v4-pro" };
+
+    expect(await recorder.appliedModel()).toBe("deepseek-v4-pro");
+  });
+
+  /**
+   * The task's actual deliverable is the RUNNER's own re-read of the global
+   * default, not `composeAgentSetup`'s pass-through. The test above builds its
+   * own ref and calls `composeAgentSetup` directly, so it stays green if
+   * `liveSelection` hands dsh a frozen snapshot instead of a getter. This test
+   * closes that hole: it drives the `setup` closure the runner really installed
+   * on `agents.create` (`agents.createOpts[0].setup`, the seam dsh calls with
+   * the agent scope) and flips the spied global default between two
+   * assembly+request rounds against that one installed ref, so the model
+   * resolved per request must follow the CURRENT default.
+   */
+  it("re-reads the current global default through the runner's installed setup", async () => {
+    const { agents, deps, runner } = await makeRunner();
+    await runner.run(PROJECT_ALPHA, "первая");
+
+    expect(agents.createOpts).toHaveLength(1);
+    const recorder = makeRecordingAgentCtx();
+    agents.createOpts[0]!.setup(recorder.ctx);
+
+    vi.spyOn(deps.defaultModel!, "currentSelection").mockReturnValue({
+      provider: "deepseek-official",
+      model: "deepseek-v4-flash"
+    });
+    expect(await recorder.appliedModel()).toBe("deepseek-v4-flash");
+
+    vi.spyOn(deps.defaultModel!, "currentSelection").mockReturnValue({
+      provider: "deepseek-official",
+      model: "deepseek-v4-pro"
+    });
+    expect(await recorder.appliedModel()).toBe("deepseek-v4-pro");
+  });
+
+  it("keeps the session id when the default changes between turns", async () => {
+    const { runner, deps } = await makeRunner();
+    const first = await runner.run(PROJECT_ALPHA, "первая");
+    const sessionId = expectOk(first).sessionId;
+
+    vi.spyOn(deps.defaultModel!, "currentSelection").mockReturnValue({
+      provider: "deepseek-official",
+      model: "deepseek-v4-pro"
+    });
+
+    const second = await runner.run(PROJECT_ALPHA, "вторая");
+
+    expect(expectOk(second).sessionId).toBe(sessionId);
   });
 });

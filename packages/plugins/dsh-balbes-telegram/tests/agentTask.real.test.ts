@@ -38,6 +38,18 @@ const CREDENTIALS_PROBE_CONTENT = "FAKE-CREDENTIALS-PROBE-91\n";
 const WRITE_PROOF_CONTENT = "written through the restricted surface\n";
 
 /**
+ * The cancel case: a turn the agent must remember, a long turn the stub HOLDS
+ * (the hold is the determinism — the cancel lands while the model request is
+ * genuinely in flight, and nothing here sleeps to make that true), and the
+ * follow-up that proves the session and its transcript survived the stop.
+ */
+const CANCEL_MEMORY_PROMPT = "Запомни: кодовое число 41.";
+const CANCEL_LONG_PROMPT = "Считай от 1 до 1000 по одному числу в строке, не останавливайся.";
+const CANCEL_FOLLOW_UP_PROMPT = "Какое кодовое число ты запомнил? Ответь только числом.";
+/** Longer than the cancel round trip below, short enough to drain afterwards. */
+const CANCEL_HOLD_MS = 3000;
+
+/**
  * The agent-visible tools this deployment KEEPS (see KEPT_TOOL_NAMES in
  * src/agentTask.ts): workspace file work, internet SEARCH (`web_search`) plus
  * benign bookkeeping. Search is kept deliberately — it is provider-mediated
@@ -141,6 +153,15 @@ async function hasDsh(): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+/** Poll `check` until it returns a value, or fail with `description`. */
+async function waitFor(check: () => boolean, description: string, timeoutMs = 30_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!check()) {
+    if (Date.now() >= deadline) throw new Error(`timed out after ${timeoutMs}ms waiting for ${description}`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
 
@@ -620,4 +641,65 @@ describe.skipIf(!realEnabled)("REAL agentTask: restricted tool surface + read co
     expect(joined).toContain("outside the workspace root");
     expect(joined).not.toContain("unknown tool");
   }, 120_000);
+
+  /**
+   * The soft stop at AGENT level: `runner.cancel` aborts the turn in flight and
+   * settles it as `cancelled`, but the handle, the session and the transcript
+   * survive — the next task continues the SAME session and the model is handed
+   * the pre-cancel turn. The counterpart of the Telegram `/stop` case: there the
+   * proof is the chat's session mapping and its receipt, here it is the runner's
+   * own session id and the request the engine really sends.
+   */
+  it("REAL: a cancelled turn keeps the session and its context", async () => {
+    const first = await runScripted({
+      ref: alphaRef,
+      prompt: CANCEL_MEMORY_PROMPT,
+      script: [{ text: "запомнил" }],
+      finalText: "запомнил"
+    });
+    expect(first.result.ok).toBe(true);
+    const firstOk = first.result as Extract<typeof first.result, { ok: true }>;
+    expect(firstOk.sessionId).toBeTruthy();
+    const firstTurn = stub!.calls.at(-1);
+    expect(JSON.stringify(firstTurn?.body ?? {})).toContain(CANCEL_MEMORY_PROMPT);
+
+    // The long task: the stub HOLDS its reply, so the turn is parked on the
+    // model request (the wait below is on that request landing, never a sleep).
+    const callsBefore = stub!.calls.length;
+    const heldAt = Date.now();
+    stub!.setDelay(CANCEL_HOLD_MS);
+    const long = runner!.run(alphaRef, CANCEL_LONG_PROMPT);
+    try {
+      await waitFor(() => stub!.calls.length > callsBefore, "the held turn to reach the stub");
+      const outcome = await runner!.cancel(alphaRef);
+      expect(outcome.cancelled).toBe(true);
+      expect(outcome.dropped).toBe(0);
+      await expect(long).resolves.toMatchObject({ ok: false, code: "cancelled" });
+    } finally {
+      stub!.setDelay(0);
+    }
+    // Release the hold and let the parked response settle before the follow-up
+    // (the stub keeps its own timer; mirrors the host seams cancel case).
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, CANCEL_HOLD_MS - (Date.now() - heldAt))));
+
+    // The follow-up: same workspace, therefore the same session. Its ANSWER is
+    // scripted (the stub generates nothing), so the memory is proven where it
+    // really lives — in what the engine asks: the request still carries the turn
+    // that preceded the cancel, and the transcript grew instead of restarting.
+    const follow = await runScripted({
+      ref: alphaRef,
+      prompt: CANCEL_FOLLOW_UP_PROMPT,
+      script: [{ text: "41" }],
+      finalText: "41"
+    });
+    expect(follow.result.ok).toBe(true);
+    const followOk = follow.result as Extract<typeof follow.result, { ok: true }>;
+    expect(followOk.text).toBe("41");
+    expect(followOk.sessionId).toBe(firstOk.sessionId);
+    expect(runner!.sessionIdOf(alphaRef)).toBe(firstOk.sessionId);
+    const followTurn = stub!.calls.at(-1);
+    const followBody = JSON.stringify(followTurn?.body ?? {});
+    expect(followBody, followBody.slice(0, 2000)).toContain(CANCEL_MEMORY_PROMPT);
+    expect(followTurn?.body.messages?.length ?? 0).toBeGreaterThan(firstTurn?.body.messages?.length ?? 0);
+  }, 240_000);
 });
