@@ -292,4 +292,31 @@ describe("api client", () => {
       { path: "/api/telegram/clear-token", body: {} }
     ]);
   });
+
+  it("listSessions POSTs the workspace ref to /api/sessions/list", async () => {
+    localStorage.setItem(TOKEN_KEY, "tok-1");
+    const body = {
+      sessions: [{ id: "session-1", title: "старая задача", channel: "telegram", createdAt: "2026-09-11T00:00:00.000Z" }]
+    };
+    const fetchMock = mockFetchOnce(200, body);
+    vi.stubGlobal("fetch", fetchMock);
+    const api = createApiClient();
+    const res = await api.listSessions("project", "alpha");
+    expect(res.sessions[0]?.title).toBe("старая задача");
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/sessions/list");
+    expect(init.method).toBe("POST");
+    expect(init.headers).toMatchObject({ authorization: "Bearer tok-1" });
+    expect(JSON.parse(String(init.body))).toEqual({ scope: "project", name: "alpha" });
+  });
+
+  it("listSessions omits name for the home workspace", async () => {
+    localStorage.setItem(TOKEN_KEY, "tok-1");
+    const fetchMock = mockFetchOnce(200, { sessions: [] });
+    vi.stubGlobal("fetch", fetchMock);
+    const api = createApiClient();
+    await api.listSessions("home");
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({ scope: "home" });
+  });
 });

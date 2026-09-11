@@ -226,3 +226,22 @@ export interface TelegramTestResponse {
   username: string;
 }
 
+// Workspace sessions surface — read-only list of the sessions bound to a workspace
+export interface WorkspaceSessionInfo {
+  id: string;
+  /** Заголовок сессии из её лога; null, когда события title в логе нет. */
+  title: string | null;
+  /** Канал, создавший сессию: сейчас "telegram"; строка — форма не ломается на новых. */
+  channel: string;
+  createdAt: string; // ISO 8601
+}
+
+export interface SessionsListRequest {
+  scope: WorkspaceScope;
+  /** Проект-слаг; обязателен для scope === "project", отсутствует для "home". */
+  name?: string;
+}
+export interface SessionsListResponse {
+  sessions: WorkspaceSessionInfo[];
+}
+

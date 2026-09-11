@@ -40,6 +40,7 @@ function makeApi(overrides: Partial<AdminApi> = {}): AdminApi {
     readWorkspaceDir: vi.fn(async (scope: WorkspaceScope, name: string | undefined) => ({
       entries: scope === "project" && name === "alpha" ? [{ name: "src", kind: "dir" as const }] : []
     })),
+    listSessions: vi.fn(async () => ({ sessions: [] })),
     subscribeWorkspaceEvents: vi.fn(() => () => {}),
     ...overrides
   } as AdminApi;

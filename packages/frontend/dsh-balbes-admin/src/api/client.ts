@@ -29,7 +29,9 @@ import type {
   TelegramSaveResponse,
   TelegramTestResponse,
   TelegramDisableResponse,
-  TelegramClearTokenResponse
+  TelegramClearTokenResponse,
+  SessionsListRequest,
+  SessionsListResponse
 } from "dsh-balbes-contracts";
 import { createSseParser } from "./sse";
 
@@ -63,6 +65,7 @@ export interface AdminApi {
   createWorkspace(name: string): Promise<WorkspaceCreateResponse>;
   deleteWorkspace(name: string): Promise<WorkspaceDeleteResponse>;
   readWorkspaceDir(scope: WorkspaceScope, name: string | undefined, path: string): Promise<WorkspaceTreeResponse>;
+  listSessions(scope: WorkspaceScope, name?: string): Promise<SessionsListResponse>;
   listModels(): Promise<ModelsListResponse>;
   saveModel(req: ModelsSaveRequest): Promise<ModelsSaveResponse>;
   deleteModel(routeId: string): Promise<ModelsDeleteResponse>;
@@ -173,6 +176,10 @@ export function createApiClient(): AdminApi {
     readWorkspaceDir: (scope, name, path) => {
       const body: WorkspaceTreeRequest = name === undefined ? { scope, path } : { scope, name, path };
       return guard(request<WorkspaceTreeResponse>("/api/workspaces/tree", body));
+    },
+    listSessions: (scope, name) => {
+      const body: SessionsListRequest = name === undefined ? { scope } : { scope, name };
+      return guard(request<SessionsListResponse>("/api/sessions/list", body));
     },
     listModels: () => guard(request<ModelsListResponse>("/api/models/list", {})),
     saveModel: (req) => guard(request<ModelsSaveResponse>("/api/models/save", req satisfies ModelsSaveRequest)),
