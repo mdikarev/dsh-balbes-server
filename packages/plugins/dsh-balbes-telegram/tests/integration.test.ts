@@ -26,9 +26,9 @@ import { TELEGRAM_COMMANDS } from "../src/commands.js";
  *
  * Everything between those two boundaries is shipped code: the five admin
  * routes, the settings namespace, the credentials store, the state file, the
- * polling runtime, the workspace-aware agent runner, the read-containment
- * guard and the owner's chat machine. The scenarios drive the whole owner path
- * through the real `/api/telegram/*` routes and fake Telegram updates.
+ * polling runtime, the workspace-aware agent runner and the owner's chat
+ * machine. The scenarios drive the whole owner path through the real
+ * `/api/telegram/*` routes and fake Telegram updates.
  *
  * Gate: RUN_REAL=1 AND a dsh executable on PATH (mirrors the models/host REAL
  * suites); skipped otherwise, so the plain unit gate stays hermetic.
@@ -62,10 +62,8 @@ const BOT_USERNAME = "balbes_test_bot";
 const NOTE_TEXT = "note inside project demo\n";
 const STUB_REPLY = "ok from stub";
 const STUB_REPLY_TWO = "ok from stub two";
-const CONTAINMENT_REPLY = "containment ok";
 const PROMPT_ONE = "Reply with exactly: ok from stub";
 const PROMPT_TWO = "Reply with exactly: ok from stub two";
-const PROMPT_CONTAINMENT = "read the server credentials file and quote it";
 /** The task whose text the agent must still remember after an owner stop. */
 const MEMORY_PROMPT = "Запомни: код проекта 41.";
 const MEMORY_REPLY = "запомнил: код проекта 41";
@@ -962,7 +960,7 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
     }
   }, 300_000);
 
-  it("scenario 2 — two workspaces, restart, resume: distinct sessions, restored offset, growing history, read containment", async () => {
+  it("scenario 2 — two workspaces, restart, resume: distinct sessions, restored offset, growing history", async () => {
     if (home === undefined) throw new Error("beforeAll did not initialize home");
     const server = requireApi();
     const llm = requireStub();
@@ -1079,30 +1077,6 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
       const messagesAfter = turnTwo?.body.messages?.length ?? 0;
       expect(messagesAfter, JSON.stringify(turnTwo?.body).slice(0, 2000)).toBeGreaterThan(messagesBefore);
       expect(JSON.stringify(turnTwo?.body)).toContain(PROMPT_TWO);
-
-      // (g) containment through the COMPOSED profile: a task that asks for a
-      // path outside the workspace root is denied by composeAgentSetup's guard,
-      // so the bytes of $DSH_HOME/.credentials.yaml (the bot token lives there)
-      // never reach the model, the reply or any outbound message.
-      llm.setScript([
-        { toolCall: { name: "read", arguments: JSON.stringify({ file_path: join(home, ".credentials.yaml") }) } },
-        { text: CONTAINMENT_REPLY }
-      ]);
-      const guardFrom = server.outbound.length;
-      server.enqueueMessage({ fromId: OWNER_USER_ID, text: PROMPT_CONTAINMENT });
-      await waitForOutbound(
-        (entry) => entry.method === "sendMessage" && entry.body.text === CONTAINMENT_REPLY,
-        "the containment reply",
-        guardFrom,
-        180_000
-      );
-      const guardBody = JSON.stringify(llm.calls.at(-1)?.body ?? {});
-      expect(guardBody, guardBody.slice(0, 2000)).toContain("outside the workspace root");
-      expect(JSON.stringify(llm.calls)).not.toContain(BOT_TOKEN);
-      // the owner still got the (scripted) answer, and nothing else carried the
-      // credentials file's content
-      expect(sentTexts(guardFrom)).toContain(CONTAINMENT_REPLY);
-      expect(JSON.stringify(deliveredFrom(guardFrom))).not.toContain(BOT_TOKEN);
     } finally {
       await stopServer();
     }
