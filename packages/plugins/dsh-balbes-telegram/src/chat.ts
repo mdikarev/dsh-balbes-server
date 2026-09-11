@@ -5,11 +5,14 @@ import {
   HELP_TEXT,
   MODELS_UNAVAILABLE,
   NO_ACTIVE_WORKSPACE_LINE,
+  NO_KEY_HINT,
   STOP_IDLE_ANSWER,
   TASK_IDLE_LINE,
   UNKNOWN_COMMAND,
   formatElapsed,
-  menuCard
+  menuCard,
+  modelConnectionsCard,
+  modelListCard
 } from "./cards.js";
 import { parseCommand } from "./commands.js";
 import {
@@ -55,6 +58,11 @@ import type { ClassifiedUpdate } from "./updates.js";
  *   ws                        workspace list, first page
  *   ws:pg:<n>                 workspace list, page n
  *   ws:pick:<i>               i-th row of the last rendered workspace list
+ *   mdl                       the model picker: the configured connections
+ *   mdl:c:<i>                 i-th connection of the last rendered picker
+ *   mdl:pg:<n>                page n of the picker's own list
+ *   mdl:m:<i>                 i-th model of the last rendered model list
+ *   mdl:back                  back from a model list to the connections
  *   act:task                  legacy: how to send a task (the card supersedes it)
  *   act:files                 active workspace: open the file-tree root
  *   act:ws                    active workspace: pick another workspace
@@ -183,6 +191,34 @@ interface ResetSnapshot {
 }
 
 /**
+ * One rendered connection list. The snapshot keeps the WHOLE list while the
+ * card renders one page's slice, so a `mdl:c:<i>` index stays absolute.
+ */
+interface ModelConnectionsSnapshot {
+  kind: "modelConnections";
+  /** The chat the message belongs to: a foreign chat never resolves here. */
+  chatId: number;
+  rows: ModelConnectionRow[];
+  page: number;
+  pages: number;
+}
+
+/**
+ * One rendered model list, kept per connection: `routeId` and every model come
+ * from what the owner saw, so a press writes the model the card showed.
+ */
+interface ModelListSnapshot {
+  kind: "modelList";
+  /** The chat the message belongs to: a foreign chat never resolves here. */
+  chatId: number;
+  routeId: string;
+  label: string;
+  models: string[];
+  page: number;
+  pages: number;
+}
+
+/**
  * One rendered menu card. The card's buttons are pure codes and its content is
  * read live from the machine, so nothing about it needs remembering — the
  * snapshot exists so a message showing the card is known to BE the card (and
@@ -194,7 +230,14 @@ interface MenuSnapshot {
   chatId: number;
 }
 
-type Snapshot = WorkspacesSnapshot | ListingSnapshot | FileSnapshot | ResetSnapshot | MenuSnapshot;
+type Snapshot =
+  | WorkspacesSnapshot
+  | ListingSnapshot
+  | FileSnapshot
+  | ResetSnapshot
+  | MenuSnapshot
+  | ModelConnectionsSnapshot
+  | ModelListSnapshot;
 
 const DEFAULT_LIST_PAGE_SIZE = 8;
 const DEFAULT_FILE_PAGE_CHARS = 3000;
@@ -241,6 +284,13 @@ const TRUNCATION_NOTE =
 const INTERNAL_FAILURE = "внутренняя ошибка";
 const STALE_LIST = "Список устарел, откройте заново";
 const STALE_ACTION = "Действие устарело — повторите";
+/**
+ * A rejected default-model write. The models service re-reads its connections
+ * before it saves (rejecting an unknown route and a model it does not offer),
+ * so this is also the answer for a connection or model that vanished after the
+ * card was rendered: nothing was written, and the owner refreshes and retries.
+ */
+const MODEL_SAVE_FAILED = "Не удалось сменить модель — обновите список";
 
 /**
  * Task 7 settles a run that the owner's own «Сбросить контекст» interrupted as
@@ -639,6 +689,131 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
     await edit(chatId, messageId, view.text, view.keyboard);
   }
 
+  /**
+   * One page of the model picker, or `undefined` when there is no model surface
+   * to render (not composed, or its read failed): the caller then answers with
+   * the one honest text it has (`MODELS_UNAVAILABLE`).
+   *
+   * The card gets this page's slice with its global start index while the
+   * snapshot keeps the whole list, so `mdl:c:<i>` is an index into what the
+   * owner actually saw — paged by the chat's own list page size, never a second
+   * one. A connection without a key is listed (the owner must be able to see it
+   * exists) but labelled as unusable; opening it is refused where it is pressed.
+   */
+  async function buildConnectionsView(chatId: number, page: number): Promise<
+    | {
+        text: string;
+        keyboard: InlineKeyboardMarkup;
+        snapshot: ModelConnectionsSnapshot;
+      }
+    | undefined
+  > {
+    if (deps.models === undefined) return undefined;
+    let rows: ModelConnectionRow[];
+    try {
+      rows = await deps.models.list();
+    } catch (error) {
+      warn(`models list failed (${codeOf(error)})`);
+      return undefined;
+    }
+    const current = deps.models.current();
+    const pages = Math.max(1, Math.ceil(rows.length / listPageSize));
+    const currentPage = clampPage(page, pages);
+    const start = currentPage * listPageSize;
+    const visible = rows.slice(start, start + listPageSize).map((row, offset) => ({
+      index: start + offset,
+      label: row.hasKey ? row.displayName : `${row.displayName} (нет ключа)`,
+      selectable: row.hasKey,
+      isDefault: row.isDefault
+    }));
+    const card = modelConnectionsCard({
+      currentLabel: `${current.model} · ${current.provider}`,
+      rows: visible,
+      page: currentPage,
+      pages
+    });
+    return {
+      text: card.text,
+      keyboard: card.keyboard,
+      snapshot: {
+        kind: "modelConnections",
+        chatId,
+        rows: rows.map((row) => ({ ...row, models: [...row.models] })),
+        page: currentPage,
+        pages
+      }
+    };
+  }
+
+  /** Send the model picker as a new message, snapshotted under its own id. */
+  async function sendModelsCard(chatId: number): Promise<void> {
+    const view = await buildConnectionsView(chatId, 0);
+    if (view === undefined) {
+      await sendMenu(chatId, MODELS_UNAVAILABLE);
+      return;
+    }
+    const sentId = await send(chatId, view.text, view.keyboard);
+    // Snapshotted under the id Telegram assigned, so the picker's first press
+    // already resolves the row the owner saw.
+    if (sentId !== undefined) putSnapshot(sentId, view.snapshot);
+  }
+
+  /** Render (or re-render) the connection list into a known message. */
+  async function renderConnections(chatId: number, messageId: number, page: number): Promise<void> {
+    const view = await buildConnectionsView(chatId, page);
+    if (view === undefined) {
+      await editWithMenu(chatId, messageId, MODELS_UNAVAILABLE);
+      return;
+    }
+    putSnapshot(messageId, view.snapshot);
+    await edit(chatId, messageId, view.text, view.keyboard);
+  }
+
+  /**
+   * Render one page of one connection's models. The models come from the
+   * snapshot the owner's card was rendered from, sliced with the chat's own
+   * page size and passed with the GLOBAL index of the slice's first row, so
+   * `mdl:m:<i>` keeps pointing at the model the owner saw.
+   *
+   * The bullet marks the model in force, which is why it is only passed for the
+   * connection the current default belongs to: a same-named model of another
+   * connection is not the one running.
+   */
+  async function renderModelList(
+    chatId: number,
+    messageId: number,
+    connection: { routeId: string; label: string; models: string[] },
+    requestedPage: number
+  ): Promise<void> {
+    const pages = Math.max(1, Math.ceil(connection.models.length / listPageSize));
+    const page = clampPage(requestedPage, pages);
+    const start = page * listPageSize;
+    const current = deps.models?.current();
+    const card = modelListCard({
+      // The card owns its copy and renders no page line of its own, so the page
+      // is stated through its header — the same «Страница n/m» shape the
+      // workspace and file listings use.
+      label: withPageLine(connection.label, page, pages),
+      models: connection.models.slice(start, start + listPageSize),
+      startIndex: start,
+      page,
+      pages,
+      ...(current !== undefined && current.provider === connection.routeId
+        ? { currentModel: current.model }
+        : {})
+    });
+    putSnapshot(messageId, {
+      kind: "modelList",
+      chatId,
+      routeId: connection.routeId,
+      label: connection.label,
+      models: [...connection.models],
+      page,
+      pages
+    });
+    await edit(chatId, messageId, card.text, card.keyboard);
+  }
+
   /** Render a directory listing, falling back to the parent and then the root. */
   async function openListing(
     chatId: number,
@@ -886,6 +1061,74 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
       if (index === undefined) return STALE_ACTION;
       return pickWorkspace(chatId, messageId, index);
     }
+    if (data === "mdl") {
+      await renderConnections(chatId, messageId, 0);
+      return undefined;
+    }
+    if (data.startsWith("mdl:c:")) {
+      const index = parseIndex(data.slice("mdl:c:".length));
+      if (index === undefined) return STALE_ACTION;
+      const snapshot = snapshotOf(chatId, messageId);
+      if (snapshot === undefined || snapshot.kind !== "modelConnections") return STALE_ACTION;
+      const row = snapshot.rows[index];
+      if (row === undefined) return STALE_ACTION;
+      // A connection without a key is listed but never opened: its models
+      // cannot be used, and the press must not look like a step towards a save.
+      if (!row.hasKey) return NO_KEY_HINT;
+      await renderModelList(
+        chatId,
+        messageId,
+        { routeId: row.routeId, label: row.displayName, models: row.models },
+        0
+      );
+      return undefined;
+    }
+    if (data.startsWith("mdl:pg:")) {
+      const page = parseIndex(data.slice("mdl:pg:".length));
+      if (page === undefined) return STALE_ACTION;
+      const snapshot = snapshotOf(chatId, messageId);
+      if (snapshot === undefined) return STALE_ACTION;
+      // Both model cards page with the same code, so the page is resolved by
+      // the kind of list the pressed message is showing.
+      if (snapshot.kind === "modelConnections") {
+        await renderConnections(chatId, messageId, page);
+        return undefined;
+      }
+      if (snapshot.kind === "modelList") {
+        await renderModelList(chatId, messageId, snapshot, page);
+        return undefined;
+      }
+      return STALE_ACTION;
+    }
+    if (data.startsWith("mdl:m:")) {
+      const index = parseIndex(data.slice("mdl:m:".length));
+      if (index === undefined) return STALE_ACTION;
+      const snapshot = snapshotOf(chatId, messageId);
+      if (snapshot === undefined || snapshot.kind !== "modelList") return STALE_ACTION;
+      const model = snapshot.models[index];
+      if (model === undefined || deps.models === undefined) return STALE_ACTION;
+      // The connection and the model are read from the snapshot the card was
+      // rendered from — never from the payload, which only carries an index.
+      // The service re-reads its own connections before writing, so a
+      // connection or model that vanished since then is rejected there and
+      // reported here instead of being written silently.
+      try {
+        await deps.models.saveDefault(snapshot.routeId, model);
+      } catch (error) {
+        warn(`saving the default model failed (${codeOf(error)})`);
+        return MODEL_SAVE_FAILED;
+      }
+      // The card the picker was opened from becomes the menu again, so the new
+      // model shows in its «Модель:» line and no separate confirmation is sent.
+      await renderMenu(chatId, messageId, true);
+      return undefined;
+    }
+    if (data === "mdl:back") {
+      const snapshot = snapshotOf(chatId, messageId);
+      if (snapshot === undefined || snapshot.kind !== "modelList") return STALE_ACTION;
+      await renderConnections(chatId, messageId, 0);
+      return undefined;
+    }
     if (data === "act:task") {
       const ref = active;
       if (ref === undefined) {
@@ -1042,10 +1285,7 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
           return;
         }
         if (command === "model") {
-          // Task 9 owns the picker: until it lands, the honest answer is that
-          // the section is unavailable, plus the card to act from.
-          await send(update.chatId, MODELS_UNAVAILABLE);
-          await sendMenu(update.chatId);
+          await sendModelsCard(update.chatId);
           return;
         }
         if (command === "reset") {

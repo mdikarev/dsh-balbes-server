@@ -5,6 +5,8 @@ import {
   createChatMachine,
   type ChatDeps,
   type ChatMachine,
+  type ModelConnectionRow,
+  type ModelsSlice,
   type WorkspaceFileResult,
   type WorkspaceTreeEntry
 } from "../src/chat.js";
@@ -240,11 +242,56 @@ function makeRunner(): {
   };
 }
 
+/** The injected models fake: the service slice plus the write log tests assert on. */
+type ModelsFake = ModelsSlice & {
+  saved: Array<{ provider: string; model: string }>;
+  failList(error: unknown): void;
+};
+
+/**
+ * The models service fake. `list()` hands out copies and `saveDefault` records
+ * the write and moves the current selection, like the real service (which
+ * re-reads its connections on every call and persists the new default).
+ */
+function makeModels(rows: ModelConnectionRow[]): ModelsFake {
+  const copy = (source: ModelConnectionRow[]): ModelConnectionRow[] =>
+    source.map((row) => ({ ...row, models: [...row.models] }));
+  const saved: Array<{ provider: string; model: string }> = [];
+  let connections = copy(rows);
+  let listFailure: unknown;
+  // The current default starts on the connection the service marked, on the
+  // first of its models — the same pair `current()` reports for a fresh setup.
+  const initial = connections.find((row) => row.isDefault) ?? connections[0];
+  let current =
+    initial === undefined
+      ? { provider: "", model: "" }
+      : { provider: initial.routeId, model: initial.models[0] ?? "" };
+
+  return {
+    saved,
+    async list(): Promise<ModelConnectionRow[]> {
+      if (listFailure !== undefined) throw listFailure;
+      return copy(connections);
+    },
+    current: (): { provider: string; model: string } => ({ ...current }),
+    async saveDefault(provider: string, model: string): Promise<{ provider: string; model: string }> {
+      saved.push({ provider, model });
+      current = { provider, model };
+      connections = connections.map((row) => ({ ...row, isDefault: row.routeId === provider }));
+      return { provider, model };
+    },
+    failList: (error: unknown): void => {
+      listFailure = error;
+    }
+  };
+}
+
 interface Harness {
   machine: ChatMachine;
   bot: ReturnType<typeof makeBot>;
   workspaces: ReturnType<typeof makeWorkspaces>;
   runner: ReturnType<typeof makeRunner>;
+  models: ModelsFake | undefined;
   activeChanges: Array<WorkspaceRef | undefined>;
   warns: string[];
 }
@@ -254,7 +301,7 @@ function makeHarness(
     listPageSize?: number;
     filePageChars?: number;
     maxFileBytes?: number;
-    models?: ChatDeps["models"];
+    models?: ModelsFake;
   } = {}
 ): Harness {
   const bot = makeBot();
@@ -279,7 +326,7 @@ function makeHarness(
       }
     }
   });
-  return { machine, bot, workspaces, runner, activeChanges, warns };
+  return { machine, bot, workspaces, runner, models: opts.models, activeChanges, warns };
 }
 
 let messageIdSeed = 500;
@@ -1325,15 +1372,15 @@ describe("chat machine: commands and menu card", () => {
     expect(without.bot.sent[0]!.text).not.toContain("Модель: ");
 
     const withModels = makeHarness({
-      models: {
-        async list() {
-          return [];
-        },
-        current: () => ({ provider: "deepseek", model: "deepseek-chat" }),
-        async saveDefault(provider, model) {
-          return { provider, model };
+      models: makeModels([
+        {
+          routeId: "deepseek",
+          displayName: "DeepSeek",
+          hasKey: true,
+          models: ["deepseek-chat"],
+          isDefault: true
         }
-      }
+      ])
     });
     await withModels.machine.onMessage(message("/menu"));
 
@@ -1376,6 +1423,215 @@ describe("chat machine: commands and menu card", () => {
     await h.machine.onCallback(callback("reset:yes", confirm.messageId));
 
     expect(h.runner.resets).toEqual([HOME]);
+  });
+});
+
+describe("chat machine: model picker", () => {
+  const CONNECTIONS: ModelConnectionRow[] = [
+    {
+      routeId: "deepseek-official",
+      displayName: "DeepSeek (официальный)",
+      hasKey: true,
+      models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+      isDefault: true
+    },
+    { routeId: "openai", displayName: "OpenAI", hasKey: false, models: ["gpt-4o"], isDefault: false }
+  ];
+
+  it("lists connections, marks the current one and never accepts a raw model string", async () => {
+    const h = makeHarness({ models: makeModels(CONNECTIONS) });
+    await h.machine.onMessage(message("/model"));
+
+    expect(h.bot.sent[0]!.text).toContain("🧠 Модель сейчас: deepseek-v4-flash · deepseek-official");
+    expect(h.bot.data(h.bot.sent[0]!.markup)).toEqual(["mdl:c:0", "mdl:c:1", "mnu"]);
+
+    const openai = h.bot.buttonByData(h.bot.sent[0]!.markup, "mdl:c:1")!;
+    expect(openai.text).toContain("нет ключа");
+    // A press resolves a row of the snapshot rendered into the message it is
+    // pressed in, so it carries the id of the card that was sent.
+    const cardId = h.bot.sent[0]!.messageId;
+    h.bot.sent.length = 0;
+    await h.machine.onCallback(callback("mdl:c:1", cardId));
+
+    expect(h.models!.saved).toHaveLength(0);
+    expect(h.bot.answers.at(-1)!.text).toBe("Ключ не задан — добавьте в админке");
+    // The refusal changes nothing: the card the owner pressed stays as it was.
+    expect(h.bot.edits).toHaveLength(0);
+  });
+
+  it("opens a connection, saves the chosen model and reflects it in the menu", async () => {
+    const h = makeHarness({ models: makeModels(CONNECTIONS) });
+    const listId = (await h.machine.onMessage(message("/model")), h.bot.sent[0]!.messageId);
+    await h.machine.onCallback(callback("mdl:c:0", listId));
+
+    expect(h.bot.lastEdit().messageId).toBe(listId);
+    expect(h.bot.lastEdit().text).toContain("🧠 DeepSeek (официальный)");
+    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual(["mdl:m:0", "mdl:m:1", "mdl:back"]);
+    await h.machine.onCallback(callback("mdl:m:1", listId));
+
+    expect(h.models!.saved).toEqual([{ provider: "deepseek-official", model: "deepseek-v4-pro" }]);
+    expect(h.bot.lastEdit().messageId).toBe(listId);
+    expect(h.bot.lastEdit().text).toContain("🤖 Агент сервера");
+    expect(h.bot.lastEdit().text).toContain("deepseek-v4-pro · deepseek-official");
+  });
+
+  it("opens the picker from the mdl button of a card that was sent", async () => {
+    const h = makeHarness({ models: makeModels(CONNECTIONS) });
+    const menuId = (await h.machine.onMessage(message("/menu")), h.bot.sent[0]!.messageId);
+
+    await h.machine.onCallback(callback("mdl", menuId));
+
+    expect(h.bot.lastEdit().messageId).toBe(menuId);
+    expect(h.bot.lastEdit().text).toContain("🧠 Модель сейчас: deepseek-v4-flash · deepseek-official");
+    // The rendered picker is pressable at once: the edit registered the snapshot.
+    await h.machine.onCallback(callback("mdl:c:0", menuId));
+
+    expect(h.bot.lastEdit().text).toContain("🧠 DeepSeek (официальный)");
+  });
+
+  it("pages a long model list and returns to the connections", async () => {
+    const many = { ...CONNECTIONS[0]!, models: Array.from({ length: 10 }, (_, i) => `m-${i}`) };
+    const h = makeHarness({ models: makeModels([many]), listPageSize: 8 });
+    const listId = (await h.machine.onMessage(message("/model")), h.bot.sent[0]!.messageId);
+    await h.machine.onCallback(callback("mdl:c:0", listId));
+
+    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual([
+      ...Array.from({ length: 8 }, (_, i) => `mdl:m:${i}`),
+      "mdl:pg:0",
+      "mdl:pg:1",
+      "mdl:back"
+    ]);
+    await h.machine.onCallback(callback("mdl:pg:1", listId));
+    expect(h.bot.lastEdit().text).toContain("Страница 2/2");
+    // The page carries the GLOBAL indices, so a press is absolute either way.
+    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual(["mdl:m:8", "mdl:m:9", "mdl:pg:0", "mdl:pg:1", "mdl:back"]);
+    await h.machine.onCallback(callback("mdl:back", listId));
+    expect(h.bot.lastEdit().text).toContain("Выберите соединение:");
+  });
+
+  it("pages the connection list with the same mdl:pg code (global row indices)", async () => {
+    const rows: ModelConnectionRow[] = [
+      { routeId: "a", displayName: "A", hasKey: true, models: ["a-1"], isDefault: true },
+      { routeId: "b", displayName: "B", hasKey: true, models: ["b-1"], isDefault: false },
+      { routeId: "c", displayName: "C", hasKey: false, models: ["c-1"], isDefault: false }
+    ];
+    const h = makeHarness({ models: makeModels(rows), listPageSize: 2 });
+    const cardId = (await h.machine.onMessage(message("/model")), h.bot.sent[0]!.messageId);
+
+    expect(h.bot.data(h.bot.sent[0]!.markup)).toEqual(["mdl:c:0", "mdl:c:1", "mdl:pg:0", "mdl:pg:1", "mnu"]);
+    await h.machine.onCallback(callback("mdl:pg:1", cardId));
+
+    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual(["mdl:c:2", "mdl:pg:0", "mdl:pg:1", "mnu"]);
+    // The third row sits on page 2 and is still refused for its missing key.
+    await h.machine.onCallback(callback("mdl:c:2", cardId));
+    expect(h.bot.answers.at(-1)!.text).toBe("Ключ не задан — добавьте в админке");
+    expect(h.models!.saved).toHaveLength(0);
+  });
+
+  it("marks the active model only on the connection that provides it", async () => {
+    const rows: ModelConnectionRow[] = [
+      { routeId: "a", displayName: "A", hasKey: true, models: ["shared", "a-only"], isDefault: false },
+      { routeId: "b", displayName: "B", hasKey: true, models: ["shared"], isDefault: true }
+    ];
+    const h = makeHarness({ models: makeModels(rows) });
+    const cardId = (await h.machine.onMessage(message("/model")), h.bot.sent[0]!.messageId);
+
+    await h.machine.onCallback(callback("mdl:c:0", cardId));
+    expect(h.bot.buttonByData(h.bot.lastEdit().markup, "mdl:m:0")!.text).toBe("shared");
+
+    await h.machine.onCallback(callback("mdl:back", cardId));
+    await h.machine.onCallback(callback("mdl:c:1", cardId));
+    expect(h.bot.buttonByData(h.bot.lastEdit().markup, "mdl:m:0")!.text).toBe("• shared");
+  });
+
+  it("degrades when the models service is absent", async () => {
+    const h = makeHarness();
+    await h.machine.onMessage(message("/model"));
+
+    expect(h.bot.sent[0]!.text).toBe("Раздел моделей недоступен");
+    expect(h.bot.data(h.bot.sent[0]!.markup)).toEqual(["ws", "mdl", "mnu:refresh"]);
+
+    await h.machine.onCallback(callback("mdl", 4242));
+
+    expect(h.bot.lastEdit().text).toBe("Раздел моделей недоступен");
+    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual(["ws", "mdl", "mnu:refresh"]);
+  });
+
+  it("reports an unreadable connection list without leaking the failure", async () => {
+    const models = makeModels(CONNECTIONS);
+    models.failList(Object.assign(new Error("EACCES: permission denied, open '/dsh/models.json'"), { code: "EACCES" }));
+    const h = makeHarness({ models });
+
+    await h.machine.onMessage(message("/model"));
+
+    expect(h.bot.sent[0]!.text).toBe("Раздел моделей недоступен");
+    expect(h.bot.sent[0]!.text).not.toContain("/dsh");
+    expect(h.warns).toHaveLength(1);
+    expect(h.warns[0]).not.toContain("permission denied");
+
+    await h.machine.onCallback(callback("mdl", 4300));
+
+    expect(h.bot.lastEdit().text).toBe("Раздел моделей недоступен");
+    expect(h.warns).toHaveLength(2);
+  });
+
+  it("reports a vanished connection instead of saving it", async () => {
+    const models = makeModels(CONNECTIONS);
+    models.saveDefault = async () => {
+      throw Object.assign(new Error("no such provider connection"), { code: "invalid-route" });
+    };
+    const h = makeHarness({ models });
+    const listId = (await h.machine.onMessage(message("/model")), h.bot.sent[0]!.messageId);
+    await h.machine.onCallback(callback("mdl:c:0", listId));
+    const editsBefore = h.bot.edits.length;
+
+    await h.machine.onCallback(callback("mdl:m:0", listId));
+
+    expect(h.bot.answers.at(-1)!.text).toBe("Не удалось сменить модель — обновите список");
+    // A rejected write leaves the card exactly as it was.
+    expect(h.bot.edits).toHaveLength(editsBefore);
+    expect(h.warns.at(-1)).toContain("saving the default model failed");
+    expect(h.warns.at(-1)).not.toContain("no such provider connection");
+  });
+
+  it("never reads a provider or a model out of the callback payload", async () => {
+    const h = makeHarness({ models: makeModels(CONNECTIONS) });
+    const cardId = (await h.machine.onMessage(message("/model")), h.bot.sent[0]!.messageId);
+    await h.machine.onCallback(callback("mdl:c:0", cardId));
+    const editsBefore = h.bot.edits.length;
+    const answersBefore = h.bot.answers.length;
+
+    await h.machine.onCallback(callback("mdl:m:deepseek-v4-pro", cardId));
+    await h.machine.onCallback(callback("mdl:c:deepseek-official", cardId));
+
+    expect(h.models!.saved).toHaveLength(0);
+    expect(h.bot.answers.slice(answersBefore).map((answer) => answer.text)).toEqual([
+      "Действие устарело — повторите",
+      "Действие устарело — повторите"
+    ]);
+    expect(h.bot.edits).toHaveLength(editsBefore);
+  });
+
+  it("answers a stale or foreign model snapshot without touching the models service", async () => {
+    const h = makeHarness({ models: makeModels(CONNECTIONS) });
+    const cardId = (await h.machine.onMessage(message("/model")), h.bot.sent[0]!.messageId);
+    await h.machine.onCallback(callback("mdl:c:0", cardId));
+    const editsBefore = h.bot.edits.length;
+    const answersBefore = h.bot.answers.length;
+
+    // out-of-range index inside a known snapshot, and an unknown message (restart)
+    await h.machine.onCallback(callback("mdl:m:9", cardId));
+    await h.machine.onCallback(callback("mdl:m:0", 4400));
+    // a snapshot rendered for another chat never resolves here
+    await h.machine.onCallback(callback("mdl:m:0", cardId, "cb-foreign", CHAT + 1));
+
+    expect(h.bot.answers.slice(answersBefore).map((answer) => answer.text)).toEqual([
+      "Действие устарело — повторите",
+      "Действие устарело — повторите",
+      "Действие устарело — повторите"
+    ]);
+    expect(h.models!.saved).toHaveLength(0);
+    expect(h.bot.edits).toHaveLength(editsBefore);
   });
 });
 
