@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, mkdir, cp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, cp, rm, writeFile, readdir, stat as statFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -13,8 +13,16 @@ import { createAdminAuth, writeAdminAuth } from "../../../bundles/dsh-balbes-hos
  * REAL-композиция домена сессий: настоящий профиль dsh (dsh-base + host-бандл
  * + balbes-workspaces + balbes-sessions), поднятый настоящим CLI. Проверяются
  * реальные ручки, реальный реестр на диске и реальные коды ошибок; движок
- * сессий — настоящий (в этом сценарии в нём просто нет сессий, поэтому годные
- * записи реестра отсеиваются, а повреждённый реестр даёт 500).
+ * сессий — настоящий (во втором сценарии в нём просто нет сессий, поэтому
+ * годные записи реестра отсеиваются, а повреждённый реестр даёт 500).
+ *
+ * Третий сценарий — положительный контроль к этому отсеиванию: сессию создаёт
+ * настоящий /api/prompt, и её заголовок с временем создания приходят из
+ * движка. Единственная подмена — внешняя LLM-граница: адаптер
+ * deepseek-official направлен на локальный SSE-стаб
+ * (`tests/helpers/stub-llm.mjs`, тем же приёмом, что и telegram REAL). Всё
+ * остальное — shipped код: композиция профиля, ручки плагинов, реестр на
+ * диске, движок сессий и персистенция.
  *
  * Гейт: RUN_REAL=1 и `dsh` в PATH (как у соседних REAL-наборов).
  */
@@ -142,6 +150,44 @@ describe.skipIf(!realEnabled)("REAL composition (sessions API)", () => {
     return (loginRes.json as { token: string }).token;
   }
 
+  /** Сервер, поднятый в каталоге проекта: cwd сессии из /api/prompt = этот каталог. */
+  async function bootServerWithCwd(home: string, cwd: string): Promise<string> {
+    child = spawn("dsh", ["--profile", PROFILE], {
+      env: {
+        ...process.env,
+        DSH_HOME: home,
+        BALBES_PORT: String(port),
+        DSH_TELEMETRY_DISABLED: "1",
+        // адаптер deepseek-official требует ключ даже против стаба (как в telegram REAL)
+        DEEPSEEK_API_KEY: "test-key"
+      },
+      cwd,
+      stdio: "ignore"
+    });
+    await waitForHealth(port, child);
+    const loginRes = await postJson(`http://127.0.0.1:${port}/api/auth/login`, { login, password });
+    expect(loginRes.status, loginRes.raw).toBe(200);
+    return (loginRes.json as { token: string }).token;
+  }
+
+  /** Новейшая материализованная сессия в $DSH_HOME/sessions (раскладка — деталь движка). */
+  async function findNewSessionId(home: string): Promise<string> {
+    const root = join(home, "sessions");
+    const projectDirs = await readdir(root);
+    const candidates: Array<{ id: string; mtime: number }> = [];
+    for (const projectDir of projectDirs) {
+      for (const sessionDir of await readdir(join(root, projectDir))) {
+        const stats = await statFile(join(root, projectDir, sessionDir)).catch(() => null);
+        if (stats === null) continue;
+        candidates.push({ id: sessionDir, mtime: stats.mtimeMs });
+      }
+    }
+    candidates.sort((a, b) => b.mtime - a.mtime);
+    const newest = candidates[0];
+    if (newest === undefined) throw new Error("no session materialized under $DSH_HOME/sessions");
+    return newest.id;
+  }
+
   async function stopServer(): Promise<void> {
     if (child !== null && child.exitCode === null) {
       child.kill("SIGTERM");
@@ -240,4 +286,88 @@ describe.skipIf(!realEnabled)("REAL composition (sessions API)", () => {
       await rm(home, { recursive: true, force: true });
     }
   }, 240_000);
+
+  /**
+   * Настоящая сессия в рабочем каталоге проекта: /api/prompt создаёт свежую
+   * сессию с cwd = process.cwd() сервера, поэтому сервер поднимается в
+   * каталоге проекта, а id находится сканированием $DSH_HOME/sessions.
+   *
+   * Это положительный контроль ко второму сценарию: там `{sessions: []}` сам по
+   * себе не различал «реестр прочитан, а запись отсеяна движком» и «реестр не
+   * прочитан». Здесь годная запись есть, и ответ обязан её показать.
+   */
+  it("lists a real session with the title and creation time from the engine", async () => {
+    const stubUrl = new URL("./helpers/stub-llm.mjs", import.meta.url).href;
+    const { startStubLlm } = (await import(stubUrl)) as {
+      startStubLlm(options?: { text?: string }): Promise<{ port: number; close(): Promise<void> }>;
+    };
+    const stub = await startStubLlm({ text: "ok from stub" });
+    const home = await prepareHome();
+    try {
+      // Каталог проекта создаётся заранее: сервер поднимается ИМЕННО в нём, чтобы
+      // cwd сессии из /api/prompt совпал с корнем воркспейса. Ручная папка —
+      // валидный проект (каталог — источник правды), поэтому /api/workspaces/create
+      // здесь не нужен.
+      const projectDir = join(home, "projects", "alpha");
+      await mkdir(projectDir, { recursive: true });
+      // default model -> deepseek-official, adapter -> stub (ключ даёт env, как в telegram REAL)
+      await writeFile(
+        join(home, "settings.yaml"),
+        `agent-default-model:\n  provider: deepseek-official\n  model: deepseek-v4-flash\nllm-deepseek:\n  baseURL: http://127.0.0.1:${stub.port}\n`
+      );
+      const base = `http://127.0.0.1:${port}`;
+      const token = await bootServerWithCwd(home, projectDir);
+
+      const prompt = await postJson(`${base}/api/prompt`, { prompt: "Reply with exactly: ok from stub" }, token);
+      expect(prompt.status, prompt.raw).toBe(200);
+
+      const sessionId = await findNewSessionId(home);
+      expect(sessionId).toMatch(/^session-/);
+
+      // ПОРЯДОК ЗДЕСЬ КРИТИЧЕН, НЕ ПЕРЕСТАВЛЯТЬ. Реестр читается один раз за
+      // жизнь процесса: WorkspaceSessionsRegistry.load() мемоизирует состояние,
+      // экземпляр один на процесс, и читает его только ручка sessions.list.
+      // Поэтому запись файла «сбоку» обязана случиться ДО первого за жизнь
+      // этого процесса вызова sessions.list — иначе она этому процессу уже не
+      // видна, и сценарий позеленел бы/покраснел по неверной причине. Текущий
+      // порядок: boot -> prompt -> запись файла -> list; ни одного
+      // sessions.list (и вообще ничего, что трогает store) до этой строки
+      // добавлять нельзя.
+      //
+      // Зарегистрировать сессию через сервис balbesSessions в этом фикстурном
+      // профиле тоже нельзя: HTTP-ручки регистрации нет, а telegram —
+      // единственный вызывающий register() — в профиль не входит. «Сбоку, но
+      // до первого чтения» здесь единственный корректный путь.
+      await writeFile(
+        join(home, "workspace-sessions.json"),
+        JSON.stringify({ version: 1, workspaces: { "project:alpha": [{ sessionId, channel: "telegram" }] } }),
+        "utf8"
+      );
+
+      // Запись реестра состоит ровно из двух полей — { sessionId, channel }
+      // (WorkspaceSessionEntry): ни заголовка, ни времени создания реестр не
+      // хранит вообще, и подставить их «из реестра» физически нечем. Их
+      // приносит движок: sessionQuery.readTitleSnapshots отдаёт header сессии
+      // (оттуда createdAt) и сложенный из лога сессии заголовок. Проверки ниже
+      // доказывают именно это: id — тот, что движок материализовал на диске,
+      // заголовок — непустая строка, время — валидная ISO-дата.
+      const listed = await postJson(`${base}/api/sessions/list`, { scope: "project", name: "alpha" }, token);
+      expect(listed.status, listed.raw).toBe(200);
+      const sessions = (listed.json as { sessions: Array<{ id: string; title: string | null; channel: string; createdAt: string }> }).sessions;
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0]?.id).toBe(sessionId);
+      expect(sessions[0]?.channel).toBe("telegram");
+      // Значение заголовка не фиксируем: его ставит движок (LLM-провайдер
+      // заголовков поверх стаба либо детерминированный fallback из первого
+      // промпта) — это не граница плагина. Непустая строка доказывает, что
+      // заголовок дошёл от движка, а не остался null.
+      expect(typeof sessions[0]?.title).toBe("string");
+      expect((sessions[0]?.title ?? "").length).toBeGreaterThan(0);
+      expect(Number.isNaN(Date.parse(sessions[0]?.createdAt ?? ""))).toBe(false);
+    } finally {
+      await stopServer();
+      await rm(home, { recursive: true, force: true });
+      await stub.close();
+    }
+  }, 300_000);
 });
