@@ -248,7 +248,7 @@ long polling, выбор воркспейса, persistent dsh-сессии, за
 
 ## Tech & constraints
 
-- Технологии: dsh 0.1.2-rc.1 (глобально), TypeScript (strict, ESM) — наши
+- Технологии: dsh 0.1.5-rc.2 (глобально), TypeScript (strict, ESM) — наши
   пакеты, bash (установщик), YAML (профиль/патч/CI), React+Vite (SPA),
   GitHub Actions. Без Python.
 - Node ≥ 22 (dsh использует `node:sqlite`); Ubuntu + apt; sudo для системного
