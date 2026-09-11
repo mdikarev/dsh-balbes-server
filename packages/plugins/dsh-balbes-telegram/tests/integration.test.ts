@@ -656,12 +656,12 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
     }, description, timeoutMs);
   }
 
-  /** `/start` through the fake update channel; returns the menu message call. */
+  /** `/start` through the fake update channel; returns the menu card message call. */
   async function openMenu(from: number): Promise<OutboundCall> {
     requireApi().enqueueMessage({ fromId: OWNER_USER_ID, text: "/start" });
     return waitForOutbound(
-      (entry) => entry.method === "sendMessage" && String(entry.body.text ?? "").includes("Привет"),
-      "the welcome menu message",
+      (entry) => entry.method === "sendMessage" && String(entry.body.text ?? "").startsWith("🤖 Агент сервера"),
+      "the menu card",
       from
     );
   }
@@ -738,13 +738,13 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
       expect(connected.botUsername).toBe(BOT_USERNAME);
       expect(await readIfPresent(join(home, ".credentials.yaml"))).toContain("BALBES_TELEGRAM_BOT_TOKEN");
 
-      // (f) /start -> the root menu with the «Воркспейсы» button
+      // (f) /start -> the menu card with the no-workspace actions
       const from = server.outbound.length;
       const menu = await openMenu(from);
       const menuId = sentMessageId(menu);
       expect(menu.body.chat_id).toBe(OWNER_USER_ID);
-      expect(buttonsOf(menu).map((button) => button.text)).toEqual(["Воркспейсы"]);
-      expect(buttonsOf(menu).map((button) => button.callback_data)).toEqual(["ws"]);
+      expect(buttonsOf(menu).map((button) => button.text)).toEqual(["📁 Воркспейсы", "🧠 Модель", "🔄 Обновить"]);
+      expect(buttonsOf(menu).map((button) => button.callback_data)).toEqual(["ws", "mdl", "mnu:refresh"]);
 
       // (g) «Воркспейсы» -> the list of the agent home plus the projects,
       // rendered into the message the button belongs to

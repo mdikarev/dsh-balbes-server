@@ -25,11 +25,6 @@ const UP_LABEL = "⬆ вверх";
 const NEXT_PAGE_LABEL = "Дальше";
 const BACK_TO_LIST_LABEL = "⬆ назад к списку";
 
-/** The root menu: a single entry point to the workspace list. */
-export function menuKeyboard(): InlineKeyboardMarkup {
-  return { inline_keyboard: [[{ text: "Воркспейсы", callback_data: "ws" }]] };
-}
-
 /**
  * The «◀ ▶» row of a paged view. Both arrows are always rendered (the owner
  * keeps a stable layout) and each points at a page clamped into range, so an
@@ -64,20 +59,6 @@ export function workspacesKeyboard(opts: {
   ]);
   if (opts.pages > 1) rows.push(paginationRow("ws:pg", opts.page, opts.pages));
   return { inline_keyboard: rows };
-}
-
-/** The actions offered under an active workspace. */
-export function workspaceActionsKeyboard(): InlineKeyboardMarkup {
-  return {
-    inline_keyboard: [
-      [
-        { text: "Задачи", callback_data: "act:task" },
-        { text: "Файлы", callback_data: "act:files" }
-      ],
-      [{ text: "Сбросить контекст", callback_data: "act:reset" }],
-      [{ text: "Другой воркспейс", callback_data: "act:ws" }]
-    ]
-  };
 }
 
 /** One directory-listing row: index into the listing snapshot plus its kind. */

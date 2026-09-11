@@ -2,17 +2,26 @@ import type { AgentTaskRunner, WorkspaceRef } from "./agentTask.js";
 import { QUEUE_MAX_WAITING, workspaceRefKey } from "./agentTask.js";
 import type { BotClient } from "./bot.js";
 import {
+  HELP_TEXT,
+  MODELS_UNAVAILABLE,
+  NO_ACTIVE_WORKSPACE_LINE,
+  STOP_IDLE_ANSWER,
+  TASK_IDLE_LINE,
+  UNKNOWN_COMMAND,
+  formatElapsed,
+  menuCard
+} from "./cards.js";
+import { parseCommand } from "./commands.js";
+import {
   fileKeyboard,
   listingKeyboard,
-  menuKeyboard,
   resetConfirmKeyboard,
-  workspaceActionsKeyboard,
   workspacesKeyboard,
   type InlineKeyboardMarkup,
   type ListingEntryButton
 } from "./keyboards.js";
 import { TELEGRAM_MESSAGE_LIMIT, sanitizeReply, splitMessage } from "./text.js";
-import { isCommand, type ClassifiedUpdate } from "./updates.js";
+import type { ClassifiedUpdate } from "./updates.js";
 
 /**
  * The owner's chat UX machine: the single stateful piece between the polling
@@ -27,6 +36,11 @@ import { isCommand, type ClassifiedUpdate } from "./updates.js";
  * disk on every press, and a callback whose snapshot is unknown (a restart,
  * another chat) resolves without touching anything.
  *
+ * Text is routed through the `commands.ts` table: a text command is answered
+ * here and NEVER handed to the agent as a task. The owner's state and every
+ * action live in ONE card (`menuView`), sent by `/menu`, `/start` and `/status`
+ * and re-rendered in place by its own «Обновить» button.
+ *
  * A task never blocks the chat: `onMessage` answers «Задача принята…» and lets
  * `runner.run` settle in the background (the runner serializes per workspace
  * itself, and the owner must stay able to browse files or reset the context
@@ -35,11 +49,13 @@ import { isCommand, type ClassifiedUpdate } from "./updates.js";
  * poller.
  *
  * Callback protocol (payloads stay far below Telegram's 64-character limit):
- *   menu                      root menu (welcome + «Воркспейсы»)
+ *   mnu                       re-render the menu card in the message it is in
+ *   mnu:refresh               the same card, with its extended state lines
+ *   stp                       stop the active task and clear its queue
  *   ws                        workspace list, first page
  *   ws:pg:<n>                 workspace list, page n
  *   ws:pick:<i>               i-th row of the last rendered workspace list
- *   act:task                  active workspace: how to send a task
+ *   act:task                  legacy: how to send a task (the card supersedes it)
  *   act:files                 active workspace: open the file-tree root
  *   act:ws                    active workspace: pick another workspace
  *   act:reset                 active workspace: ask to reset the session
@@ -75,6 +91,29 @@ interface BalbesWorkspacesService {
   readFile(scope: WorkspaceScope, name: string | undefined, relPath: string): Promise<WorkspaceFileResult>;
 }
 
+/**
+ * One configured model connection as the admin surface reports it. Structural
+ * slice only: the telegram package never imports the host bundle.
+ */
+export interface ModelConnectionRow {
+  routeId: string;
+  displayName: string;
+  hasKey: boolean;
+  models: string[];
+  isDefault: boolean;
+}
+
+/**
+ * The models slice the card reads its «Модель:» line from. Optional on purpose:
+ * a profile without the model surface composes the chat without it, and the
+ * line is then simply absent (Task 9 wires the picker onto this same slice).
+ */
+export interface ModelsSlice {
+  list(): Promise<ModelConnectionRow[]>;
+  current(): { provider: string; model: string };
+  saveDefault(provider: string, model: string): Promise<{ provider: string; model: string }>;
+}
+
 export interface ChatDeps {
   workspaces: BalbesWorkspacesService;
   runner: AgentTaskRunner;
@@ -85,6 +124,8 @@ export interface ChatDeps {
   listPageSize?: number;
   /** Characters per file text page (default 3000, capped below the API limit). */
   filePageChars?: number;
+  /** The models surface the menu card reports; absent when not composed. */
+  models?: ModelsSlice;
   /** The chat host persists the active workspace on every change. */
   onActiveChange(ref: WorkspaceRef | undefined): void;
   logger?: { warn(m: string): void };
@@ -141,7 +182,19 @@ interface ResetSnapshot {
   ref: WorkspaceRef;
 }
 
-type Snapshot = WorkspacesSnapshot | ListingSnapshot | FileSnapshot | ResetSnapshot;
+/**
+ * One rendered menu card. The card's buttons are pure codes and its content is
+ * read live from the machine, so nothing about it needs remembering — the
+ * snapshot exists so a message showing the card is known to BE the card (and
+ * so every card leaves the same trace as the lists it replaces).
+ */
+interface MenuSnapshot {
+  kind: "menu";
+  /** The chat the message belongs to: a foreign chat never resolves here. */
+  chatId: number;
+}
+
+type Snapshot = WorkspacesSnapshot | ListingSnapshot | FileSnapshot | ResetSnapshot | MenuSnapshot;
 
 const DEFAULT_LIST_PAGE_SIZE = 8;
 const DEFAULT_FILE_PAGE_CHARS = 3000;
@@ -155,15 +208,15 @@ const FILE_PAGE_HEADROOM = 256;
  */
 const MAX_SNAPSHOTS = 64;
 
-const WELCOME = "Привет! Я агент твоего сервера.";
 const LIST_TITLE = "Выберите воркспейс:";
 const LIST_FAILED =
   "Не удалось получить список воркспейсов. Попробуйте позже.";
 const HOME_LABEL = "Дом агента";
 const NO_ACTIVE_HINT = "Воркспейс не выбран — нажмите «Воркспейсы».";
 const TASK_ACCEPTED = "Задача принята…";
-const TASK_HINT =
-  "Отправьте задачу текстом — я выполню её в этом воркспейсе.";
+const STOP_HINT = "Остановил.";
+const STOP_CONTEXT_SAVED = "Контекст сохранён — можно ставить новую задачу.";
+const STOP_DROPPED = (count: number): string => `Отменено задач в очереди: ${count}.`;
 /**
  * Stated with the runner's own constant: the queue depth is the runner's
  * contract, and a copy that hardcoded "3" would lie the moment it changed.
@@ -202,8 +255,8 @@ const RESET_ABORT_PHRASES = new Set([
   "task dropped because the workspace context was reset"
 ]);
 
-/** Text commands that open the workspace list instead of running a task. */
-const LIST_COMMANDS = new Set(["/ws", "Воркспейсы"]);
+/** The legacy text alias an older keyboard may still send for the list. */
+const WS_ALIAS = "Воркспейсы";
 
 function copyRef(ref: WorkspaceRef | undefined): WorkspaceRef | undefined {
   if (ref === undefined) return undefined;
@@ -355,10 +408,6 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
     snapshots.set(messageId, snapshot);
   }
 
-  function deleteSnapshot(messageId: number): void {
-    snapshots.delete(messageId);
-  }
-
   /**
    * The snapshot of one rendered message. The chat is checked as well as the
    * message id: `message_id` is only unique per chat, and a lookup that mixed
@@ -422,6 +471,127 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
     }
   }
 
+  /**
+   * The owner's single control panel: the live state (workspace, model, task,
+   * queue) plus every action the chat offers. One builder for both the send and
+   * the edit path, so a card that was just sent and a card re-rendered in place
+   * can never drift apart.
+   *
+   * `extended` adds the session line: it is what «🔄 Обновить» asks for, while
+   * the plain card stays short enough to be read at a glance.
+   */
+  async function menuView(opts: { extended?: boolean } = {}): Promise<{ text: string; keyboard: InlineKeyboardMarkup }> {
+    const ref = active;
+    const progress = ref === undefined ? undefined : deps.runner.progress(ref);
+    const model = deps.models?.current();
+    const taskLine =
+      progress === undefined || progress.phase === "idle"
+        ? TASK_IDLE_LINE
+        : [
+            "выполняется",
+            formatElapsed(Date.now() - (progress.startedAt ?? Date.now())),
+            progress.step === undefined ? undefined : `шаг ${progress.step}`
+          ]
+            .filter((part): part is string => part !== undefined)
+            .join(" · ");
+    const card = menuCard({
+      workspaceLabel: ref === undefined ? undefined : refLabel(ref),
+      modelLabel: model === undefined ? undefined : `${model.model} · ${model.provider}`,
+      taskLine,
+      queue: progress?.queued ?? 0,
+      ...(opts.extended === true
+        ? {
+            sessionLabel:
+              ref !== undefined && deps.runner.sessionIdOf(ref) !== undefined ? "активна" : "не создана"
+          }
+        : {})
+    });
+    return { text: card.text, keyboard: card.keyboard };
+  }
+
+  /**
+   * Send one message that carries the menu keyboard and remember it as a card,
+   * so the buttons of a message that was SENT work exactly like the buttons of
+   * one that was edited: `text` defaults to the card's own text (a hint, or a
+   * confirmation line, reuses the same keyboard).
+   */
+  async function sendMenu(chatId: number, text?: string): Promise<void> {
+    const view = await menuView();
+    const messageId = await send(chatId, text ?? view.text, view.keyboard);
+    if (messageId !== undefined) putSnapshot(messageId, { kind: "menu", chatId });
+  }
+
+  /** Re-render the menu card into the message it lives in. */
+  async function renderMenu(chatId: number, messageId: number, extended = false): Promise<void> {
+    const view = await menuView({ extended });
+    putSnapshot(messageId, { kind: "menu", chatId });
+    await edit(chatId, messageId, view.text, view.keyboard);
+  }
+
+  /** Replace one message with `text` plus the current menu keyboard. */
+  async function editWithMenu(chatId: number, messageId: number, text: string): Promise<void> {
+    const view = await menuView();
+    putSnapshot(messageId, { kind: "menu", chatId });
+    await edit(chatId, messageId, text, view.keyboard);
+  }
+
+  /**
+   * Cancel the active workspace's task and its queue. `undefined` means there is
+   * no active workspace at all, which is a different answer than "nothing ran".
+   */
+  async function cancelActive(): Promise<{ cancelled: boolean; dropped: number } | undefined> {
+    const ref = active;
+    return ref === undefined ? undefined : deps.runner.cancel(ref);
+  }
+
+  /**
+   * What to tell the owner after a stop, or `undefined` when the stop was a
+   * no-op (nothing was running and nothing was queued). The session outlives
+   * the stop on purpose: the copy says so.
+   */
+  function stopText(outcome: { cancelled: boolean; dropped: number }): string | undefined {
+    if (!outcome.cancelled && outcome.dropped === 0) return undefined;
+    const parts = [STOP_HINT];
+    if (outcome.dropped > 0) parts.push(STOP_DROPPED(outcome.dropped));
+    parts.push(STOP_CONTEXT_SAVED);
+    return parts.join(" ");
+  }
+
+  /** Stop the active task as a text command: the owner gets a reply. */
+  async function stopTask(chatId: number): Promise<void> {
+    const outcome = await cancelActive();
+    if (outcome === undefined) {
+      await sendMenu(chatId, NO_ACTIVE_HINT);
+      return;
+    }
+    await send(chatId, stopText(outcome) ?? STOP_IDLE_ANSWER);
+  }
+
+  /** Send the workspace list as a new message, snapshotted under its own id. */
+  async function sendWorkspaces(chatId: number): Promise<void> {
+    const view = await buildWorkspaceView(chatId, 0);
+    if (view === undefined) {
+      await sendMenu(chatId, LIST_FAILED);
+      return;
+    }
+    const sentId = await send(chatId, view.text, view.keyboard);
+    // The list is snapshotted under the id Telegram assigned to it, so its
+    // first press already resolves the row the owner saw instead of answering
+    // «Список устарел» on a list that was just rendered.
+    if (sentId !== undefined) putSnapshot(sentId, view.snapshot);
+  }
+
+  /** Ask to reset the active context, as a new message (`/reset`). */
+  async function sendResetConfirm(chatId: number): Promise<void> {
+    const ref = active;
+    if (ref === undefined) {
+      await sendMenu(chatId, NO_ACTIVE_HINT);
+      return;
+    }
+    const messageId = await send(chatId, RESET_CONFIRM, resetConfirmKeyboard());
+    if (messageId !== undefined) putSnapshot(messageId, { kind: "reset", chatId, ref: copyRef(ref)! });
+  }
+
   /** The content of one workspace list page, or undefined when list() failed. */
   async function buildWorkspaceView(chatId: number, page: number): Promise<
     | {
@@ -462,8 +632,7 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
   async function renderWorkspaces(chatId: number, messageId: number, page: number): Promise<void> {
     const view = await buildWorkspaceView(chatId, page);
     if (view === undefined) {
-      deleteSnapshot(messageId);
-      await edit(chatId, messageId, LIST_FAILED, menuKeyboard());
+      await editWithMenu(chatId, messageId, LIST_FAILED);
       return;
     }
     putSnapshot(messageId, view.snapshot);
@@ -493,13 +662,7 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
       await renderListing(chatId, messageId, ref, candidate, entries, page);
       return;
     }
-    deleteSnapshot(messageId);
-    await edit(
-      chatId,
-      messageId,
-      `Не удалось открыть: ${openFailureReason(lastError)}.`,
-      workspaceActionsKeyboard()
-    );
+    await editWithMenu(chatId, messageId, `Не удалось открыть: ${openFailureReason(lastError)}.`);
   }
 
   async function renderListing(
@@ -627,7 +790,7 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
       return STALE_LIST;
     }
     applyActive(ref);
-    await send(chatId, `Выбран: ${refLabel(ref)}`, workspaceActionsKeyboard());
+    await sendMenu(chatId, `Выбран: ${refLabel(ref)}`);
     return undefined;
   }
 
@@ -650,6 +813,12 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
       for (const chunk of chunks) await send(chatId, chunk);
       return;
     }
+    if (result.code === "cancelled") {
+      // The owner stopped this task themselves: their own stop already answered
+      // in the chat (Task 10 owns the receipt card), and a deliberate stop must
+      // never be reported as an agent failure. Nothing is sent here.
+      return;
+    }
     if (result.code === "queue-full") {
       await send(chatId, QUEUE_FULL);
       return;
@@ -666,7 +835,7 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
       if (active !== undefined && workspaceRefKey(active) === workspaceRefKey(ref)) {
         applyActive(undefined);
       }
-      await send(chatId, WORKSPACE_GONE, menuKeyboard());
+      await sendMenu(chatId, WORKSPACE_GONE);
       return;
     }
     const phrase = safePhrase(result.message);
@@ -678,17 +847,28 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
   }
 
   async function answerNoActive(chatId: number, messageId: number): Promise<void> {
-    deleteSnapshot(messageId);
-    await edit(chatId, messageId, NO_ACTIVE_HINT, menuKeyboard());
+    await editWithMenu(chatId, messageId, NO_ACTIVE_HINT);
   }
 
   /** Route one callback; the returned text (if any) is the callback answer. */
   async function dispatchCallback(update: CallbackUpdate): Promise<string | undefined> {
     const { chatId, messageId, data } = update;
 
-    if (data === "menu") {
-      deleteSnapshot(messageId);
-      await edit(chatId, messageId, WELCOME, menuKeyboard());
+    if (data === "mnu") {
+      await renderMenu(chatId, messageId);
+      return undefined;
+    }
+    if (data === "mnu:refresh") {
+      await renderMenu(chatId, messageId, true);
+      return undefined;
+    }
+    if (data === "stp") {
+      const outcome = await cancelActive();
+      const stopped = outcome === undefined ? undefined : stopText(outcome);
+      // Nothing to stop is a toast, not a message: the owner pressed stop on a
+      // chat that had no task, and the card they are looking at still holds.
+      if (stopped === undefined) return STOP_IDLE_ANSWER;
+      await send(chatId, stopped);
       return undefined;
     }
     if (data === "ws") {
@@ -712,13 +892,9 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
         await answerNoActive(chatId, messageId);
         return undefined;
       }
-      deleteSnapshot(messageId);
-      await edit(
-        chatId,
-        messageId,
-        `Активный воркспейс: ${refLabel(ref)}\n${TASK_HINT}`,
-        workspaceActionsKeyboard()
-      );
+      // An older keyboard's «Задачи» press: the card it becomes says the same
+      // thing and carries the actions, so no reply text is needed.
+      await renderMenu(chatId, messageId, true);
       return undefined;
     }
     if (data === "act:files") {
@@ -748,11 +924,10 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
       const snapshot = snapshotOf(chatId, messageId);
       if (snapshot === undefined || snapshot.kind !== "reset") return STALE_ACTION;
       if (data === "reset:no") {
-        deleteSnapshot(messageId);
         // Report the workspace the owner is on now (the message is edited back
-        // into a workspace view, not into the abandoned confirmation).
+        // into a card, not into the abandoned confirmation).
         const shown = active ?? snapshot.ref;
-        await edit(chatId, messageId, `Выбран: ${refLabel(shown)}`, workspaceActionsKeyboard());
+        await editWithMenu(chatId, messageId, `Выбран: ${refLabel(shown)}`);
         return undefined;
       }
       // The confirmation is only honoured for the workspace that is still
@@ -765,8 +940,7 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
       } catch (error) {
         warn(`session reset failed (${codeOf(error)})`);
       }
-      deleteSnapshot(messageId);
-      await edit(chatId, messageId, RESET_DONE, workspaceActionsKeyboard());
+      await editWithMenu(chatId, messageId, RESET_DONE);
       return undefined;
     }
     if (data === "up") {
@@ -839,42 +1013,56 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
 
   return {
     async onMessage(update: MessageUpdate): Promise<void> {
-      const command = update.text.trim();
-      if (LIST_COMMANDS.has(command)) {
-        const view = await buildWorkspaceView(update.chatId, 0);
-        if (view === undefined) {
-          await send(update.chatId, LIST_FAILED, menuKeyboard());
-          return;
-        }
-        const sentId = await send(update.chatId, view.text, view.keyboard);
-        // The list is snapshotted under the id Telegram assigned to it, so its
-        // first press already resolves the row the owner saw instead of
-        // answering «Список устарел» on a list that was just rendered.
-        if (sentId !== undefined) putSnapshot(sentId, view.snapshot);
+      const text = update.text.trim();
+      // The plain-text alias an older keyboard still sends: the list, not a task.
+      if (text === WS_ALIAS) {
+        await sendWorkspaces(update.chatId);
         return;
       }
-      // Every other command (including /start) answers with the root menu: an
-      // unknown command must never be handed to the agent as a task.
-      if (isCommand(command)) {
-        await send(update.chatId, WELCOME, menuKeyboard());
+      // Routed on the FIRST token only: `/ws my-name` is the workspace list, and
+      // a path-looking text (`/etc/hosts …`) is an unknown command that never
+      // reaches the agent.
+      const command = parseCommand(text.split(/\s+/, 1)[0] ?? text);
+      if (command !== undefined) {
+        if (command === "unknown") {
+          await send(update.chatId, UNKNOWN_COMMAND);
+          await sendMenu(update.chatId);
+          return;
+        }
+        if (command === "help") {
+          await send(update.chatId, HELP_TEXT);
+          return;
+        }
+        if (command === "menu" || command === "status") {
+          await sendMenu(update.chatId);
+          return;
+        }
+        if (command === "ws") {
+          await sendWorkspaces(update.chatId);
+          return;
+        }
+        if (command === "model") {
+          // Task 9 owns the picker: until it lands, the honest answer is that
+          // the section is unavailable, plus the card to act from.
+          await send(update.chatId, MODELS_UNAVAILABLE);
+          await sendMenu(update.chatId);
+          return;
+        }
+        if (command === "reset") {
+          await sendResetConfirm(update.chatId);
+          return;
+        }
+        await stopTask(update.chatId);
         return;
       }
       const ref = active;
-      // A blank message carries no task; answer with the state hint instead.
-      if (command === "") {
-        if (ref === undefined) {
-          await send(update.chatId, NO_ACTIVE_HINT, menuKeyboard());
-        } else {
-          await send(
-            update.chatId,
-            `Активный воркспейс: ${refLabel(ref)}\n${TASK_HINT}`,
-            workspaceActionsKeyboard()
-          );
-        }
+      // A blank message carries no task; the card answers with the live state.
+      if (text === "") {
+        await sendMenu(update.chatId);
         return;
       }
       if (ref === undefined) {
-        await send(update.chatId, NO_ACTIVE_HINT, menuKeyboard());
+        await sendMenu(update.chatId, NO_ACTIVE_HINT);
         return;
       }
       await send(update.chatId, TASK_ACCEPTED);

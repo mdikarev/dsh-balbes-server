@@ -181,15 +181,21 @@ function makeRunner(): {
   service: AgentTaskRunner;
   runs: Array<{ ref: WorkspaceRef; text: string }>;
   resets: WorkspaceRef[];
-  cancels: ReturnType<typeof vi.fn>;
+  cancel: ReturnType<typeof vi.fn>;
+  progress: ReturnType<typeof vi.fn>;
+  sessionIdOf: ReturnType<typeof vi.fn>;
   setResult: (result: TaskResult) => void;
   hold: () => { release: (result: TaskResult) => void; settled: () => boolean };
 } {
   const runs: Array<{ ref: WorkspaceRef; text: string }> = [];
   const resets: WorkspaceRef[] = [];
-  // Configurable by the chat tests that drive the /stop surface (task 9): the
-  // default is "nothing was running".
+  // Configurable by the chat tests that drive the /stop surface: the default is
+  // "nothing was running".
   const cancels = vi.fn(async () => ({ cancelled: false, dropped: 0 }));
+  // Configurable by the menu-card tests: the default is an idle workspace with
+  // no session yet.
+  const progress = vi.fn((): TaskProgress => ({ phase: "idle", steps: [], queued: 0 }));
+  const sessionIdOf = vi.fn((): string | undefined => undefined);
   let result: TaskResult = { ok: true, text: "готово", sessionId: "session-1" };
   let gate: Promise<TaskResult> | undefined;
 
@@ -203,10 +209,8 @@ function makeRunner(): {
       resets.push(ref);
     },
     cancel: cancels,
-    progress: vi.fn((): TaskProgress => ({ phase: "idle", steps: [], queued: 0 })),
-    sessionIdOf() {
-      return undefined;
-    },
+    progress,
+    sessionIdOf,
     snapshot() {
       return [];
     }
@@ -216,7 +220,9 @@ function makeRunner(): {
     service,
     runs,
     resets,
-    cancels,
+    cancel: cancels,
+    progress,
+    sessionIdOf,
     setResult: (next) => {
       result = next;
     },
@@ -244,7 +250,12 @@ interface Harness {
 }
 
 function makeHarness(
-  opts: { listPageSize?: number; filePageChars?: number; maxFileBytes?: number } = {}
+  opts: {
+    listPageSize?: number;
+    filePageChars?: number;
+    maxFileBytes?: number;
+    models?: ChatDeps["models"];
+  } = {}
 ): Harness {
   const bot = makeBot();
   const workspaces = makeWorkspaces();
@@ -258,6 +269,7 @@ function makeHarness(
     maxFileBytes: opts.maxFileBytes ?? MAX_FILE_BYTES,
     listPageSize: opts.listPageSize ?? 8,
     filePageChars: opts.filePageChars ?? 3000,
+    ...(opts.models === undefined ? {} : { models: opts.models }),
     onActiveChange: (ref) => {
       activeChanges.push(ref);
     },
@@ -297,29 +309,31 @@ function project(name: string): WorkspaceRef {
 }
 
 describe("chat machine: root menu and workspace list", () => {
-  it("/start sends the welcome with a single «Воркспейсы» button", async () => {
+  it("/start sends the menu card with the no-workspace actions", async () => {
     const h = makeHarness();
 
     await h.machine.onMessage(message("/start"));
 
     expect(h.bot.sent).toHaveLength(1);
     expect(h.bot.sent[0]!.chatId).toBe(CHAT);
-    expect(h.bot.sent[0]!.text).toBe("Привет! Я агент твоего сервера.");
-    expect(h.bot.data(h.bot.sent[0]!.markup)).toEqual(["ws"]);
-    expect(h.bot.buttonByData(h.bot.sent[0]!.markup, "ws")!.text).toBe("Воркспейсы");
+    expect(h.bot.sent[0]!.text).toContain("Воркспейс не выбран");
+    expect(h.bot.sent[0]!.text).toContain("Задача: нет активной задачи");
+    expect(h.bot.data(h.bot.sent[0]!.markup)).toEqual(["ws", "mdl", "mnu:refresh"]);
+    expect(h.bot.buttonByData(h.bot.sent[0]!.markup, "ws")!.text).toBe("📁 Воркспейсы");
   });
 
-  it("the menu callback edits the pressed message into the welcome", async () => {
+  it("the mnu callback re-renders the card into the pressed message", async () => {
     const h = makeHarness();
     const id = 700;
 
-    await h.machine.onCallback(callback("menu", id));
+    await h.machine.onCallback(callback("mnu", id));
 
     expect(h.bot.sent).toHaveLength(0);
     expect(h.bot.lastEdit().messageId).toBe(id);
-    expect(h.bot.lastEdit().text).toBe("Привет! Я агент твоего сервера.");
-    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual(["ws"]);
-    expect(h.bot.answers).toEqual([{ id: `cb-${id}-menu`, text: undefined }]);
+    expect(h.bot.lastEdit().text).toContain("🤖 Агент сервера");
+    expect(h.bot.lastEdit().text).toContain("Воркспейс не выбран");
+    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual(["ws", "mdl", "mnu:refresh"]);
+    expect(h.bot.answers).toEqual([{ id: `cb-${id}-mnu`, text: undefined }]);
   });
 
   it("the ws callback renders the workspace list as an edit with home first", async () => {
@@ -402,12 +416,13 @@ describe("chat machine: root menu and workspace list", () => {
     expect(h.bot.editTexts()).toHaveLength(0);
   });
 
-  it("an unknown command shows the root menu instead of running a task", async () => {
+  it("a known command answers from the router instead of running a task", async () => {
     const h = makeHarness();
 
     await h.machine.onMessage(message("/help"));
 
-    expect(h.bot.texts()).toEqual(["Привет! Я агент твоего сервера."]);
+    expect(h.bot.texts()).toHaveLength(1);
+    expect(h.bot.texts()[0]).toContain("/stop — остановить задачу (контекст сохраняется)");
     expect(h.runner.runs).toHaveLength(0);
   });
 
@@ -421,7 +436,7 @@ describe("chat machine: root menu and workspace list", () => {
     expect(text).toContain("Не удалось получить список воркспейсов");
     expect(text).not.toContain("EACCES");
     expect(text).not.toContain("/dsh");
-    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual(["ws"]);
+    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual(["ws", "mdl", "mnu:refresh"]);
     expect(h.warns).toHaveLength(1);
     expect(h.warns[0]).not.toContain("permission denied");
   });
@@ -439,12 +454,14 @@ describe("chat machine: picking a workspace", () => {
     expect(h.activeChanges).toEqual([HOME]);
     const selected = h.bot.sent.at(-1)!;
     expect(selected.text).toBe("Выбран: Дом агента");
-    expect(h.bot.data(selected.markup)).toEqual(["act:task", "act:files", "act:reset", "act:ws"]);
+    expect(h.bot.data(selected.markup)).toEqual(["act:files", "mdl", "ws", "act:reset", "stp", "mnu:refresh"]);
     expect(h.bot.buttons(selected.markup).map((button) => button.text)).toEqual([
-      "Задачи",
-      "Файлы",
-      "Сбросить контекст",
-      "Другой воркспейс"
+      "📄 Файлы",
+      "🧠 Модель",
+      "📁 Воркспейс",
+      "🔄 Сбросить контекст",
+      "⏹ Стоп",
+      "🔄 Обновить"
     ]);
   });
 
@@ -551,7 +568,7 @@ describe("chat machine: tasks", () => {
 
     expect(h.bot.sent).toHaveLength(1);
     expect(h.bot.sent[0]!.text).toContain("Воркспейс не выбран");
-    expect(h.bot.data(h.bot.sent[0]!.markup)).toEqual(["ws"]);
+    expect(h.bot.data(h.bot.sent[0]!.markup)).toEqual(["ws", "mdl", "mnu:refresh"]);
     expect(h.runner.runs).toHaveLength(0);
     await settle();
   });
@@ -564,8 +581,8 @@ describe("chat machine: tasks", () => {
     await settle();
 
     expect(h.runner.runs).toHaveLength(0);
-    expect(h.bot.sent[0]!.text).toContain("Активный воркспейс: Дом агента");
-    expect(h.bot.data(h.bot.sent[0]!.markup)).toEqual(["act:task", "act:files", "act:reset", "act:ws"]);
+    expect(h.bot.sent[0]!.text).toContain("Воркспейс: Дом агента");
+    expect(h.bot.data(h.bot.sent[0]!.markup)).toEqual(["act:files", "mdl", "ws", "act:reset", "stp", "mnu:refresh"]);
   });
 
   it("accepts the task, then sends the agent reply", async () => {
@@ -672,7 +689,7 @@ describe("chat machine: tasks", () => {
     expect(h.machine.activeWorkspace()).toBeUndefined();
     expect(h.activeChanges).toEqual([undefined]);
     expect(h.bot.texts()[1]).toBe("Воркспейс удалён — выберите другой");
-    expect(h.bot.data(h.bot.sent[1]!.markup)).toEqual(["ws"]);
+    expect(h.bot.data(h.bot.sent[1]!.markup)).toEqual(["ws", "mdl", "mnu:refresh"]);
     expect(h.bot.texts()[1]).not.toContain("not-found");
   });
 
@@ -1045,7 +1062,7 @@ describe("chat machine: file tree", () => {
     await h.machine.onCallback(callback("act:files", 920));
 
     expect(h.bot.lastEdit().text).toContain("Воркспейс не выбран");
-    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual(["ws"]);
+    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual(["ws", "mdl", "mnu:refresh"]);
     expect(h.workspaces.dirCalls).toHaveLength(0);
   });
 
@@ -1094,7 +1111,7 @@ describe("chat machine: context reset", () => {
 
     expect(h.runner.resets).toHaveLength(0);
     expect(h.bot.lastEdit().text).toBe("Выбран: Дом агента");
-    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual(["act:task", "act:files", "act:reset", "act:ws"]);
+    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual(["act:files", "mdl", "ws", "act:reset", "stp", "mnu:refresh"]);
     expect(h.machine.activeWorkspace()).toEqual(HOME);
   });
 
@@ -1127,7 +1144,7 @@ describe("chat machine: context reset", () => {
     await h.machine.onCallback(callback("act:reset", 990));
 
     expect(h.bot.lastEdit().text).toContain("Воркспейс не выбран");
-    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual(["ws"]);
+    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual(["ws", "mdl", "mnu:refresh"]);
   });
 });
 
@@ -1205,12 +1222,225 @@ describe("chat machine: stale and unknown callbacks", () => {
     h.workspaces.setDir("home", "", [{ name: "a.txt", kind: "file" }]);
     h.workspaces.setFile("home", "a.txt", { kind: "text", content: "тело файла", truncated: false });
     await h.machine.onCallback(callback("act:files", 1040));
-    await h.machine.onCallback(callback("menu", 1041));
+    await h.machine.onCallback(callback("mnu", 1041));
 
     await h.machine.onCallback(callback("e:0", 1040));
 
     expect(h.workspaces.fileCalls).toEqual([{ scope: "home", name: undefined, relPath: "a.txt" }]);
     expect(h.bot.lastEdit().messageId).toBe(1040);
     expect(h.bot.lastEdit().text).toBe("тело файла");
+  });
+});
+
+describe("chat machine: commands and menu card", () => {
+  it("/start and /menu render the menu card as a new message", async () => {
+    const h = makeHarness();
+    await h.machine.onMessage(message("/start"));
+
+    expect(h.bot.sent).toHaveLength(1);
+    expect(h.bot.sent[0]!.text).toContain("🤖 Агент сервера");
+    expect(h.bot.data(h.bot.sent[0]!.markup)).toEqual(["ws", "mdl", "mnu:refresh"]);
+  });
+
+  it("an unknown command answers with the card and never reaches the agent", async () => {
+    const h = makeHarness();
+    await h.machine.onMessage(message("/foo"));
+
+    expect(h.runner.runs).toHaveLength(0);
+    expect(h.bot.sent[0]!.text).toContain("Не знаю такой команды.");
+    expect(h.bot.sent[1]!.text).toContain("🤖 Агент сервера");
+  });
+
+  it("a path-looking text is an unknown command, never a task", async () => {
+    const h = makeHarness();
+    h.machine.setActiveWorkspace(HOME);
+
+    await h.machine.onMessage(message("/etc/hosts почини"));
+
+    expect(h.runner.runs).toHaveLength(0);
+    expect(h.bot.sent[0]!.text).toContain("Не знаю такой команды.");
+  });
+
+  it("/help answers with the reference text", async () => {
+    const h = makeHarness();
+    await h.machine.onMessage(message("/help"));
+
+    expect(h.bot.sent[0]!.text).toContain("/stop — остановить задачу (контекст сохраняется)");
+  });
+
+  it("/ws routes on the first token and opens the list", async () => {
+    const h = makeHarness();
+    h.workspaces.projects.push("alpha");
+
+    await h.machine.onMessage(message("/ws alpha"));
+
+    expect(h.runner.runs).toHaveLength(0);
+    expect(h.bot.sent[0]!.text).toContain("Выберите воркспейс");
+    expect(h.bot.data(h.bot.sent[0]!.markup)).toEqual(["ws:pick:0", "ws:pick:1"]);
+  });
+
+  it("the menu card reflects the active workspace and the live task line", async () => {
+    const h = makeHarness();
+    await h.machine.setActiveWorkspace(HOME);
+    await h.machine.onMessage(message("/status"));
+
+    expect(h.bot.sent[0]!.text).toContain("Воркспейс: Дом агента");
+    expect(h.bot.sent[0]!.text).toContain("Задача: нет активной задачи");
+    expect(h.bot.data(h.bot.sent[0]!.markup)).toEqual(["act:files", "mdl", "ws", "act:reset", "stp", "mnu:refresh"]);
+  });
+
+  it("renders the running task line, the step and the queue from live progress", async () => {
+    const h = makeHarness();
+    h.machine.setActiveWorkspace(HOME);
+    h.runner.progress.mockReturnValue({
+      phase: "running",
+      taskText: "посчитай файлы",
+      startedAt: Date.now(),
+      step: 3,
+      steps: [],
+      queued: 2
+    });
+
+    await h.machine.onMessage(message("/status"));
+
+    expect(h.bot.sent[0]!.text).toMatch(/Задача: выполняется · \d:\d\d · шаг 3/);
+    expect(h.bot.sent[0]!.text).toContain("Очередь: 2");
+  });
+
+  it("the extended card reports a session that exists", async () => {
+    const h = makeHarness();
+    h.machine.setActiveWorkspace(HOME);
+    h.runner.sessionIdOf.mockReturnValue("session-1");
+    await h.machine.onMessage(message("/menu"));
+    const sentId = h.bot.sent[0]!.messageId;
+
+    await h.machine.onCallback(callback("mnu:refresh", sentId));
+
+    expect(h.bot.lastEdit().text).toContain("Сессия: активна");
+  });
+
+  it("renders the model line only when the models slice is injected", async () => {
+    const without = makeHarness();
+    await without.machine.onMessage(message("/menu"));
+    expect(without.bot.sent[0]!.text).not.toContain("Модель: ");
+
+    const withModels = makeHarness({
+      models: {
+        async list() {
+          return [];
+        },
+        current: () => ({ provider: "deepseek", model: "deepseek-chat" }),
+        async saveDefault(provider, model) {
+          return { provider, model };
+        }
+      }
+    });
+    await withModels.machine.onMessage(message("/menu"));
+
+    expect(withModels.bot.sent[0]!.text).toContain("Модель: deepseek-chat · deepseek");
+  });
+
+  it("mnu:refresh re-renders the card in place", async () => {
+    const h = makeHarness();
+    const sentId = (await h.machine.onMessage(message("/menu")), h.bot.sent[0]!.messageId);
+
+    await h.machine.onCallback(callback("mnu:refresh", sentId));
+
+    expect(h.bot.lastEdit().messageId).toBe(sentId);
+    expect(h.bot.lastEdit().text).toContain("🤖 Агент сервера");
+    expect(h.bot.lastEdit().text).toContain("Сессия: не создана");
+  });
+
+  it("mnu re-renders the card in place without the session line", async () => {
+    const h = makeHarness();
+    const sentId = (await h.machine.onMessage(message("/menu")), h.bot.sent[0]!.messageId);
+
+    await h.machine.onCallback(callback("mnu", sentId));
+
+    expect(h.bot.lastEdit().messageId).toBe(sentId);
+    expect(h.bot.lastEdit().text).toContain("🤖 Агент сервера");
+    expect(h.bot.lastEdit().text).not.toContain("Сессия:");
+  });
+
+  it("/reset from text confirms first, and that reset:yes reaches the runner", async () => {
+    const h = makeHarness();
+    h.machine.setActiveWorkspace(HOME);
+
+    await h.machine.onMessage(message("/reset"));
+
+    const confirm = h.bot.sent.at(-1)!;
+    expect(confirm.text).toContain("Сбросить контекст");
+    expect(h.bot.data(confirm.markup)).toEqual(["reset:yes", "reset:no"]);
+    expect(h.runner.resets).toHaveLength(0);
+
+    await h.machine.onCallback(callback("reset:yes", confirm.messageId));
+
+    expect(h.runner.resets).toEqual([HOME]);
+  });
+});
+
+describe("chat machine: stop", () => {
+  it("stops the running task, reports the dropped queue and keeps the context", async () => {
+    const h = makeHarness();
+    await h.machine.setActiveWorkspace(HOME);
+    h.runner.cancel.mockResolvedValue({ cancelled: true, dropped: 2 });
+
+    const sentId = (await h.machine.onMessage(message("/menu")), h.bot.sent[0]!.messageId);
+    await h.machine.onCallback(callback("stp", sentId));
+
+    expect(h.runner.cancel).toHaveBeenCalledWith(HOME);
+    expect(h.bot.sent.at(-1)!.text).toBe(
+      "Остановил. Отменено задач в очереди: 2. Контекст сохранён — можно ставить новую задачу."
+    );
+  });
+
+  it("/stop from text keeps the context when nothing was queued", async () => {
+    const h = makeHarness();
+    h.machine.setActiveWorkspace(HOME);
+    h.runner.cancel.mockResolvedValue({ cancelled: true, dropped: 0 });
+
+    await h.machine.onMessage(message("/stop"));
+
+    expect(h.runner.cancel).toHaveBeenCalledWith(HOME);
+    expect(h.bot.sent.at(-1)!.text).toBe("Остановил. Контекст сохранён — можно ставить новую задачу.");
+    expect(h.machine.activeWorkspace()).toEqual(HOME);
+  });
+
+  it("answers «Сейчас ничего не выполняется» without a message when idle", async () => {
+    const h = makeHarness();
+    await h.machine.setActiveWorkspace(HOME);
+    h.runner.cancel.mockResolvedValue({ cancelled: false, dropped: 0 });
+
+    await h.machine.onCallback(callback("stp", 777));
+
+    expect(h.bot.answers.at(-1)!.text).toBe("Сейчас ничего не выполняется");
+    expect(h.bot.sent).toHaveLength(0);
+  });
+
+  it("never reports the task it stopped as an agent failure", async () => {
+    const h = makeHarness();
+    h.machine.setActiveWorkspace(HOME);
+    h.runner.cancel.mockResolvedValue({ cancelled: true, dropped: 0 });
+    const gate = h.runner.hold();
+    await h.machine.onMessage(message("долгая задача"));
+
+    await h.machine.onMessage(message("/stop"));
+    gate.release({ ok: false, code: "cancelled", message: "task cancelled by the owner" });
+    await settle();
+
+    expect(h.bot.texts()).toEqual([
+      "Задача принята…",
+      "Остановил. Контекст сохранён — можно ставить новую задачу."
+    ]);
+  });
+
+  it("hints at the workspace instead of cancelling when none is active", async () => {
+    const h = makeHarness();
+
+    await h.machine.onMessage(message("/stop"));
+
+    expect(h.runner.cancel).not.toHaveBeenCalled();
+    expect(h.bot.sent.at(-1)!.text).toContain("Воркспейс не выбран");
+    expect(h.bot.data(h.bot.sent.at(-1)!.markup)).toEqual(["ws", "mdl", "mnu:refresh"]);
   });
 });

@@ -2,10 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   fileKeyboard,
   listingKeyboard,
-  menuKeyboard,
   paginationRow,
   resetConfirmKeyboard,
-  workspaceActionsKeyboard,
   workspacesKeyboard
 } from "../src/keyboards.js";
 
@@ -20,14 +18,6 @@ function data(markup: { inline_keyboard: Array<Array<{ callback_data: string }>>
 }
 
 describe("keyboard builders", () => {
-  it("menuKeyboard carries the single ws code", () => {
-    expect(menuKeyboard()).toEqual({ inline_keyboard: [[{ text: "Воркспейсы", callback_data: "ws" }]] });
-  });
-
-  it("workspaceActionsKeyboard carries the four active-workspace actions", () => {
-    expect(data(workspaceActionsKeyboard())).toEqual(["act:task", "act:files", "act:reset", "act:ws"]);
-  });
-
   it("resetConfirmKeyboard carries reset:yes and reset:no", () => {
     expect(data(resetConfirmKeyboard())).toEqual(["reset:yes", "reset:no"]);
   });
