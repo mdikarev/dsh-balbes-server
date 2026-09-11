@@ -101,8 +101,61 @@ const DENIED_TOOLS = [
   "skill",
   "send_message",
   "interrupt_agent",
-  "list_agents"
+  "list_agents",
+  "exit_plan_mode"
 ];
+
+/**
+ * The tool registry of the dsh 0.1.5-rc.2 base composition this suite boots:
+ * the base patches + the runprobe row, on a POSIX host (`bash` is mounted,
+ * `pwsh` is not). Pinned against the live registry instead of described in
+ * prose, because the agent boundary is an ALLOW filter: an engine that adds a
+ * tool hides it from the agent by default, so a diff here is the only thing
+ * that makes the new arrival visible for a security review.
+ *
+ * `str_replace_editor` is absent since 0.1.5: the
+ * `dsh-tool-str-replace-editor` package still ships, but the base composition
+ * no longer mounts a row for it (0.1.2-rc.1 did). It stays on the deny list
+ * and in the probes below as a defensive name, not as a live channel.
+ */
+const DEPLOYMENT_TOOLS = [
+  "bash",
+  "create_goal",
+  "edit",
+  "exit_plan_mode",
+  "get_goal",
+  "glob",
+  "grep",
+  "interrupt_agent",
+  "job_kill",
+  "job_list",
+  "job_output",
+  "list_agents",
+  "ralph",
+  "read",
+  "read_image",
+  "send_message",
+  "skill",
+  "subagent",
+  "subagent_fork",
+  "todo_write",
+  "update_goal",
+  "web_fetch",
+  "web_search",
+  "workflow",
+  "write"
+];
+
+/**
+ * The {@link DENIED_TOOLS} this composition registers. The two absences are
+ * registry facts, not policy: `pwsh` is win32-only, and 0.1.5 mounted no
+ * `str_replace_editor` row. Asserting their absence deployment-wide would be
+ * vacuous, so the "hidden, not merely unregistered" claim is made only for the
+ * names that really are in the deployment view.
+ */
+const DENIED_DEPLOYED_TOOLS = DENIED_TOOLS.filter(
+  (name) => name !== "pwsh" && name !== "str_replace_editor"
+);
 
 interface SeamCtx {
   get(key: string): unknown;
@@ -490,7 +543,23 @@ describe.skipIf(!realEnabled)("REAL agentTask: restricted tool surface + read co
     // kept search tool is in this list too — its appearance on the agent
     // surface must not be an accident of the deployment lacking it.
     const deploymentNames = tools!.schemas().map((schema) => schema.name);
-    for (const name of ["bash", "read", "write", "edit", "str_replace_editor", "web_search", "web_fetch"]) {
+    // Every kept name must exist deployment-wide, or "the agent keeps it" would
+    // be satisfied by a deployment that never had it.
+    for (const name of KEPT_TOOLS) {
+      expect(deploymentNames, `deployment registers ${name}`).toContain(name);
+    }
+    // The registry of the dsh 0.1.5-rc.2 base composition this suite boots
+    // (base patches + the runprobe row, POSIX: `bash` mounted, `pwsh` not),
+    // pinned name by name. The engine's OWN registry is the review surface: the
+    // boundary below is an ALLOW filter, so a tool a later release adds is
+    // hidden by default and nothing else here would notice its arrival.
+    expect([...deploymentNames].sort()).toEqual([...DEPLOYMENT_TOOLS].sort());
+    // The denied names this composition actually registers: the shell (the
+    // concrete escape on a host with a usable sandbox backend), the excluded
+    // fetch sibling of the kept search, and the jobs/skill/delegation/control/
+    // plan-mode families. For THESE the assertion below proves a per-agent
+    // restriction, not a plugin that was never mounted.
+    for (const name of DENIED_DEPLOYED_TOOLS) {
       expect(deploymentNames, `deployment registers ${name}`).toContain(name);
     }
 
@@ -524,6 +593,13 @@ describe.skipIf(!realEnabled)("REAL agentTask: restricted tool surface + read co
    * fail as unknown tools, return none of the $DSH_HOME stand-in's bytes, and
    * reach no destination on the network — on every host, including one where
    * the shell would otherwise run confined-but-read-anywhere.
+   *
+   * The editor leg is a NAME-level regression guard since 0.1.5: the base
+   * composition no longer mounts `str_replace_editor` at all, so its "unknown
+   * tool" refusal comes from the registry rather than from the allow filter.
+   * That is still the absent-not-guarded outcome this test demands of every
+   * read channel, and the name stays on the deny list for a composition that
+   * mounts the still-shipping package.
    */
   it("containment: shell, editor and web_fetch channels are absent, not merely guarded", async () => {
     const probePath = join(home!, "credentials-probe.txt");

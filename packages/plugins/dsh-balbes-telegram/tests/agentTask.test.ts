@@ -1199,12 +1199,13 @@ const KEPT_BY_CONTRACT = [
 
 describe("composeAgentSetup tool surface", () => {
   it("restricts the agent to the kept workspace tools and keeps the path guard", () => {
-    // The deployment surface as the REAL suite observes it (26 tools), plus a
-    // hypothetical tool a future dsh release adds.
+    // The deployment surface as the REAL suite observes it on dsh 0.1.5-rc.2
+    // (25 tools — see DEPLOYMENT_TOOLS there; `pwsh` is win32-only and
+    // `str_replace_editor` is no longer mounted), plus a hypothetical tool a
+    // future dsh release adds.
     const registered = [
       ...KEPT_BY_CONTRACT,
       "bash",
-      "str_replace_editor",
       "web_fetch",
       "skill",
       "subagent",
@@ -1300,12 +1301,17 @@ describe("composeAgentSetup tool surface", () => {
   });
 
   it("degrades to the names it knows must never be exposed when no kept tool is registered", () => {
-    const tools = makeTools(["bash", "pwsh", "web_fetch", "skill", "interrupt_agent"]);
+    // `exit_plan_mode` is included on purpose: the dsh 0.1.5 registry mounts it
+    // and the fallback deny list names it, so this path cannot leave a
+    // session-mode control reachable just because it performs no I/O.
+    const tools = makeTools(["bash", "pwsh", "web_fetch", "skill", "interrupt_agent", "exit_plan_mode"]);
     composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: { current: SELECTION } });
     // No allow filter is possible (nothing to keep would be an empty surface):
     // the fallback still removes every name it knows the surface must never
     // expose — and only those, which is its weaker guarantee.
-    expect(tools.restrictions).toEqual([{ deny: ["bash", "pwsh", "web_fetch", "skill", "interrupt_agent"] }]);
+    expect(tools.restrictions).toEqual([
+      { deny: ["bash", "pwsh", "web_fetch", "skill", "interrupt_agent", "exit_plan_mode"] }
+    ]);
     expect(tools.guards).toHaveLength(1);
   });
 
@@ -1328,7 +1334,7 @@ describe("composeAgentSetup tool surface", () => {
    * way, so a resumed session cannot come back with the full tool surface.
    */
   it("installs the restriction and the guard in both the create and the resume setup", async () => {
-    const registered = [...KEPT_BY_CONTRACT, "bash", "str_replace_editor", "web_fetch"];
+    const registered = [...KEPT_BY_CONTRACT, "bash", "exit_plan_mode", "web_fetch"];
     const created = await makeRunner();
     await created.runner.run(PROJECT_ALPHA, "first task");
     expect(created.agents.createOpts).toHaveLength(1);

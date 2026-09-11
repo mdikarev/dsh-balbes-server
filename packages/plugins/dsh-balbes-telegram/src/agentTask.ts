@@ -446,20 +446,24 @@ export function summarizeProgress(
  *
  * WHAT IS CONTAINED
  *
- * 1. The tool surface. dsh 0.1.2-rc.1 exposes no workspace-root read boundary
- *    of its own (Task 1 facts 3/4/5): `read` traversal, absolute paths and
- *    symlink escapes all reach the model, and the shell tools share the host
- *    process. On the macOS dev host `bash` happens to fail closed ("no sandbox
- *    backend is usable"), but that is an accident of the host — on the Linux
+ * 1. The tool surface. dsh 0.1.5-rc.2 still exposes no workspace-root read
+ *    boundary of its own (the 0.1.2-rc.1 facts 3/4/5 hold against the 0.1.5
+ *    code: `SandboxedFileSystem` fences only MUTATIONS — "reads pass through
+ *    untouched" — and `read` resolves against the session cwd, so `read`
+ *    traversal, absolute paths and symlink escapes all reach the model), and
+ *    the shell tools share the host process. On the macOS dev host `bash`
+ *    happens to fail closed ("no sandbox backend is usable"), but that is an
+ *    accident of the host — on the Linux
  *    VPS dsh mounts a usable backend (Landlock/bwrap with `readOnly: ["/"]`),
  *    so `bash cat $DSH_HOME/.credentials.yaml` RUNS and returns bytes. A
  *    path-argument guard can never cover that, nor `str_replace_editor`'s
- *    `view` command, nor the delegation/network/job/channel tools. The only
+ *    `view` command (the package still ships; 0.1.5 mounts no row for it), nor
+ *    the delegation/network/job/channel tools. The only
  *    boundary that holds on every host is the surface itself: this setup
  *    narrows the agent to {@link KEPT_TOOL_NAMES} (workspace file work,
  *    internet search plus benign bookkeeping) through the agent-scope
  *    `tools.restrict({ allow })` seam. Everything else the deployment
- *    registers — `bash`, `pwsh`, `str_replace_editor`, `subagent`,
+ *    registers — `bash`, `pwsh`, `subagent`,
  *    `subagent_fork`, `workflow`, `ralph`, `web_fetch`, `skill`, the `job_*`
  *    tools, `send_message`, `interrupt_agent`, `list_agents`,
  *    `exit_plan_mode` — is invisible to the model, and it is an allow filter
@@ -548,12 +552,16 @@ const KEPT_TOOL_NAMES = [
  * Tools the surface must never expose, used only by the fallback filter below.
  * Registered identifiers: `dsh-tool-bash` (`bash`), `dsh-tool-pwsh` (`pwsh`),
  * `dsh-tool-str-replace-editor` (`str_replace_editor`, whose `view` command
- * reads), `dsh-tool-jobs` (`job_list`, `job_output`, `job_kill` — job output
- * is arbitrary captured text), `dsh-tool-subagent` (`subagent`,
- * `subagent_fork`, configurable `toolName`s), `dsh-tool-workflow`
- * (`workflow`), `dsh-tool-ralph` (`ralph`), `dsh-tool-web` (`web_search`,
- * `web_fetch`), `dsh-tool-skill` (`skill`), `dsh-tool-subagent-control`
- * (`send_message`, `interrupt_agent`, `list_agents`).
+ * reads; the package still ships, but the 0.1.5 base composition mounts no row
+ * for it, so this entry is defensive), `dsh-tool-jobs` (`job_list`,
+ * `job_output`, `job_kill` — job output is arbitrary captured text),
+ * `dsh-tool-subagent` (`subagent`, `subagent_fork`, configurable `toolName`s),
+ * `dsh-tool-workflow` (`workflow`), `dsh-tool-ralph` (`ralph`), `dsh-tool-web`
+ * (`web_search`, `web_fetch`), `dsh-tool-skill` (`skill`),
+ * `dsh-tool-subagent-control` (`send_message`, `interrupt_agent`,
+ * `list_agents`), and `dsh-plan-mode` (`exit_plan_mode`, a session-mode
+ * control that prompts for plan review — no I/O, but not part of a workspace
+ * task's surface either).
  *
  * Deliberately conservative, and left as it was when `web_search` moved to the
  * kept side: this list removes a subset of what the allow path removes — a
@@ -582,7 +590,8 @@ const FALLBACK_DENIED_TOOL_NAMES = [
   "skill",
   "send_message",
   "interrupt_agent",
-  "list_agents"
+  "list_agents",
+  "exit_plan_mode"
 ] as const;
 
 /**
