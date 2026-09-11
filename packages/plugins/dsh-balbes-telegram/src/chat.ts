@@ -12,7 +12,11 @@ import {
   formatElapsed,
   menuCard,
   modelConnectionsCard,
-  modelListCard
+  modelListCard,
+  progressCard,
+  queuedCard,
+  receiptCard,
+  type CardView
 } from "./cards.js";
 import { parseCommand } from "./commands.js";
 import {
@@ -44,12 +48,15 @@ import type { ClassifiedUpdate } from "./updates.js";
  * action live in ONE card (`menuView`), sent by `/menu`, `/start` and `/status`
  * and re-rendered in place by its own «Обновить» button.
  *
- * A task never blocks the chat: `onMessage` answers «Задача принята…» and lets
- * `runner.run` settle in the background (the runner serializes per workspace
- * itself, and the owner must stay able to browse files or reset the context
- * mid-task). Text and callback entry points swallow Telegram failures after
- * logging a code-only warning, so one failing API call cannot wedge the
- * poller.
+ * A task never blocks the chat: `onMessage` sends the task's ONE card — a live
+ * progress card, or a queue card when another task of the workspace is already
+ * running — and lets `runner.run` settle in the background (the runner
+ * serializes per workspace itself, and the owner must stay able to browse files
+ * or reset the context mid-task). That message polls the runner and edits itself
+ * in place, and becomes the task's receipt when the run settles, so one task's
+ * whole life is one message. Text and callback entry points swallow Telegram
+ * failures after logging a code-only warning, so one failing API call cannot
+ * wedge the poller.
  *
  * Callback protocol (payloads stay far below Telegram's 64-character limit):
  *   mnu                       re-render the menu card in the message it is in
@@ -132,6 +139,8 @@ export interface ChatDeps {
   listPageSize?: number;
   /** Characters per file text page (default 3000, capped below the API limit). */
   filePageChars?: number;
+  /** How often a running task's card re-reads the runner (default 3500 ms). */
+  progressIntervalMs?: number;
   /** The models surface the menu card reports; absent when not composed. */
   models?: ModelsSlice;
   /** The chat host persists the active workspace on every change. */
@@ -242,6 +251,15 @@ type Snapshot =
 const DEFAULT_LIST_PAGE_SIZE = 8;
 const DEFAULT_FILE_PAGE_CHARS = 3000;
 const DEFAULT_MAX_FILE_BYTES = 256 * 1024;
+/** How often a running task's card re-reads the runner and edits itself. */
+const DEFAULT_PROGRESS_INTERVAL_MS = 3500;
+/**
+ * Card edits that may fail in a row before the chat gives up on that card:
+ * Telegram refuses an edit with "message is not modified" or throttles it, and
+ * a card that cannot be written must not turn into a poll that logs forever.
+ * The task itself keeps running either way — only its card goes quiet.
+ */
+const MAX_CARD_EDIT_FAILURES = 3;
 /** Headroom kept free on a file page for its header and the truncation note. */
 const FILE_PAGE_HEADROOM = 256;
 /**
@@ -256,7 +274,6 @@ const LIST_FAILED =
   "Не удалось получить список воркспейсов. Попробуйте позже.";
 const HOME_LABEL = "Дом агента";
 const NO_ACTIVE_HINT = "Воркспейс не выбран — нажмите «Воркспейсы».";
-const TASK_ACCEPTED = "Задача принята…";
 const STOP_HINT = "Остановил.";
 const STOP_CONTEXT_SAVED = "Контекст сохранён — можно ставить новую задачу.";
 const STOP_DROPPED = (count: number): string => `Отменено задач в очереди: ${count}.`;
@@ -270,6 +287,11 @@ const QUEUE_FULL =
   `В этом воркспейсе уже ${QUEUE_MAX_WAITING} задачи в очереди — дождитесь завершения`;
 const BUSY = "Задача уже выполняется…";
 const WORKSPACE_GONE = "Воркспейс удалён — выберите другой";
+/**
+ * The same fact as the message above, said short enough for the receipt line
+ * that carries it (`⚠️ Ошибка · 0:12: воркспейс удалён`).
+ */
+const WORKSPACE_GONE_DETAIL = "воркспейс удалён";
 const RESET_CONFIRM =
   "Сбросить контекст этого воркспейса? Текущая сессия завершится, " +
   "следующая задача начнётся с чистого контекста.";
@@ -422,6 +444,53 @@ function withPageLine(header: string, page: number, pages: number): string {
   return pages > 1 ? `${header}\nСтраница ${page + 1}/${pages}` : header;
 }
 
+/**
+ * Render one card, cutting the task text the card ECHOES until the message fits
+ * Telegram's limit. The owner's own message is the only unbounded part of a
+ * card, and a card must never fail to send because the task was long — the cut
+ * is the same surrogate-safe one the file pages use. A builder that does not
+ * echo the text (`progressCard`) renders the same card at any length.
+ */
+function fitEchoedText(build: (taskText: string) => CardView, taskText: string): CardView {
+  const view = build(taskText);
+  if (view.text.length <= TELEGRAM_MESSAGE_LIMIT) return view;
+  const room = taskText.length - (view.text.length - TELEGRAM_MESSAGE_LIMIT) - 1;
+  const cut = room > 0 ? cutToLimit(taskText, room) : "";
+  return build(`${cut}…`);
+}
+
+/**
+ * One running task's card: the message this task's life is shown in, the moment
+ * that message was sent — the single origin of the elapsed time both the card
+ * and its receipt show, so a receipt can never contradict the last live card —
+ * and the newest step count the runner reported for this task.
+ *
+ * It belongs to the TASK that sent it, never to the workspace: a workspace-keyed
+ * handle would let a queued task's card overwrite the running task's card, and a
+ * handle shared with the workspace could outlive the run that created it.
+ * {@link ProgressCardHandle.stop} is the only way to end it, and `runTask` calls
+ * it in its `finally` — on success, error, cancellation, reset or a workspace
+ * that vanished mid-run.
+ */
+interface ProgressCardHandle {
+  messageId: number;
+  startedAt: number;
+  /**
+   * The step count the runner last reported for THIS task. The runner drops its
+   * own summary of a turn the moment that turn settles, so this is what is left
+   * of it for the receipt — and 0 when the card never got to look.
+   */
+  steps(): number;
+  stop(): void;
+}
+
+/**
+ * A receipt waiting for its elapsed time: how the run ended, how many steps the
+ * card saw and, for an error, the short reason. Absent means there is no receipt
+ * to stamp at all (a task whose card was never sent).
+ */
+type ReceiptDraft = Omit<Parameters<typeof receiptCard>[0], "elapsedMs">;
+
 export function createChatMachine(deps: ChatDeps): ChatMachine {
   const listPageSize = clampInt(deps.listPageSize, DEFAULT_LIST_PAGE_SIZE, 1, 100);
   const filePageChars = clampInt(
@@ -429,6 +498,17 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
     DEFAULT_FILE_PAGE_CHARS,
     1,
     TELEGRAM_MESSAGE_LIMIT - FILE_PAGE_HEADROOM
+  );
+  /**
+   * Card refresh cadence. Lowered by tests so a card's whole life fits in one
+   * test; a non-positive or absent value falls back to the default rather than
+   * becoming a busy loop.
+   */
+  const progressIntervalMs = clampInt(
+    deps.progressIntervalMs,
+    DEFAULT_PROGRESS_INTERVAL_MS,
+    1,
+    3_600_000
   );
   /**
    * The configured read ceiling is applied as the chat's own display cut as
@@ -969,56 +1049,146 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
     return undefined;
   }
 
-  /** Run one accepted task; settles in the background, never blocks the chat. */
-  async function runTask(chatId: number, ref: WorkspaceRef, text: string): Promise<void> {
-    let result: Awaited<ReturnType<AgentTaskRunner["run"]>>;
+  /**
+   * Own one task's progress card: poll the runner and edit the message in place.
+   *
+   * The card renders ONLY its own task. While another task of the workspace is
+   * running (or the runner is idle) the last rendered text is left alone, which
+   * is exactly what lets a queue card turn itself live the moment the runner
+   * starts reporting this task's own text — no second timer, no shared state.
+   * An unchanged text is never re-sent, and the poll gives up after three
+   * consecutive failures without touching the task itself.
+   */
+  function startProgressCard(
+    chatId: number,
+    messageId: number,
+    ref: WorkspaceRef,
+    taskText: string,
+    initialText: string
+  ): ProgressCardHandle {
+    const startedAt = Date.now();
+    let lastText = initialText;
+    let seenSteps = 0;
+    let failures = 0;
+    const timer = setInterval(() => {
+      void (async () => {
+        const progress = deps.runner.progress(ref);
+        // A foreign task (or nothing) is running: this card stays whatever it
+        // was until the runner reports this task's own text.
+        if (progress.phase === "idle" || progress.taskText !== taskText) return;
+        seenSteps = progress.steps.length;
+        const view = progressCard({
+          workspaceLabel: refLabel(ref),
+          taskText,
+          elapsedMs: Date.now() - startedAt,
+          ...(progress.step === undefined ? {} : { step: progress.step }),
+          steps: progress.steps,
+          ...(progress.todos === undefined ? {} : { todos: progress.todos }),
+          queued: progress.queued
+        });
+        if (view.text === lastText) return;
+        try {
+          await deps.bot.editMessageText(chatId, messageId, view.text, { reply_markup: view.keyboard });
+          lastText = view.text;
+        } catch (error) {
+          failures += 1;
+          if (failures >= MAX_CARD_EDIT_FAILURES) clearInterval(timer);
+          warn(`progress card edit failed (${codeOf(error)})`);
+        }
+      })();
+    }, progressIntervalMs);
+    // A card is not a reason to keep the process alive.
+    timer.unref?.();
+    return { messageId, startedAt, steps: () => seenSteps, stop: () => clearInterval(timer) };
+  }
+
+  /**
+   * Run one accepted task; settles in the background, never blocks the chat.
+   *
+   * Every way this run can end is written into the SAME message the task was
+   * announced in: `card` is this task's own progress card (or `undefined` when
+   * that message could not be sent, in which case there is nothing to stamp).
+   * The timer dies in the `finally`, so the receipt is the last thing the card
+   * ever shows, whatever the outcome.
+   */
+  async function runTask(
+    chatId: number,
+    ref: WorkspaceRef,
+    text: string,
+    card: ProgressCardHandle | undefined
+  ): Promise<void> {
+    /** What the card becomes when this run settles; absent = leave it alone. */
+    let receipt: ReceiptDraft | undefined;
     try {
-      result = await deps.runner.run(ref, text);
-    } catch (error) {
-      warn(`task run failed (${codeOf(error)})`);
-      await send(chatId, `Агент не смог выполнить задачу: ${INTERNAL_FAILURE}`);
-      return;
-    }
-    if (result.ok) {
-      const chunks = splitMessage(sanitizeReply(result.text));
-      if (chunks.length === 0) {
-        await send(chatId, EMPTY_REPLY);
+      let result: Awaited<ReturnType<AgentTaskRunner["run"]>>;
+      try {
+        result = await deps.runner.run(ref, text);
+      } catch (error) {
+        warn(`task run failed (${codeOf(error)})`);
+        receipt = { kind: "error", steps: 0, detail: INTERNAL_FAILURE };
+        await send(chatId, `Агент не смог выполнить задачу: ${INTERNAL_FAILURE}`);
         return;
       }
-      for (const chunk of chunks) await send(chatId, chunk);
-      return;
-    }
-    if (result.code === "cancelled") {
-      // The owner stopped this task themselves: their own stop already answered
-      // in the chat (Task 10 owns the receipt card), and a deliberate stop must
-      // never be reported as an agent failure. Nothing is sent here.
-      return;
-    }
-    if (result.code === "queue-full") {
-      await send(chatId, QUEUE_FULL);
-      return;
-    }
-    if (result.code === "busy") {
-      await send(chatId, BUSY);
-      return;
-    }
-    if (result.code === "workspace-gone") {
-      // The run is detached, so the owner may have switched workspaces while it
-      // was in flight: clear the selection only while it still points at the
-      // workspace the task ran in, otherwise keep the newer one (mirrors the
-      // still-active guard of the reset confirmation).
-      if (active !== undefined && workspaceRefKey(active) === workspaceRefKey(ref)) {
-        applyActive(undefined);
+      if (result.ok) {
+        // The runner forgets a turn's summary the moment it settles, so the
+        // receipt asks the runner and falls back to what this task's card saw.
+        receipt = {
+          kind: "done",
+          steps: Math.max(deps.runner.progress(ref).steps.length, card?.steps() ?? 0)
+        };
+        const chunks = splitMessage(sanitizeReply(result.text));
+        if (chunks.length === 0) {
+          await send(chatId, EMPTY_REPLY);
+          return;
+        }
+        for (const chunk of chunks) await send(chatId, chunk);
+        return;
       }
-      await sendMenu(chatId, WORKSPACE_GONE);
-      return;
+      if (result.code === "cancelled") {
+        // The owner stopped this task themselves: their own stop already
+        // answered in the chat, and a deliberate stop must never be reported as
+        // an agent failure. The card IS the answer here, so nothing is sent.
+        receipt = { kind: "stopped", steps: 0 };
+        return;
+      }
+      if (result.code === "queue-full") {
+        // Refused before it ever ran: the card stops claiming a task is coming.
+        receipt = { kind: "done", steps: 0 };
+        await send(chatId, QUEUE_FULL);
+        return;
+      }
+      if (result.code === "busy") {
+        receipt = { kind: "done", steps: 0 };
+        await send(chatId, BUSY);
+        return;
+      }
+      if (result.code === "workspace-gone") {
+        // The run is detached, so the owner may have switched workspaces while it
+        // was in flight: clear the selection only while it still points at the
+        // workspace the task ran in, otherwise keep the newer one (mirrors the
+        // still-active guard of the reset confirmation).
+        receipt = { kind: "error", steps: 0, detail: WORKSPACE_GONE_DETAIL };
+        if (active !== undefined && workspaceRefKey(active) === workspaceRefKey(ref)) {
+          applyActive(undefined);
+        }
+        await sendMenu(chatId, WORKSPACE_GONE);
+        return;
+      }
+      const phrase = safePhrase(result.message);
+      if (RESET_ABORT_PHRASES.has(phrase)) {
+        receipt = { kind: "reset", steps: 0 };
+        await send(chatId, RESET_ABORTED);
+        return;
+      }
+      receipt = { kind: "error", steps: 0, detail: phrase };
+      await send(chatId, `Агент не смог выполнить задачу: ${phrase}`);
+    } finally {
+      card?.stop();
+      if (card !== undefined && receipt !== undefined) {
+        const view = receiptCard({ ...receipt, elapsedMs: Date.now() - card.startedAt });
+        await edit(chatId, card.messageId, view.text, view.keyboard);
+      }
     }
-    const phrase = safePhrase(result.message);
-    if (RESET_ABORT_PHRASES.has(phrase)) {
-      await send(chatId, RESET_ABORTED);
-      return;
-    }
-    await send(chatId, `Агент не смог выполнить задачу: ${phrase}`);
   }
 
   async function answerNoActive(chatId: number, messageId: number): Promise<void> {
@@ -1305,10 +1475,34 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
         await sendMenu(update.chatId, NO_ACTIVE_HINT);
         return;
       }
-      await send(update.chatId, TASK_ACCEPTED);
+      // ONE message per task: a task accepted while another one runs gets a
+      // queue card (which turns itself live when its own turn starts), any other
+      // task gets a live progress card. Both carry «⏹ Стоп», and both become the
+      // task's receipt when it settles.
+      const state = deps.runner.progress(ref);
+      const view = fitEchoedText(
+        (taskText) =>
+          state.phase === "running"
+            ? queuedCard({ workspaceLabel: refLabel(ref), taskText, position: state.queued + 1 })
+            : progressCard({
+                workspaceLabel: refLabel(ref),
+                taskText,
+                elapsedMs: 0,
+                steps: [],
+                queued: 0
+              }),
+        update.text
+      );
+      const messageId = await send(update.chatId, view.text, view.keyboard);
+      // No message, no card: the task still runs (the owner may have a failing
+      // Telegram), and `runTask` then stamps nothing.
+      const card =
+        messageId === undefined
+          ? undefined
+          : startProgressCard(update.chatId, messageId, copyRef(ref)!, update.text, view.text);
       // Deliberately not awaited: the runner serializes per workspace, and the
       // owner must stay able to browse files or reset the context mid-task.
-      void runTask(update.chatId, copyRef(ref)!, update.text).catch((error: unknown) => {
+      void runTask(update.chatId, copyRef(ref)!, update.text, card).catch((error: unknown) => {
         warn(`task pipeline failed (${codeOf(error)})`);
       });
     },

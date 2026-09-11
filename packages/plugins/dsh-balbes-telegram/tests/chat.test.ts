@@ -45,7 +45,7 @@ function markupOf(extra: { reply_markup?: unknown } | undefined): Markup | undef
   return extra?.reply_markup as Markup | undefined;
 }
 
-function makeBot(): {
+function makeBot(opts: { failEdits?: number; failSends?: number } = {}): {
   bot: BotClient;
   sent: SentCall[];
   edits: EditCall[];
@@ -64,6 +64,11 @@ function makeBot(): {
   // Telegram assigns every sent message an id and answers sendMessage with it;
   // the fake does the same so the chat can snapshot what it sent.
   let nextSentId = 900_000;
+  // The progress-card tests need a Telegram that refuses work: `failEdits`
+  // refuses the first N edits (a live card gives up after three of them),
+  // `failSends` the first N sends (a task whose card was never sent).
+  let editFailures = opts.failEdits ?? 0;
+  let sendFailures = opts.failSends ?? 0;
   const bot: BotClient = {
     async getMe() {
       return {};
@@ -72,12 +77,22 @@ function makeBot(): {
       return [];
     },
     async sendMessage(chatId, text, extra) {
+      if (sendFailures > 0) {
+        sendFailures -= 1;
+        throw new Error("sendMessage failed");
+      }
       const messageId = nextSentId++;
       sent.push({ chatId, messageId, text, markup: markupOf(extra) });
       return messageId;
     },
     async editMessageText(chatId, messageId, text, extra) {
+      // Recorded BEFORE the refusal: the attempted calls are what the
+      // give-up-after-three-edits test counts.
       edits.push({ chatId, messageId, text, markup: markupOf(extra) });
+      if (editFailures > 0) {
+        editFailures -= 1;
+        throw new Error("editMessageText failed");
+      }
     },
     async answerCallbackQuery(callbackQueryId, opts) {
       answers.push({ id: callbackQueryId, text: opts?.text });
@@ -302,9 +317,15 @@ function makeHarness(
     filePageChars?: number;
     maxFileBytes?: number;
     models?: ModelsFake;
+    progressIntervalMs?: number;
+    failEdits?: number;
+    failSends?: number;
   } = {}
 ): Harness {
-  const bot = makeBot();
+  const bot = makeBot({
+    ...(opts.failEdits === undefined ? {} : { failEdits: opts.failEdits }),
+    ...(opts.failSends === undefined ? {} : { failSends: opts.failSends })
+  });
   const workspaces = makeWorkspaces();
   const runner = makeRunner();
   const activeChanges: Array<WorkspaceRef | undefined> = [];
@@ -316,6 +337,7 @@ function makeHarness(
     maxFileBytes: opts.maxFileBytes ?? MAX_FILE_BYTES,
     listPageSize: opts.listPageSize ?? 8,
     filePageChars: opts.filePageChars ?? 3000,
+    ...(opts.progressIntervalMs === undefined ? {} : { progressIntervalMs: opts.progressIntervalMs }),
     ...(opts.models === undefined ? {} : { models: opts.models }),
     onActiveChange: (ref) => {
       activeChanges.push(ref);
@@ -347,6 +369,16 @@ function callback(
 /** Let the detached task pipeline (runner promise continuations) drain. */
 async function settle(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+/**
+ * The same drain under fake timers, where `setImmediate` is faked too and
+ * {@link settle} would hang forever: yielding the microtask queue repeatedly is
+ * enough for every continuation of the detached pipeline to run (the fakes
+ * never wait on a real timer), so no test needs to sleep.
+ */
+async function drain(): Promise<void> {
+  for (let i = 0; i < 50; i++) await Promise.resolve();
 }
 
 const HOME: WorkspaceRef = { scope: "home" };
@@ -641,23 +673,25 @@ describe("chat machine: tasks", () => {
     await settle();
 
     expect(h.runner.runs).toEqual([{ ref: HOME, text: "посчитай файлы" }]);
-    expect(h.bot.texts()).toEqual(["Задача принята…", "готово: 3 файла"]);
+    expect(h.bot.texts()).toEqual(["⏳ Дом агента · 0:00", "готово: 3 файла"]);
     expect(h.bot.sent[0]!.chatId).toBe(CHAT);
+    expect(h.bot.lastEdit().text).toContain("✅ Готово");
   });
 
-  it("answers «Задача принята…» before the run settles", async () => {
+  it("sends the task card before the run settles", async () => {
     const h = makeHarness();
     withActive(h);
     const gate = h.runner.hold();
 
     await h.machine.onMessage(message("долгая задача"));
 
-    expect(h.bot.texts()).toEqual(["Задача принята…"]);
+    expect(h.bot.texts()).toEqual(["⏳ Дом агента · 0:00"]);
+    expect(h.bot.data(h.bot.sent[0]!.markup)).toEqual(["stp", "mnu"]);
     expect(gate.settled()).toBe(false);
 
     gate.release({ ok: true, text: "готово", sessionId: "session-1" });
     await settle();
-    expect(h.bot.texts()).toEqual(["Задача принята…", "готово"]);
+    expect(h.bot.texts()).toEqual(["⏳ Дом агента · 0:00", "готово"]);
   });
 
   it("splits a long agent reply into one message per chunk", async () => {
@@ -684,7 +718,7 @@ describe("chat machine: tasks", () => {
     await h.machine.onMessage(message("задача"));
     await settle();
 
-    expect(h.bot.texts()).toEqual(["Задача принята…", "ab\nc"]);
+    expect(h.bot.texts()).toEqual(["⏳ Дом агента · 0:00", "ab\nc"]);
   });
 
   it("reports a safe text when the agent returns an empty reply", async () => {
@@ -707,9 +741,11 @@ describe("chat machine: tasks", () => {
     await settle();
 
     expect(h.bot.texts()).toEqual([
-      "Задача принята…",
+      "⏳ Дом агента · 0:00",
       "В этом воркспейсе уже 3 задачи в очереди — дождитесь завершения"
     ]);
+    // Refused before it ran: the card stops claiming a task is on its way.
+    expect(h.bot.lastEdit().text).toBe("✅ Готово · 0:00 · 0 шагов");
     expect(h.machine.activeWorkspace()).toEqual(HOME);
   });
 
@@ -721,7 +757,8 @@ describe("chat machine: tasks", () => {
     await h.machine.onMessage(message("дубль"));
     await settle();
 
-    expect(h.bot.texts()).toEqual(["Задача принята…", "Задача уже выполняется…"]);
+    expect(h.bot.texts()).toEqual(["⏳ Дом агента · 0:00", "Задача уже выполняется…"]);
+    expect(h.bot.lastEdit().text).toBe("✅ Готово · 0:00 · 0 шагов");
     expect(h.machine.activeWorkspace()).toEqual(HOME);
   });
 
@@ -738,6 +775,7 @@ describe("chat machine: tasks", () => {
     expect(h.bot.texts()[1]).toBe("Воркспейс удалён — выберите другой");
     expect(h.bot.data(h.bot.sent[1]!.markup)).toEqual(["ws", "mdl", "mnu:refresh"]);
     expect(h.bot.texts()[1]).not.toContain("not-found");
+    expect(h.bot.lastEdit().text).toBe("⚠️ Ошибка · 0:00: воркспейс удалён");
   });
 
   it("does not clear a newer active workspace when a stale task reports workspace-gone", async () => {
@@ -753,7 +791,7 @@ describe("chat machine: tasks", () => {
 
     expect(h.machine.activeWorkspace()).toEqual(project("alpha"));
     expect(h.activeChanges).toEqual([]);
-    expect(h.bot.texts()).toEqual(["Задача принята…", "Воркспейс удалён — выберите другой"]);
+    expect(h.bot.texts()).toEqual(["⏳ Дом агента · 0:00", "Воркспейс удалён — выберите другой"]);
   });
 
   it("reports the agent failure with its safe phrase", async () => {
@@ -842,6 +880,310 @@ describe("chat machine: tasks", () => {
 
     expect(bot.texts()[1]).toContain("Агент не смог выполнить задачу");
     expect(bot.texts()[1]).not.toContain("socket hang up\n");
+  });
+});
+
+describe("chat machine: progress card", () => {
+  /** The card an accepted task in the agent home gets before anything ran. */
+  const HOME_CARD = "⏳ Дом агента · 0:00";
+
+  function withActive(h: Harness): void {
+    h.machine.setActiveWorkspace(HOME);
+  }
+
+  /** How many edits one card message received. */
+  function editsOf(h: Harness, messageId: number): number {
+    return h.bot.edits.filter((edit) => edit.messageId === messageId).length;
+  }
+
+  it("replaces «Задача принята…» with a progress card carrying the stop button", async () => {
+    const h = makeHarness();
+    withActive(h);
+    h.runner.hold();
+
+    await h.machine.onMessage(message("починить парсер"));
+
+    expect(h.bot.sent).toHaveLength(1);
+    expect(h.bot.sent[0]!.text).toBe(HOME_CARD);
+    expect(h.bot.texts()).not.toContain("Задача принята…");
+    expect(h.bot.data(h.bot.sent[0]!.markup)).toEqual(["stp", "mnu"]);
+  });
+
+  it("marks a task accepted while another runs as queued", async () => {
+    const h = makeHarness();
+    withActive(h);
+    const gate = h.runner.hold();
+    h.runner.progress.mockReturnValue({ phase: "running", taskText: "первая", startedAt: Date.now(), steps: [], queued: 1 });
+
+    await h.machine.onMessage(message("первая"));
+    await h.machine.onMessage(message("вторая"));
+
+    // The shipped queue card states the workspace and the place in the queue.
+    expect(h.bot.sent.at(-1)!.text).toBe("🕓 Дом агента · в очереди №2\n\nвторая");
+    expect(h.bot.data(h.bot.sent.at(-1)!.markup)).toEqual(["stp", "mnu"]);
+    // Both detached runs settle on the same gate: neither card keeps its timer.
+    h.runner.progress.mockReturnValue({ phase: "idle", steps: [], queued: 0 });
+    gate.release({ ok: true, text: "готово", sessionId: "s-1" });
+    await settle();
+  });
+
+  it("turns a queued card live only when its own task starts", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness({ progressIntervalMs: 3500 });
+      withActive(h);
+      const gate = h.runner.hold();
+      await h.machine.onMessage(message("первая"));
+      // «Первая» уже в работе, поэтому «вторая» встаёт в очередь.
+      h.runner.progress.mockReturnValue({ phase: "running", taskText: "первая", startedAt: Date.now(), steps: [], queued: 1 });
+      await h.machine.onMessage(message("вторая"));
+      const firstCard = h.bot.sent[0]!.messageId;
+      const secondCard = h.bot.sent[1]!.messageId;
+      expect(h.bot.sent[1]!.text).toContain("🕓");
+
+      // Ход всё ещё у чужой задачи: карточка очереди не трогается.
+      await vi.advanceTimersByTimeAsync(3500);
+      expect(editsOf(h, firstCard)).toBe(1);
+      expect(editsOf(h, secondCard)).toBe(0);
+      expect(h.bot.sent[1]!.text).toContain("🕓");
+
+      // Ход дошёл до «второй»: её карточка сама становится живой, чужая — нет.
+      h.runner.progress.mockReturnValue({
+        phase: "running",
+        taskText: "вторая",
+        startedAt: Date.now(),
+        steps: [{ name: "read", status: "running" }],
+        queued: 0
+      });
+      const firstCardEdits = editsOf(h, firstCard);
+      await vi.advanceTimersByTimeAsync(3500);
+
+      expect(editsOf(h, secondCard)).toBe(1);
+      expect(editsOf(h, firstCard)).toBe(firstCardEdits);
+      expect(h.bot.lastEdit().messageId).toBe(secondCard);
+      expect(h.bot.lastEdit().text).toContain("⏳ Дом агента");
+      expect(h.bot.lastEdit().text).toContain("🔧 read");
+      expect(h.bot.lastEdit().text).not.toContain("🕓");
+
+      h.runner.progress.mockReturnValue({ phase: "idle", steps: [], queued: 0 });
+      gate.release({ ok: true, text: "готово", sessionId: "s-1" });
+      await drain();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("edits the card while the task runs and turns it into a receipt when it finishes", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness({ progressIntervalMs: 3500 });
+      withActive(h);
+      const gate = h.runner.hold();
+      await h.machine.onMessage(message("починить парсер"));
+      const cardId = h.bot.sent[0]!.messageId;
+
+      h.runner.progress.mockReturnValue({
+        phase: "running",
+        taskText: "починить парсер",
+        startedAt: Date.now() - 72_000,
+        step: 4,
+        steps: [{ name: "read", target: "notes.txt", status: "ok" }],
+        todos: [{ content: "Разобрать логи", status: "completed" }],
+        queued: 0
+      });
+      await vi.advanceTimersByTimeAsync(3500);
+
+      expect(h.bot.lastEdit().messageId).toBe(cardId);
+      expect(h.bot.lastEdit().text).toContain("⏳ Дом агента · 0:03 · шаг 4");
+      expect(h.bot.lastEdit().text).toContain("☑ Разобрать логи");
+      expect(h.bot.lastEdit().text).toContain("🔧 read notes.txt ✔");
+
+      gate.release({ ok: true, text: "готово", sessionId: "s-1" });
+      await drain();
+
+      expect(h.bot.lastEdit().messageId).toBe(cardId);
+      expect(h.bot.lastEdit().text).toContain("✅ Готово");
+      expect(h.bot.data(h.bot.lastEdit().markup)).toEqual(["mnu"]);
+      // The answer itself stays a separate message, never part of the card.
+      expect(h.bot.sent.at(-1)!.text).toBe("готово");
+      expect(h.bot.lastEdit().text).not.toContain("готово");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never re-edits the card with a text it already shows", async () => {
+    vi.useFakeTimers();
+    try {
+      // Тик короче секунды: два рендера попадают в одну показанную секунду и
+      // совпадают, поэтому второй в Telegram не уходит.
+      const h = makeHarness({ progressIntervalMs: 300 });
+      withActive(h);
+      const gate = h.runner.hold();
+      await h.machine.onMessage(message("долгая"));
+      h.runner.progress.mockReturnValue({
+        phase: "running",
+        taskText: "долгая",
+        startedAt: Date.now(),
+        steps: [{ name: "read", status: "running" }],
+        queued: 0
+      });
+
+      await vi.advanceTimersByTimeAsync(300);
+      expect(h.bot.edits).toHaveLength(1);
+      expect(h.bot.lastEdit().text).toContain("⏳ Дом агента · 0:00");
+
+      await vi.advanceTimersByTimeAsync(300);
+      expect(h.bot.edits).toHaveLength(1);
+
+      gate.release({ ok: true, text: "готово", sessionId: "s-1" });
+      await drain();
+      expect(h.bot.lastEdit().text).toContain("✅ Готово");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops editing the card once the receipt is stamped", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness({ progressIntervalMs: 3500 });
+      withActive(h);
+      const gate = h.runner.hold();
+      await h.machine.onMessage(message("долгая"));
+      const cardId = h.bot.sent[0]!.messageId;
+      // The runner keeps reporting this task as running (a lie the real one
+      // never tells after a settle): only stopping the timer keeps the receipt.
+      h.runner.progress.mockReturnValue({
+        phase: "running",
+        taskText: "долгая",
+        startedAt: Date.now(),
+        steps: [{ name: "read", status: "running" }],
+        queued: 0
+      });
+
+      await vi.advanceTimersByTimeAsync(3500);
+      expect(editsOf(h, cardId)).toBe(1);
+
+      gate.release({ ok: true, text: "готово", sessionId: "s-1" });
+      await drain();
+      const afterReceipt = h.bot.edits.length;
+      expect(h.bot.lastEdit().text).toContain("✅ Готово");
+
+      await vi.advanceTimersByTimeAsync(3500 * 3);
+
+      expect(h.bot.edits).toHaveLength(afterReceipt);
+      expect(h.bot.lastEdit().text).toContain("✅ Готово");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stamps a receipt for a stopped task and never reports it as an agent failure", async () => {
+    const h = makeHarness();
+    withActive(h);
+    const gate = h.runner.hold();
+    await h.machine.onMessage(message("долгая"));
+
+    gate.release({ ok: false, code: "cancelled", message: "task cancelled by the owner" });
+    await settle();
+
+    expect(h.bot.lastEdit().text).toBe("⏹ Остановлено владельцем · 0:00");
+    expect(h.bot.texts()).toEqual([HOME_CARD]);
+    expect(h.bot.texts().some((text) => text.includes("Агент не смог выполнить задачу"))).toBe(false);
+  });
+
+  it("stamps the reset receipt when the context reset aborted the task", async () => {
+    const h = makeHarness();
+    withActive(h);
+    const gate = h.runner.hold();
+    await h.machine.onMessage(message("долгая"));
+
+    gate.release({
+      ok: false,
+      code: "agent-error",
+      message: "task aborted because the workspace context was reset"
+    });
+    await settle();
+
+    expect(h.bot.lastEdit().text).toBe("⏹ Остановлено сбросом контекста");
+    expect(h.bot.texts().at(-1)).toContain("контекст воркспейса был сброшен");
+  });
+
+  it("stamps an error receipt naming the safe phrase, never the raw failure", async () => {
+    const h = makeHarness();
+    withActive(h);
+    h.runner.setResult({
+      ok: false,
+      code: "agent-error",
+      message: "llm request timed out\n    at Object.run (/dsh/packages/host/lib/runner.js:12:5)"
+    });
+
+    await h.machine.onMessage(message("задача"));
+    await settle();
+
+    expect(h.bot.lastEdit().text).toBe("⚠️ Ошибка · 0:00: llm request timed out");
+    expect(h.bot.lastEdit().text).not.toContain("runner.js");
+  });
+
+  it("stops updating the card after three failed edits but keeps the task running", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness({ progressIntervalMs: 3500, failEdits: 3 });
+      withActive(h);
+      const gate = h.runner.hold();
+      await h.machine.onMessage(message("долгая"));
+      h.runner.progress.mockReturnValue({
+        phase: "running", taskText: "долгая", startedAt: Date.now(), steps: [{ name: "read", status: "running" }], queued: 0
+      });
+
+      for (let i = 0; i < 5; i++) await vi.advanceTimersByTimeAsync(3500);
+
+      expect(h.bot.edits).toHaveLength(3);
+      expect(h.warns.filter((line) => line.includes("progress card edit failed"))).toHaveLength(3);
+
+      gate.release({ ok: true, text: "готово", sessionId: "s-1" });
+      await drain();
+      expect(h.runner.runs).toEqual([{ ref: HOME, text: "долгая" }]);
+      expect(h.bot.sent.at(-1)!.text).toBe("готово");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a long echoed task text inside the Telegram limit", async () => {
+    const h = makeHarness();
+    withActive(h);
+    const gate = h.runner.hold();
+    // Another task holds the workspace, so the card repeats the owner's text.
+    h.runner.progress.mockReturnValue({ phase: "running", taskText: "первая", startedAt: Date.now(), steps: [], queued: 0 });
+
+    await h.machine.onMessage(message("я".repeat(5000)));
+
+    const card = h.bot.sent.at(-1)!;
+    expect(card.text).toContain("🕓 Дом агента · в очереди №1");
+    expect(card.text).toContain("…");
+    expect(card.text.length).toBeLessThanOrEqual(4096);
+
+    h.runner.progress.mockReturnValue({ phase: "idle", steps: [], queued: 0 });
+    gate.release({ ok: true, text: "готово", sessionId: "s-1" });
+    await settle();
+  });
+
+  it("runs the task and edits nothing when its card could not be sent", async () => {
+    // Only the card's own send is refused: the answer still reaches the owner.
+    const h = makeHarness({ failSends: 1 });
+    withActive(h);
+    h.runner.setResult({ ok: true, text: "готово", sessionId: "s-1" });
+
+    await h.machine.onMessage(message("задача"));
+    await settle();
+
+    expect(h.runner.runs).toEqual([{ ref: HOME, text: "задача" }]);
+    expect(h.bot.texts()).toEqual(["готово"]);
+    // Nothing was sent for this task, so there is no card message to edit.
+    expect(h.bot.edits).toHaveLength(0);
+    expect(h.warns.some((line) => line.includes("sendMessage failed"))).toBe(true);
   });
 });
 
@@ -1685,9 +2027,11 @@ describe("chat machine: stop", () => {
     await settle();
 
     expect(h.bot.texts()).toEqual([
-      "Задача принята…",
+      "⏳ Дом агента · 0:00",
       "Остановил. Контекст сохранён — можно ставить новую задачу."
     ]);
+    // The stopped task's own card becomes the receipt instead of a failure.
+    expect(h.bot.lastEdit().text).toBe("⏹ Остановлено владельцем · 0:00");
   });
 
   it("hints at the workspace instead of cancelling when none is active", async () => {

@@ -769,14 +769,17 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
       // every callback gets an answer (Telegram clears the button spinner)
       expect(deliveredFrom(from).some((entry) => entry.method === "answerCallbackQuery")).toBe(true);
 
-      // (i) a task in the selected workspace, answered by the stub
+      // (i) a task in the selected workspace, answered by the stub. The task is
+      // announced by its own card (which then becomes the receipt), not by a
+      // separate acknowledgement text.
       const agentRoot = join(home, "agent");
       llm.setScript([{ text: STUB_REPLY }]);
       const callsBefore = llm.calls.length;
       server.enqueueMessage({ fromId: OWNER_USER_ID, text: PROMPT_ONE });
       await waitForOutbound(
-        (entry) => entry.method === "sendMessage" && entry.body.text === "Задача принята…",
-        "the task acknowledgement",
+        (entry) =>
+          entry.method === "sendMessage" && String(entry.body.text ?? "").startsWith("⏳ Дом агента"),
+        "the task card",
         from
       );
       await waitForOutbound(
