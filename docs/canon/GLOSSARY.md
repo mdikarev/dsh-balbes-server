@@ -104,8 +104,11 @@ list/create/delete проектов, чтение/запись/согласов�
 Telegram Bot API для одного разрешённого владельца, только private chat.
 Token хранится через `ctx.credentials`, user ID и enabled — в settings-namespace
 `balbes-telegram`; настройка выполняется из админки. Канал не является отдельным процессом и не
-соединяется с телефоном напрямую. Задачи канала выполняются с урезанной поверхностью инструментов (файлы воркспейса, поиск в интернете и планирование; без shell, skill,
-subagent и загрузки произвольных URL) — это containment-граница канала; состояние polling и session mapping переживают рестарт через `$DSH_HOME/telegram-state.json`.
+соединяется с телефоном напрямую. Задачи канала выполняются с полной поверхностью
+инструментов процесса — той же, что у Web-агента (отдельного per-agent
+allow-фильтра и read-guard нет), а границы — sandbox-политика процесса и
+approval; состояние polling и session mapping переживают рестарт через
+`$DSH_HOME/telegram-state.json`.
 
 Командная поверхность канала: `/menu` (`/start`), `/status`, `/ws`, `/model`,
 `/reset`, `/stop`, `/help`. Команды регистрируются нативными ручками Bot API
