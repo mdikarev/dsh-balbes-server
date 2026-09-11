@@ -19,7 +19,7 @@ jobs:
         run: corepack enable && corepack prepare pnpm@10.0.0 --activate
 
       - name: Install dsh CLI
-        run: npm i -g @deepseek-ai/dsh@0.1.5-rc.2
+        run: npm i -g "@deepseek-ai/dsh@$(cat scripts/engine-version.txt)"
 
       - name: Install workspace deps
         run: pnpm install
@@ -111,7 +111,7 @@ jobs:
         run: corepack enable && corepack prepare pnpm@10.0.0 --activate
 
       - name: Install dsh CLI
-        run: npm i -g @deepseek-ai/dsh@0.1.5-rc.2
+        run: npm i -g "@deepseek-ai/dsh@$(cat scripts/engine-version.txt)"
 
       - name: Install workspace deps
         run: pnpm install

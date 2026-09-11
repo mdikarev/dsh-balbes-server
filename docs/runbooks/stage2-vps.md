@@ -80,11 +80,21 @@ curl -fsSL https://raw.githubusercontent.com/mdikarev/dsh-balbes-server/main/scr
 1. **Окружение.** Если `node` ниже 22 или нет `npm` — подключает репозиторий
    NodeSource и ставит Node 22 LTS через `apt`; если нет pnpm — ставит его
    глобально через npm; если нет git — ставит `git` через `apt`.
-2. **dsh.** Если команда `dsh` отсутствует — ставит глобально:
-   `sudo npm i -g @deepseek-ai/dsh@0.1.5-rc.2`.
-3. **Репозиторий.** Клонирует https://github.com/mdikarev/dsh-balbes-server в
+2. **Репозиторий.** Клонирует https://github.com/mdikarev/dsh-balbes-server в
    `$HOME/dsh-balbes-server` (или в каталог из `$DSH_BALBES_REPO_DIR`); если
-   клон уже есть — обновляет его через `git pull --ff-only`.
+   клон уже есть — обновляет его через `git pull --ff-only`. Репозиторий
+   обновляется раньше движка: из него установщик берёт пин версии
+   `scripts/engine-version.txt`.
+3. **dsh.** Версия движка читается из единственного источника —
+   `scripts/engine-version.txt` (рядом со скриптом). Если команда `dsh`
+   отсутствует — ставит глобально:
+   `sudo npm i -g "@deepseek-ai/dsh@$(cat scripts/engine-version.txt)"`.
+   Если `dsh` уже установлен, установщик **сверяет его версию** с пином:
+   совпадение — обычная info-строка; расхождение — громкое предупреждение в
+   stderr (какая версия стоит, какая ожидается, чем это грозит и точная команда
+   обновления). Автоматической переустановки нет: обычный запуск не требует
+   sudo, а сознательно выбранная на хосте версия не затирается (см.
+   «Устранение неполадок → Предупреждение о рассинхроне версии dsh»).
 4. **Сборка workspace.** В клоне репозитория: `pnpm install` и
    `pnpm -r --if-present run build` — собираются `dsh-balbes-contracts`
    (типы), `dsh-balbes-host` (tsc) и SPA админки `dsh-balbes-admin`
@@ -966,11 +976,44 @@ sudo journalctl -u dsh-balbes -n 50
 ```
 
 Типичные причины: порт занят (см. ниже), `dsh` не найден по `ExecStart`
-(переустановите глобально: `sudo npm i -g @deepseek-ai/dsh@0.1.5-rc.2` и повторите
-установщик), неверный `DSH_HOME` (юнит пишется со значениями на момент
+(переустановите глобально:
+`sudo npm i -g "@deepseek-ai/dsh@$(cat "$HOME/dsh-balbes-server/scripts/engine-version.txt")"`
+и повторите установщик), неверный `DSH_HOME` (юнит пишется со значениями на момент
 установки — при другом `DSH_HOME` повторите установку с
 `export DSH_HOME=...` перед запуском). После ручной правки юнита —
 `sudo systemctl daemon-reload && sudo systemctl restart dsh-balbes`.
+
+### Предупреждение о рассинхроне версии dsh
+
+Установщик сверяет установленную версию движка (`dsh --version`) с пином из
+`scripts/engine-version.txt` и при расхождении печатает в stderr блок вида:
+
+```text
+=====================================================================
+WARNING: dsh engine version mismatch
+  installed: <что стоит на хосте>
+  expected:  <версия из scripts/engine-version.txt>
+...
+  sudo npm i -g "@deepseek-ai/dsh@<версия>"
+=====================================================================
+```
+
+Это **не** ошибка установки: установщик продолжает работу и не переустанавливает
+движок сам (обычный запуск не требует sudo, а сознательно выбранная на хосте
+версия не затирается). Но профиль, канон и CI нацелены на ожидаемую версию,
+поэтому сервер на другой версии может вести себя иначе. Обновите движок явно и
+повторите установщик:
+
+```bash
+cd ~/dsh-balbes-server
+git pull --ff-only
+sudo npm i -g "@deepseek-ai/dsh@$(cat scripts/engine-version.txt)"
+dsh --version   # должно совпасть с scripts/engine-version.txt
+```
+
+Если версию определить не удалось (`dsh --version` не печатает ничего похожего
+на версию), установщик отдельно предупреждает об этом и тоже продолжает
+работу — проверьте `command -v dsh` и `dsh --version` вручную.
 
 ### Health не отвечает
 

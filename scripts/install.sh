@@ -6,9 +6,12 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/mdikarev/dsh-balbes-server/main/scripts/install.sh | bash
 #
-# Provisions the environment (Node >= 22 via NodeSource, pnpm, git), installs
-# the global @deepseek-ai/dsh CLI (never patched or edited — dsh is a
-# dependency, not a fork), builds the workspace packages (dsh-balbes-host,
+# Provisions the environment (Node >= 22 via NodeSource, pnpm, git), ensures the
+# global @deepseek-ai/dsh CLI (never patched or edited — dsh is a dependency,
+# not a fork): installs the version pinned in scripts/engine-version.txt when
+# dsh is absent, and warns loudly (without reinstalling) when an already
+# installed dsh differs from that pin. Then builds the workspace packages
+# (dsh-balbes-host,
 # dsh-balbes-contracts, dsh-balbes-workspaces, dsh-balbes-models,
 # dsh-balbes-sessions, dsh-balbes-telegram, the admin SPA), syncs
 # profiles/balbes from the repository into $DSH_HOME/profiles, copies the
@@ -55,6 +58,16 @@ while [[ $# -gt 0 ]]; do
 done
 NODE_MAJOR_MIN=22
 NODESOURCE_SETUP_URL="https://deb.nodesource.com/setup_${NODE_MAJOR_MIN}.x"
+
+# The single source of the pinned @deepseek-ai/dsh version. Resolved next to
+# THIS script so a checkout-based run reads the repo it lives in. A piped run
+# (`curl ... | bash`) has no BASH_SOURCE and therefore no file on disk;
+# read_engine_version() then falls back to the repo checkout at $REPO_DIR
+# (ensure_repo runs before ensure_dsh, so that checkout exists by then).
+ENGINE_VERSION_FILE=""
+if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+    ENGINE_VERSION_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/engine-version.txt"
+fi
 
 # --- small helpers ------------------------------------------------------------
 
@@ -250,6 +263,76 @@ prompt_api_key() {
     printf '%s' "$key"
 }
 
+# --- engine version pin (scripts/engine-version.txt) --------------------------
+#
+# The pinned @deepseek-ai/dsh version lives in exactly one place:
+# scripts/engine-version.txt. install.sh, CI and the runbooks all read it from
+# there, so a bump cannot leave one of them behind — the drift that once kept a
+# server silently running an old engine while the repo and CI already demanded
+# the new one (see docs/superpowers/plans/2026-09-11-dsh-engine-upgrade.md).
+
+# read_engine_version — print the pinned version. Looks next to this script
+# first, then in the repo checkout (the piped-install case, where the script
+# itself has no directory on disk). A missing, empty or unreadable file is a
+# loud warning, never a crash: the installer keeps going, it just cannot pin.
+read_engine_version() {
+    local file ver
+    local candidates=()
+    if [[ -n "${ENGINE_VERSION_FILE:-}" ]]; then
+        candidates+=("$ENGINE_VERSION_FILE")
+    fi
+    candidates+=("$REPO_DIR/scripts/engine-version.txt")
+    for file in "${candidates[@]}"; do
+        [[ -f "$file" ]] || continue
+        ver="$(head -n 1 "$file" | tr -d '[:space:]')"
+        if [[ -z "$ver" ]]; then
+            warn "engine version file $file is empty — cannot pin @deepseek-ai/dsh."
+            warn "restore it (one version line) from the repository and re-run."
+            return 1
+        fi
+        printf '%s' "$ver"
+        return 0
+    done
+    warn "engine version file not found (looked at: ${candidates[*]})."
+    warn "cannot pin @deepseek-ai/dsh; scripts/engine-version.txt in the repo is the source of truth."
+    return 1
+}
+
+# dsh_installed_version — the version the `dsh` on PATH actually reports, or an
+# empty string when nothing version-like comes back. The command may wrap the
+# version ("dsh/0.1.5-rc.1", "@deepseek-ai/dsh@0.1.5-rc.1") or print a
+# multi-line banner, so take the first line and the first semver-like token.
+dsh_installed_version() {
+    dsh --version 2>/dev/null | head -n 1 \
+        | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([-+.][0-9A-Za-z.-]+)?' \
+        | head -n 1 || true
+}
+
+# engine_version_mismatch_warning INSTALLED EXPECTED — loud, multi-line,
+# stderr-only. The installer deliberately keeps going: an outdated engine must
+# never block the server's update path, and a mismatch must not silently
+# reinstall a version the host chose on purpose (that would also demand sudo on
+# ordinary runs).
+engine_version_mismatch_warning() {
+    local installed="$1" expected="$2"
+    cat >&2 <<EOF
+=====================================================================
+WARNING: dsh engine version mismatch
+  installed: $installed
+  expected:  $expected   (pinned in scripts/engine-version.txt)
+
+The profile, the canon and CI all target the expected version, so this
+server may fail in ways none of them cover. The installer does NOT
+reinstall dsh on its own (that would need sudo on every run and would
+overwrite a version the host deliberately chose).
+
+Update the engine explicitly, then re-run this installer:
+
+  sudo npm i -g "@deepseek-ai/dsh@$expected"
+=====================================================================
+EOF
+}
+
 # --- environment steps (idempotent) ------------------------------------------
 
 # node_ready — node >= 22 AND npm present. npm ships with the NodeSource
@@ -302,14 +385,35 @@ ensure_tooling() {
 }
 
 ensure_dsh() {
+    local expected installed
+    expected="$(read_engine_version || true)"
     if command -v dsh >/dev/null 2>&1; then
-        info "dsh already installed"
+        installed="$(dsh_installed_version)"
+        if [[ -z "$expected" ]]; then
+            info "dsh already installed (pinned version unknown — see the warning above)"
+        elif [[ -z "$installed" ]]; then
+            warn "could not determine the installed dsh version — dsh --version returned nothing version-like."
+            warn "cannot compare it against the expected $expected (scripts/engine-version.txt); continuing."
+        elif [[ "$installed" == "$expected" ]]; then
+            info "dsh already installed ($installed — matches scripts/engine-version.txt)"
+        else
+            engine_version_mismatch_warning "$installed" "$expected"
+        fi
+        # Never reinstall here: the owner may have pinned a version on this host
+        # on purpose, and a reinstall would require sudo on ordinary runs.
         return 0
+    fi
+    if [[ -z "$expected" ]]; then
+        # Refuse to install unpinned (latest): that is exactly what silently
+        # drifted the engine under the server before. ensure_repo has run by
+        # now, so this only happens if the pin file is missing/empty in the repo.
+        die "cannot install dsh: scripts/engine-version.txt is missing or empty, and installing unpinned is what silently drifted this server before"
     fi
     # Pin the CLI: an unpinned `latest` has silently drifted the whole engine
     # under the server before (see docs/superpowers/plans/2026-09-11-dsh-engine-upgrade.md).
-    info "Installing @deepseek-ai/dsh@0.1.5-rc.2 globally (npm i -g @deepseek-ai/dsh@0.1.5-rc.2)..."
-    run_priv npm install -g @deepseek-ai/dsh@0.1.5-rc.2
+    # The version itself now lives in exactly one file: scripts/engine-version.txt.
+    info "Installing @deepseek-ai/dsh@$expected globally (npm i -g @deepseek-ai/dsh@$expected)..."
+    run_priv npm install -g "@deepseek-ai/dsh@$expected"
     hash -r
     # npm's global bin dir may not be on this shell's PATH; locate dsh there.
     if ! command -v dsh >/dev/null 2>&1; then
@@ -635,8 +739,11 @@ main() {
         warn "running as root: privileged steps skip sudo"
     fi
     ensure_tooling
-    ensure_dsh
+    # Repo checkout first: it carries scripts/engine-version.txt, the single
+    # source of the pinned engine version, which ensure_dsh reads (a piped
+    # `curl ... | bash` has no script directory on disk).
     ensure_repo
+    ensure_dsh
     if [[ "$RESET_ADMIN_PASSWORD" -eq 1 ]]; then
         admin_password_reset
         health_check || true

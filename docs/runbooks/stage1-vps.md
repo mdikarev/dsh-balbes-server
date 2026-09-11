@@ -65,11 +65,18 @@ curl -fsSL https://raw.githubusercontent.com/mdikarev/dsh-balbes-server/main/scr
 1. **Окружение.** Если `node --version` ниже 22 — подключает репозиторий
    NodeSource и ставит Node 22 LTS через `apt`; если нет pnpm — ставит его
    глобально через npm; если нет git — ставит `git` через `apt`.
-2. **dsh.** Если команда `dsh` отсутствует — ставит глобально:
-   `sudo npm i -g @deepseek-ai/dsh@0.1.5-rc.2`.
-3. **Репозиторий.** Клонирует https://github.com/mdikarev/dsh-balbes-server в
+2. **Репозиторий.** Клонирует https://github.com/mdikarev/dsh-balbes-server в
    `$HOME/dsh-balbes-server` (или в каталог из `$DSH_BALBES_REPO_DIR`, если он
    задан); если клон уже есть — обновляет его через `git pull --ff-only`.
+   Репозиторий обновляется раньше движка: из него берётся пин версии
+   `scripts/engine-version.txt`.
+3. **dsh.** Версия движка читается из единственного источника —
+   `scripts/engine-version.txt`. Если команды `dsh` нет — ставит глобально:
+   `sudo npm i -g "@deepseek-ai/dsh@$(cat scripts/engine-version.txt)"`. Если
+   `dsh` уже установлен, установщик сверяет его версию с пином: совпадение —
+   обычная info-строка, расхождение — громкое предупреждение в stderr (какая
+   версия стоит, какая ожидается, чем это грозит и точная команда обновления).
+   Автоматической переустановки нет (см. «Устранение неполадок»).
 4. **Профиль.** Синхронизирует `profiles/balbes` из репозитория в
    `$DSH_HOME/profiles/balbes`. Профиль в репо — источник правды, поэтому
    перезапись при синхронизации актуальна.
@@ -133,10 +140,11 @@ cp -R "$HOME/dsh-balbes-server/profiles/balbes" "${DSH_HOME:-$HOME/.dsh}/profile
 `cp -R` вложил бы новый профиль в `profiles/balbes/balbes`, и обновление
 молча не сработало бы).
 
-Новая версия самого dsh ставится глобально:
+Новая версия самого dsh берётся из пина `scripts/engine-version.txt` и ставится
+глобально:
 
 ```bash
-sudo npm i -g @deepseek-ai/dsh@0.1.5-rc.2
+sudo npm i -g "@deepseek-ai/dsh@$(cat "$HOME/dsh-balbes-server/scripts/engine-version.txt")"
 ```
 
 ## Устранение неполадок
@@ -152,6 +160,23 @@ sudo apt-get install -y nodejs
 node --version   # должно показать v22.x
 ```
 
+### Предупреждение о рассинхроне версии dsh
+
+Установщик сверяет установленную версию движка (`dsh --version`) с пином из
+`scripts/engine-version.txt`; при расхождении в stderr печатается блок
+`WARNING: dsh engine version mismatch` с обеими версиями и точной командой
+обновления. Это **не** ошибка установки — установщик продолжает работу и не
+переустанавливает движок сам (обычный запуск не требует sudo). Версию в тексте
+не хардкодьте: она живёт только в `scripts/engine-version.txt`. Обновите движок
+явно и повторите установщик:
+
+```bash
+cd ~/dsh-balbes-server
+git pull --ff-only
+sudo npm i -g "@deepseek-ai/dsh@$(cat scripts/engine-version.txt)"
+dsh --version   # должно совпасть с scripts/engine-version.txt
+```
+
 ### Битые registry-версии: почему нельзя `pnpm add` базовые бандлы
 
 npm registry публикует устаревшие сломанные версии пакетов
@@ -164,8 +189,9 @@ npm registry публикует устаревшие сломанные верс
 и `cordis.patch.yml`), без `node_modules`. Бандлы резолвятся из зеркала
 установленного dsh: `$DSH_HOME/profiles/node_modules` — симлинки на каталог
 установки dsh. Если `dsh --profile balbes --dump-config` падает с ошибкой
-«бандл не найден» — переустановите dsh (`sudo npm i -g @deepseek-ai/dsh@0.1.5-rc.2`) и
-повторите синхронизацию профиля; `pnpm add` проблему не решит.
+«бандл не найден» — переустановите dsh
+(`sudo npm i -g "@deepseek-ai/dsh@$(cat "$HOME/dsh-balbes-server/scripts/engine-version.txt")"`)
+и повторите синхронизацию профиля; `pnpm add` проблему не решит.
 
 ### Ключ не принят (ошибка авторизации при smoke)
 
