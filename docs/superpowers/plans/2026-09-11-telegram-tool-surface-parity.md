@@ -20,6 +20,7 @@
 - После каждого кода-task: `pnpm --filter dsh-balbes-telegram run typecheck` и `pnpm --filter dsh-balbes-telegram run test`.
 - REAL-наборы — только с `RUN_REAL=1` и `dsh` на PATH.
 - Коммит после каждого task в стиле репозитория (`refactor(telegram): …`, `test(telegram): …`, `docs(canon): …`).
+- **Безопасность (addendum по исполнению):** НЕ запускать repo-wide `RUN_REAL=1 pnpm test` на слабой dev-машине — на 8 GB / 4-core dev Mac mini этот прогон предшествовал перезагрузке хоста. Локально проверять bounded (дефолтные тесты с `--workspace-concurrency=1`), а полный REAL-набор гонять на Linux VPS при серверной проверке.
 
 ---
 
