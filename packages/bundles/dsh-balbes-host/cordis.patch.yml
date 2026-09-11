@@ -4,7 +4,15 @@
 
 - id: system-prompt
   config:
-    persona: >-
+    # dsh 0.1.5-rc.2: the deployment persona is the `personaPrefix` /
+    # `personaSuffix` config (the 0.1.2 `persona` key no longer exists). The
+    # whole deployment statement stays in the prefix so both facts sit before
+    # first-party guidance, exactly as the single 0.1.2 block did. `{{model}}`
+    # and `{{cwd}}` remain registered by dsh-agent-loop; interpolation is
+    # strict, so only those two names may be referenced. `includeHarnessIdentity`
+    # is left at its default (true): the engine's own web/sdk/headless overlays
+    # do the same, and the fixed harness identity precedes this prefix.
+    personaPrefix: >-
       You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.
 
 - id: tools

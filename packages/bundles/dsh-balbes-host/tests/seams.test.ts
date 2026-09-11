@@ -757,11 +757,15 @@ describe.skipIf(!realEnabled)("REAL seams probe: persisted session, resume after
     expect(seqAfterTurn1).toBeGreaterThan(firstSeq);
 
     // ---- persisted file: $DSH_HOME/sessions/<cwd-key>/<session-id>/*.jsonl ----
-    // dsh 0.1.2-rc.1 seam fact: session-persistence-jsonl stores one session
+    // dsh 0.1.5-rc.2 seam fact: session-persistence-jsonl stores one session
     // directory per (cwd, sessionId) under the configured root (base row
     // root = dshHomePath('sessions')) and the directory key is derived from
-    // the session's header cwd; the log is zstd-compressed by default
-    // (session.jsonl.zstd).
+    // the session's header cwd; the log is zstd-compressed by default. The
+    // filename is generation-stamped: format version 0 keeps the original
+    // suffix-only `session.jsonl.zstd`, every later generation carries a
+    // lowercase numeric component (`session.v<N>.jsonl.zstd`; the current
+    // SESSION_FORMAT_VERSION is 3). Both shapes are canonical, so discovery
+    // accepts either.
     const sessionsRoot = join(home!, "sessions");
     const files: string[] = [];
     async function walk(dir: string): Promise<void> {
@@ -773,14 +777,16 @@ describe.skipIf(!realEnabled)("REAL seams probe: persisted session, resume after
       }
     }
     await walk(sessionsRoot);
-    const logFile = files.find((path) => path.includes(sessionId) && /session\.jsonl(\.zstd)?$/.test(path));
+    const logFile = files.find(
+      (path) => path.includes(sessionId) && /session(\.v[1-9][0-9]*)?\.jsonl(\.zstd)?$/.test(path)
+    );
     expect(logFile, `persisted log exists for ${sessionId} under ${sessionsRoot}`).toBeDefined();
 
     // ---- handle.dispose() on the live agent ----
     await handle1.dispose();
     const { agents: liveAgents } = await coreCtx();
     expect(liveAgents.list().map((agent) => agent.id)).not.toContain(sessionId);
-    // dsh 0.1.2-rc.1 seam fact: dispose() unregisters the agent and removes
+    // dsh 0.1.5-rc.2 seam fact: dispose() unregisters the agent and removes
     // its in-memory session but does NOT delete the durable file — the
     // session survives on disk for agents.resume. A context-reset flow must
     // additionally clear its own sessionId mapping; the durable file stays
@@ -802,7 +808,7 @@ describe.skipIf(!realEnabled)("REAL seams probe: persisted session, resume after
       setup: () => {}
     });
     const agent2 = handle2.agent;
-    // dsh 0.1.2-rc.1 seam fact: agents.resume({ resumeSessionId, ... })
+    // dsh 0.1.5-rc.2 seam fact: agents.resume({ resumeSessionId, ... })
     // loads the persisted session and its header cwd; the loaded log already
     // covers the first turn (seq >= seqAfterTurn1) BEFORE any new turn.
     expect(agent2.session.seq).toBeGreaterThanOrEqual(seqAfterTurn1);
