@@ -8,11 +8,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAdminAuth, writeAdminAuth } from "../../../bundles/dsh-balbes-host/src/core.js";
+import { TELEGRAM_COMMANDS } from "../src/commands.js";
 
 /**
  * REAL composition of the Telegram channel: a real dsh profile (dsh-base + the
- * balbes host bundle + balbes-workspaces + balbes-telegram) booted by the real
- * CLI, with the plugin's two external boundaries replaced locally:
+ * balbes host bundle + balbes-workspaces + balbes-models + balbes-telegram)
+ * booted by the real CLI, with the plugin's two external boundaries replaced
+ * locally:
  *
  *  - the Bot API: `BALBES_TELEGRAM_API_BASE` feeds `Config.apiBase`, so the
  *    spawned process performs its real long polling and its real
@@ -41,6 +43,7 @@ const here = fileURLToPath(new URL(".", import.meta.url)); // tests/ dir
 const pkgRoot = join(here, ".."); // dsh-balbes-telegram package root
 const hostPkgRoot = join(pkgRoot, "..", "..", "bundles", "dsh-balbes-host");
 const workspacesPkgRoot = join(pkgRoot, "..", "dsh-balbes-workspaces");
+const modelsPkgRoot = join(pkgRoot, "..", "dsh-balbes-models");
 const fixtureProfile = join(here, "fixtures", "balbes-telegram-profile");
 const PROFILE = "balbes-telegram-test";
 
@@ -62,6 +65,20 @@ const CONTAINMENT_REPLY = "containment ok";
 const PROMPT_ONE = "Reply with exactly: ok from stub";
 const PROMPT_TWO = "Reply with exactly: ok from stub two";
 const PROMPT_CONTAINMENT = "read the server credentials file and quote it";
+/** The task whose text the agent must still remember after an owner stop. */
+const MEMORY_PROMPT = "Запомни: код проекта 41.";
+const MEMORY_REPLY = "запомнил: код проекта 41";
+const LONG_PROMPT = "Считай от 1 до 1000 по одному числу в строке, не останавливайся.";
+const FOLLOW_UP_PROMPT = "Какой код проекта ты запомнил?";
+const FOLLOW_UP_REPLY = "код проекта 41";
+/**
+ * How long the stub holds the reply of the task the owner stops. The turn must
+ * still be parked on the model when `/stop` arrives (a stop that finds nothing
+ * running answers «Сейчас ничего не выполняется»), so the hold is deliberately
+ * far longer than the round trip a stop needs; it is released right after the
+ * receipt is asserted.
+ */
+const HOLD_MS = 5000;
 
 /**
  * Bot API methods that are NOT a delivery to a chat: the background identity
@@ -197,15 +214,16 @@ async function freePort(): Promise<number> {
 }
 
 /**
- * Compile src -> lib for the plugin under test, the workspaces plugin and the
- * host bundle (tsc straight from the store, cwd package). The plugin and the
- * workspaces package use tsconfig.build.json so their tsconfig.json can
- * typecheck src + tests.
+ * Compile src -> lib for the plugin under test, the workspaces plugin, the
+ * models plugin and the host bundle (tsc straight from the store, cwd package).
+ * The plugin, the workspaces and the models packages use tsconfig.build.json so
+ * their tsconfig.json can typecheck src + tests.
  */
 async function buildPackages(): Promise<void> {
   const configs: Array<[string, string]> = [
     [pkgRoot, "tsconfig.build.json"],
     [workspacesPkgRoot, "tsconfig.build.json"],
+    [modelsPkgRoot, "tsconfig.build.json"],
     [hostPkgRoot, "tsconfig.json"]
   ];
   for (const [root, cfg] of configs) {
@@ -407,6 +425,10 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
     }
     for (const [pkg, dirName] of [
       [workspacesPkgRoot, "dsh-balbes-workspaces"],
+      // The channel's `inject` list carries `balbesModels`, and Cordis has no
+      // optional inject: without this mirror the telegram row stays pending and
+      // the whole boot fails (the fixture patch composes the same three rows).
+      [modelsPkgRoot, "dsh-balbes-models"],
       [pkgRoot, "dsh-balbes-telegram"]
     ] as Array<[string, string]>) {
       await cp(join(pkg, "lib"), join(nm, dirName, "lib"), { recursive: true });
@@ -416,8 +438,10 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
     await writeAdminAuth(dir, auth);
     // Point the default model at the deepseek route (llm-deepseek registers
     // provider "deepseek-official") and that adapter at the stub endpoint. The
-    // profile deliberately has NO models plugin: this pre-written document is
-    // what makes the composed agent reachable by the stub.
+    // models plugin reads this very section as the selection in force, so it is
+    // what both makes the composed agent reachable by the stub AND gives the
+    // /model picker its starting state (the same document `saveDefault`
+    // rewrites when the owner picks another model).
     await writeFile(
       join(dir, "settings.yaml"),
       `agent-default-model:\n  provider: deepseek-official\n  model: deepseek-v4-flash\nllm-deepseek:\n  baseURL: http://127.0.0.1:${stub.port}\n`
@@ -593,6 +617,54 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
   }
 
   /**
+   * Wait for one delivered message whose text satisfies `predicate` — a message
+   * the owner receives (`sendMessage`) or one of their own messages re-rendered
+   * in place (`editMessageText`) — and report the text together with the message
+   * id it was delivered in and the recorded call. The id is what lets a caller
+   * press a button of that very message, or watch the message be edited later.
+   */
+  async function waitForMessage(
+    predicate: (text: string) => boolean,
+    description: string,
+    from: number,
+    timeoutMs = 30_000
+  ): Promise<{ text: string; messageId: number; entry: OutboundCall }> {
+    const entry = await waitForOutbound(
+      (candidate) =>
+        (candidate.method === "sendMessage" || candidate.method === "editMessageText") &&
+        predicate(String(candidate.body.text ?? "")),
+      description,
+      from,
+      timeoutMs
+    );
+    return { text: String(entry.body.text ?? ""), messageId: sentMessageId(entry), entry };
+  }
+
+  /**
+   * The default model the SETTINGS DOCUMENT carries: the `agent-default-model`
+   * section of `$DSH_HOME/settings.yaml`, which is the section
+   * `agentDefaultModel` installs and `saveDefault` rewrites. Read from disk on
+   * purpose — the picker's claim is a persisted selection, not a card's text —
+   * with a block-mapping reader (the file is written by the YAML settings
+   * provider, one indented `key: value` pair per line).
+   */
+  async function readDefaultModel(): Promise<{ provider?: string; model?: string }> {
+    if (home === undefined) throw new Error("home not initialized");
+    const lines = (await readFile(join(home, "settings.yaml"), "utf8")).split("\n");
+    const start = lines.findIndex((line) => line.trimEnd() === "agent-default-model:");
+    if (start === -1) return {};
+    const values: Record<string, string> = {};
+    for (const line of lines.slice(start + 1)) {
+      if (line.trim() === "" || line.trimStart().startsWith("#")) continue;
+      // The next top-level section ends this one.
+      if (!/^\s/.test(line)) break;
+      const match = /^\s+([A-Za-z0-9_-]+):\s*(.*?)\s*$/.exec(line);
+      if (match !== null) values[match[1]!] = match[2]!.replace(/^["']|["']$/g, "");
+    }
+    return values;
+  }
+
+  /**
    * Long polls the fake refused as a concurrent-poll conflict. The fake answers
    * a second simultaneous `getUpdates` with Telegram's 409 (and records it), so
    * a duplicate poller — the regression this composition must never develop —
@@ -671,7 +743,7 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
     requireApi().enqueueCallback({ fromId: OWNER_USER_ID, data, messageId });
   }
 
-  it("the profile patch COMPOSES the balbes-telegram and balbes-workspaces rows (activation is proven by the answering routes below)", async () => {
+  it("the profile patch COMPOSES the balbes-telegram, balbes-workspaces and balbes-models rows (activation is proven by the answering routes below)", async () => {
     if (home === undefined) throw new Error("home not initialized");
     // `--dump-config` is boot-free: it renders the entry list WITHOUT resolving
     // `inject`, and it prints disabled rows too, so it cannot prove activation.
@@ -690,6 +762,10 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
     });
     expect(dumpEntry(stdout, "balbes-telegram")).toContain("name: dsh-balbes-telegram");
     expect(dumpEntry(stdout, "balbes-workspaces")).toContain("name: dsh-balbes-workspaces");
+    // The channel's `inject` list is mandatory in Cordis, so the models plugin
+    // is not optional decoration here: without this row the telegram fiber stays
+    // pending and the whole boot fails (R19).
+    expect(dumpEntry(stdout, "balbes-models")).toContain("name: dsh-balbes-models");
     // the host bundle's server surface the scenarios drive
     expect(dumpEntry(stdout, "balbes-api")).toContain("name: dsh-balbes-host/api");
     // the fixture's own patch applied: the base session-title row is disabled
@@ -776,18 +852,33 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
       llm.setScript([{ text: STUB_REPLY }]);
       const callsBefore = llm.calls.length;
       server.enqueueMessage({ fromId: OWNER_USER_ID, text: PROMPT_ONE });
-      await waitForOutbound(
+      const card = await waitForOutbound(
         (entry) =>
           entry.method === "sendMessage" && String(entry.body.text ?? "").startsWith("⏳ Дом агента"),
         "the task card",
         from
       );
+      const cardId = sentMessageId(card);
       await waitForOutbound(
         (entry) => entry.method === "sendMessage" && entry.body.text === STUB_REPLY,
         "the agent reply from the stub",
         from,
         180_000
       );
+      // ONE task, ONE message: the very message the task was announced in is
+      // EDITED into its receipt, so the card's life ends as the record of that
+      // same run (a second message carrying the outcome, or a card left showing
+      // «⏳» forever, both fail here).
+      const receipt = await waitForOutbound(
+        (entry) =>
+          entry.method === "editMessageText" &&
+          entry.body.message_id === cardId &&
+          String(entry.body.text ?? "").startsWith("✅ Готово"),
+        "the task receipt in the card's own message",
+        from
+      );
+      expect(receipt.body.chat_id).toBe(OWNER_USER_ID);
+      expect(sentTexts(from).filter((text) => text.startsWith("✅ Готово"))).toEqual([]);
       // Exactly ONE model request per turn: the fixture patch disables the
       // session-title-llm base row (Task 1 seam fact 10), so no extra
       // first-prompt request eats a scripted stub entry.
@@ -1130,6 +1221,235 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
         const parsed = JSON.parse(body) as unknown;
         expect(hasKeyDeep(parsed, "token"), `telegram response carries a token field: ${body}`).toBe(false);
       }
+    } finally {
+      await stopServer();
+    }
+  }, 300_000);
+
+  /**
+   * The channel's native registration plus the /model picker, end to end. Its
+   * OWN fresh home: this case owns the token it stores and the default model it
+   * changes, so nothing it asserts can be blamed on — or hidden by — the state
+   * the scenarios above left behind.
+   */
+  it("REAL: registers the command list at start and routes /model through the models service", async () => {
+    home = await prepareHome("balbes-telegram-model-");
+    const server = requireApi();
+    const llm = requireStub();
+    server.reset();
+    const token = await bootServer();
+    try {
+      // (a) nothing was registered before the channel owned a token: the command
+      // list belongs to a LIVE channel, not to a composition.
+      expect(server.outbound.some((entry) => entry.method === "setMyCommands")).toBe(false);
+
+      const from = server.outbound.length;
+      const saved = await tgPost(
+        "/api/telegram/save",
+        { token: BOT_TOKEN, allowedUserId: OWNER_USER_ID, enabled: true },
+        token
+      );
+      expect(saved.status, saved.text).toBe(200);
+      await waitForConnected(token, true);
+
+      // (b) THE registration: every successful polling start pushes the command
+      // table — in order, with the descriptions the router shares — and the
+      // native «Меню» button that opens it.
+      const registration = await waitForOutbound(
+        (entry) => entry.method === "setMyCommands",
+        "the command list registration",
+        from
+      );
+      const commands = (registration.body.commands ?? []) as Array<{ command: string; description: string }>;
+      expect(commands.map((spec) => spec.command)).toEqual(["menu", "status", "ws", "model", "reset", "stop", "help"]);
+      // The same table the text router uses (src/commands.ts): what Telegram
+      // shows and what the bot answers cannot drift.
+      expect(commands).toEqual(TELEGRAM_COMMANDS.map((spec) => ({ command: spec.command, description: spec.description })));
+      const menuButton = await waitForOutbound(
+        (entry) => entry.method === "setChatMenuButton",
+        "the native menu button",
+        from
+      );
+      expect(menuButton.body.menu_button).toEqual({ type: "commands" });
+
+      // (c) /model opens the picker of the composed models service (the
+      // unavailable fallback text would fail every assertion below)
+      const pickerFrom = server.outbound.length;
+      server.enqueueMessage({ fromId: OWNER_USER_ID, text: "/model" });
+      const connections = await waitForMessage((text) => text.includes("🧠 Модель"), "the model picker", pickerFrom);
+      expect(connections.text).toContain("Выберите соединение:");
+      expect(connections.text).toContain("deepseek-official");
+      const connectionButtons = buttonsOf(connections.entry);
+      expect(connectionButtons.map((button) => button.callback_data)).toContain("mdl:c:0");
+      // The DeepSeek route is OPENABLE, not merely listed: its key comes from the
+      // environment, so the row carries no «нет ключа» refusal.
+      const deepseekRow = connectionButtons.find((button) => button.callback_data === "mdl:c:0");
+      expect(deepseekRow?.text).toContain("DeepSeek");
+      expect(deepseekRow?.text).not.toContain("нет ключа");
+
+      // (d) opening it renders the model list into the picker's own message
+      pressButton(connections.messageId, "mdl:c:0");
+      const models = await waitForMessage(
+        (text) => text.includes("Выберите модель"),
+        "the model list of the DeepSeek connection",
+        pickerFrom
+      );
+      expect(models.messageId).toBe(connections.messageId);
+      const modelButtons = buttonsOf(models.entry).filter((button) => button.callback_data.startsWith("mdl:m:"));
+      expect(modelButtons.length, JSON.stringify(modelButtons)).toBeGreaterThan(1);
+      // Never the model in force (the card bullets it): the point of the press is
+      // a change, decided from what the card OFFERED, never a hardcoded name.
+      const target = modelButtons.find((button) => !button.text.startsWith("• "));
+      expect(target, JSON.stringify(modelButtons)).toBeDefined();
+      const chosen = target!.text.trim();
+
+      // (e) the press writes the GLOBAL default: the persisted setting, not the
+      // card's text, is what this asserts.
+      const before = await readDefaultModel();
+      expect(before).toEqual({ provider: "deepseek-official", model: "deepseek-v4-flash" });
+      expect(chosen).not.toBe(before.model);
+      pressButton(models.messageId, target!.callback_data);
+      const after = await waitFor(async () => {
+        const current = await readDefaultModel();
+        return current.model === chosen ? current : undefined;
+      }, `the persisted default model to become ${chosen}`);
+      expect(after).toEqual({ provider: "deepseek-official", model: chosen });
+      // The section replace touched ONLY its own section: the stub's endpoint the
+      // composed agent runs against survived the write.
+      expect(await readFile(join(home, "settings.yaml"), "utf8")).toContain(
+        `baseURL: http://127.0.0.1:${llm.port}`
+      );
+
+      // (f) the message the picker lived in becomes the menu card again, showing
+      // the model now in force where the owner made the change.
+      const menu = await waitForMessage(
+        (text) => text.includes(`Модель: ${chosen} · deepseek-official`),
+        "the menu card showing the new model",
+        pickerFrom
+      );
+      expect(menu.messageId).toBe(connections.messageId);
+    } finally {
+      await stopServer();
+    }
+  }, 300_000);
+
+  /**
+   * The stop path across a real agent loop: `/stop` aborts the parked turn and
+   * the receipt lands in the card's own message, the SESSION survives (the next
+   * task continues it, transcript included), and `/reset` is its counterpart —
+   * it clears the mapping. Its own fresh home, like the case above.
+   */
+  it("REAL: /stop ends the running task with a receipt, the next task keeps the same session, /reset clears it", async () => {
+    home = await prepareHome("balbes-telegram-stop-");
+    const server = requireApi();
+    const llm = requireStub();
+    server.reset();
+    const token = await bootServer();
+    try {
+      const saved = await tgPost(
+        "/api/telegram/save",
+        { token: BOT_TOKEN, allowedUserId: OWNER_USER_ID, enabled: true },
+        token
+      );
+      expect(saved.status, saved.text).toBe(200);
+      await waitForConnected(token, true);
+
+      // (a) the agent home is the workspace under test, picked through the card
+      const from = server.outbound.length;
+      const menu = await openMenu(from);
+      const menuId = sentMessageId(menu);
+      pressButton(menuId, "ws");
+      await waitForMessage((text) => text.startsWith("Выберите воркспейс"), "the workspace list", from);
+      pressButton(menuId, "ws:pick:0");
+      await waitForMessage((text) => text === "Выбран: Дом агента", "the workspace confirmation", from);
+
+      // (b) a first turn that completes: its text is what the agent must still
+      // remember after the stop below.
+      const firstFrom = server.outbound.length;
+      llm.setScript([{ text: MEMORY_REPLY }]);
+      llm.setDelay(0);
+      server.enqueueMessage({ fromId: OWNER_USER_ID, text: MEMORY_PROMPT });
+      await waitForMessage((text) => text === MEMORY_REPLY, "the first answer", firstFrom, 180_000);
+      const firstTurn = llm.calls.at(-1);
+      expect(JSON.stringify(firstTurn?.body ?? {})).toContain(MEMORY_PROMPT);
+      const sessionBefore = (await waitForState((current) => current.sessions["home"] !== undefined, "the home session"))
+        .sessions["home"];
+      expect(sessionBefore).toBeTruthy();
+
+      // (c) a turn the stub HOLDS: the task is provably running — the model
+      // request is in flight — when the owner stops it. No sleep is used as
+      // synchronisation; the stub's own hold is the determinism.
+      const longFrom = server.outbound.length;
+      const callsBeforeLong = llm.calls.length;
+      llm.setDelay(HOLD_MS);
+      const heldAt = Date.now();
+      server.enqueueMessage({ fromId: OWNER_USER_ID, text: LONG_PROMPT });
+      const card = await waitForOutbound(
+        (entry) => entry.method === "sendMessage" && String(entry.body.text ?? "").startsWith("⏳ Дом агента"),
+        "the task card",
+        longFrom
+      );
+      const cardId = sentMessageId(card);
+      await waitFor(
+        () => (llm.calls.length > callsBeforeLong ? true : undefined),
+        "the held turn to reach the stub"
+      );
+      // The request in flight is the stopped task's own turn, not some other
+      // model call the composition made behind it.
+      const heldBody = JSON.stringify(llm.calls.at(-1)?.body ?? {});
+      expect(heldBody, heldBody.slice(0, 2000)).toContain(LONG_PROMPT);
+
+      // (d) /stop: the owner's own answer, and the CARD ITSELF edited into the
+      // stop receipt — the same message id, so one task stays one message.
+      server.enqueueMessage({ fromId: OWNER_USER_ID, text: "/stop" });
+      const stopped = await waitForMessage((text) => text.includes("Остановил."), "the stop acknowledgement", longFrom);
+      expect(stopped.text).toContain("Контекст сохранён");
+      const receipt = await waitForOutbound(
+        (entry) =>
+          entry.method === "editMessageText" &&
+          entry.body.message_id === cardId &&
+          String(entry.body.text ?? "").startsWith("⏹ Остановлено владельцем"),
+        "the stop receipt in the task's own message",
+        longFrom
+      );
+      expect(receipt.body.chat_id).toBe(OWNER_USER_ID);
+      // A deliberate stop is never reported as an agent failure.
+      expect(sentTexts(longFrom).filter((text) => text.includes("не смог выполнить задачу"))).toEqual([]);
+      expect(sentTexts(longFrom).filter((text) => text.startsWith("⏹ Остановлено владельцем"))).toEqual([]);
+
+      // Release the hold and let the parked response settle before the file moves
+      // on (the stub keeps its own timer; mirrors the host seams cancel case).
+      llm.setDelay(0);
+      await sleep(Math.max(0, HOLD_MS - (Date.now() - heldAt)));
+
+      // (e) the next task continues the SAME session: the mapping is untouched
+      // and the model is handed the transcript of the turns before the stop.
+      const followFrom = server.outbound.length;
+      llm.setScript([{ text: FOLLOW_UP_REPLY }]);
+      server.enqueueMessage({ fromId: OWNER_USER_ID, text: FOLLOW_UP_PROMPT });
+      await waitForMessage((text) => text === FOLLOW_UP_REPLY, "the answer after the stop", followFrom, 180_000);
+      const followTurn = llm.calls.at(-1);
+      const followBody = JSON.stringify(followTurn?.body ?? {});
+      // THE memory proof: the follow-up request replays the pre-stop turn, so the
+      // agent is asked about a task the owner stopped, not about a cold session.
+      expect(followBody, followBody.slice(0, 2000)).toContain(MEMORY_PROMPT);
+      expect(followTurn?.body.messages?.length ?? 0).toBeGreaterThan(firstTurn?.body.messages?.length ?? 0);
+      const state = await readState();
+      expect(state.sessions["home"]).toBe(sessionBefore);
+      expect(Object.keys(state.sessions)).toEqual(["home"]);
+
+      // (f) /reset is the counterpart of the stop: same chat flow, but the
+      // session mapping is CLEARED (the next task starts a clean context).
+      const resetFrom = server.outbound.length;
+      server.enqueueMessage({ fromId: OWNER_USER_ID, text: "/reset" });
+      const confirm = await waitForMessage((text) => text.startsWith("Сбросить контекст"), "the reset confirmation", resetFrom);
+      pressButton(confirm.messageId, "reset:yes");
+      const cleared = await waitForState(
+        (current) => current.sessions["home"] === undefined,
+        "the session mapping to be cleared by the reset"
+      );
+      expect(Object.keys(cleared.sessions)).toEqual([]);
+      await waitForMessage((text) => text === "Контекст сессии сброшен", "the reset confirmation to be honoured", resetFrom);
     } finally {
       await stopServer();
     }
