@@ -1093,12 +1093,11 @@ describe("task progress", () => {
 });
 
 /**
- * `composeAgentSetup` surface restriction, hermetic: a fake tools runtime stands
- * in for dsh-tools' `ToolRuntime` and records what the setup asked for. dsh's
- * own `restrict()` rejects a name the composition does not register (and
- * registration is platform-dependent: `bash` is absent on win32, `pwsh` absent
- * elsewhere), so the probe-before-filter behaviour is asserted here and the
- * real registry view is asserted by the REAL suite.
+ * `composeAgentSetup` tool-surface contract, hermetic: a fake tools runtime
+ * stands in for dsh-tools' `ToolRuntime` and records whether the setup asked
+ * for a restriction or a path guard. It must ask for NEITHER — a Telegram task
+ * keeps the full deployment tool surface — while the REAL suite pins the live
+ * registry view.
  */
 interface FakeRestriction {
   allow?: readonly string[];
@@ -1178,183 +1177,30 @@ function makeRecordingAgentCtx(): {
   };
 }
 
-/**
- * The allow list `composeAgentSetup` must apply on this deployment, name by
- * name. `web_search` is kept on purpose (internet search); `web_fetch` is NOT:
- * it is an egress channel to an arbitrary URL.
- */
-const KEPT_BY_CONTRACT = [
-  "read",
-  "read_image",
-  "write",
-  "edit",
-  "glob",
-  "grep",
-  "web_search",
-  "todo_write",
-  "get_goal",
-  "create_goal",
-  "update_goal"
-];
-
 describe("composeAgentSetup tool surface", () => {
-  it("restricts the agent to the kept workspace tools and keeps the path guard", () => {
-    // The deployment surface as the REAL suite observes it on dsh 0.1.5-rc.2
-    // (25 tools — see DEPLOYMENT_TOOLS there; `pwsh` is win32-only and
-    // `str_replace_editor` is no longer mounted), plus a hypothetical tool a
-    // future dsh release adds.
-    const registered = [
-      ...KEPT_BY_CONTRACT,
-      "bash",
-      "web_fetch",
-      "skill",
-      "subagent",
-      "subagent_fork",
-      "workflow",
-      "ralph",
-      "job_list",
-      "job_output",
-      "job_kill",
-      "send_message",
-      "interrupt_agent",
-      "list_agents",
-      "exit_plan_mode",
-      "some_future_shell"
-    ];
+  it("applies no restriction and no path guard: the agent keeps the whole deployment surface", () => {
+    const registered = ["read", "write", "bash", "web_fetch", "skill", "some_future_shell"];
     const tools = makeTools(registered);
-    composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: { current: SELECTION } });
-
-    expect(tools.restrictions).toHaveLength(1);
-    // An allow filter, not a deny list: the unlisted future tool is removed by
-    // construction. `deny` is never used on the primary path.
-    expect(tools.restrictions[0]).toEqual({ allow: KEPT_BY_CONTRACT });
-    expect(registered.filter((n) => !KEPT_BY_CONTRACT.includes(n))).toContain("some_future_shell");
-
-    // Defense in depth: the per-agent path guard is still registered beside it.
-    expect(tools.guards).toHaveLength(1);
-    const guard = tools.guards[0]!;
-    expect(guard({ name: "read", arguments: { file_path: "notes.txt" } })).toBeUndefined();
-    expect(guard({ name: "read", arguments: { file_path: "../bravo/secret.txt" } })).toContain("outside the workspace root");
-  });
-
-  /**
-   * The containment guard's table is security-relevant, so it is a Map too: on
-   * an object literal, `READ_PATH_ARG_BY_TOOL["constructor"]` answers with an
-   * inherited member and the guard would judge a call for a tool name it never
-   * listed. Only the OWN names of the table may ever be guarded.
-   */
-  it("guards a path argument only for the tool names of its own table", () => {
-    const tools = makeTools([...KEPT_BY_CONTRACT]);
-    composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: { current: SELECTION } });
-    const guard = tools.guards[0]!;
-    const nativeKey = String(
-      (Object.prototype as unknown as Record<string, unknown>)["constructor"] as object
-    );
-
-    // Not a path tool of the table: its arguments are none of the guard's
-    // business, however they are named.
-    expect(guard({ name: "constructor", arguments: { [nativeKey]: "../../etc/passwd" } })).toBeUndefined();
-    expect(guard({ name: "toString", arguments: { [nativeKey]: "../../etc/passwd" } })).toBeUndefined();
-    // A tool the table DOES name is still judged exactly as before.
-    expect(guard({ name: "read", arguments: { file_path: "../../etc/passwd" } })).toContain(
-      "outside the workspace root"
-    );
-    expect(guard({ name: "read", arguments: { file_path: "notes.txt" } })).toBeUndefined();
-  });
-
-  /**
-   * Owner decision (containment split): a Telegram task may SEARCH the internet
-   * but may not FETCH an arbitrary URL. `web_search` is a provider-mediated
-   * search that cannot post data to an attacker's address; `web_fetch` is an
-   * egress channel to any URL a prompt injection names (indirect
-   * prompt-injection exfiltration). So with BOTH registered the applied
-   * restriction keeps the first and never the second.
-   */
-  it("keeps web_search but never web_fetch when the deployment registers both", () => {
-    // Both web tools are registered here (the REAL suite confirms `web_search`
-    // and `web_fetch` on the live registry), and only search survives.
-    const registered = [...KEPT_BY_CONTRACT, "web_fetch", "bash"];
-    const tools = makeTools(registered);
-    composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: { current: SELECTION } });
-
-    expect(registered).toContain("web_search");
-    expect(registered).toContain("web_fetch");
-    expect(tools.restrictions).toHaveLength(1);
-    const filter = tools.restrictions[0]!;
-    expect(filter.allow).toContain("web_search");
-    expect(filter.allow).not.toContain("web_fetch");
-    // The exact list, so the split cannot drift to "both" or "neither" silently.
-    expect(filter).toEqual({ allow: KEPT_BY_CONTRACT });
-    // The keep is an allow entry, never a deny of the other name.
-    expect(filter.deny).toBeUndefined();
-  });
-
-  it("names only registered tools, so a platform-dependent surface cannot throw", () => {
-    // A Windows-shaped composition: `bash` is not registered, `pwsh` is, and no
-    // goal/todo tools exist. A hardcoded allow list containing `bash` would make
-    // dsh reject the whole restriction and fail every task.
-    const tools = makeTools(["read", "write", "pwsh", "web_fetch"]);
-    expect(() =>
-      composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: { current: SELECTION } })
-    ).not.toThrow();
-    expect(tools.restrictions).toEqual([{ allow: ["read", "write"] }]);
-  });
-
-  it("degrades to the names it knows must never be exposed when no kept tool is registered", () => {
-    // `exit_plan_mode` is included on purpose: the dsh 0.1.5 registry mounts it
-    // and the fallback deny list names it, so this path cannot leave a
-    // session-mode control reachable just because it performs no I/O.
-    const tools = makeTools(["bash", "pwsh", "web_fetch", "skill", "interrupt_agent", "exit_plan_mode"]);
-    composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: { current: SELECTION } });
-    // No allow filter is possible (nothing to keep would be an empty surface):
-    // the fallback still removes every name it knows the surface must never
-    // expose — and only those, which is its weaker guarantee.
-    expect(tools.restrictions).toEqual([
-      { deny: ["bash", "pwsh", "web_fetch", "skill", "interrupt_agent", "exit_plan_mode"] }
-    ]);
-    expect(tools.guards).toHaveLength(1);
-  });
-
-  it("asks for no restriction when the deployment registers nothing it knows", () => {
-    const tools = makeTools(["totally_unknown_tool"]);
-    composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: { current: SELECTION } });
+    composeAgentSetup(makeAgentCtx(tools), { selection: { current: SELECTION } });
     expect(tools.restrictions).toEqual([]);
+    expect(tools.guards).toEqual([]);
   });
 
-  it("is a no-op without a tools service", () => {
-    expect(() =>
-      composeAgentSetup(makeAgentCtx(undefined), { root: "/tmp/ws-root", selection: { current: SELECTION } })
-    ).not.toThrow();
-  });
-
-  /**
-   * The runner hands the SAME setup callback to `agents.create` and
-   * `agents.resume`; this drives each one exactly as the registry would and
-   * shows the restriction (and the guard) landing in the agent scope either
-   * way, so a resumed session cannot come back with the full tool surface.
-   */
-  it("installs the restriction and the guard in both the create and the resume setup", async () => {
-    const registered = [...KEPT_BY_CONTRACT, "bash", "exit_plan_mode", "web_fetch"];
+  it("installs neither restriction nor guard through the create and resume callbacks", async () => {
+    const registered = ["read", "write", "bash", "web_fetch", "skill"];
     const created = await makeRunner();
     await created.runner.run(PROJECT_ALPHA, "first task");
-    expect(created.agents.createOpts).toHaveLength(1);
     const createTools = makeTools(registered);
     created.agents.createOpts[0]!.setup(makeAgentCtx(createTools));
-    expect(createTools.restrictions).toEqual([{ allow: KEPT_BY_CONTRACT }]);
-    expect(createTools.guards).toHaveLength(1);
-    // The setup carries the resolved workspace root of the key.
-    expect(createTools.guards[0]!({ name: "read", arguments: { file_path: "../x" } })).toContain(
-      "outside the workspace root"
-    );
+    expect(createTools.restrictions).toEqual([]);
+    expect(createTools.guards).toEqual([]);
 
     const resumed = await makeRunner();
     await resumed.runner.run(PROJECT_BRAVO, "resume me", { sessionId: "session-known" });
-    expect(resumed.agents.resumeOpts).toHaveLength(1);
-    expect(resumed.agents.createOpts).toHaveLength(0);
     const resumeTools = makeTools(registered);
     resumed.agents.resumeOpts[0]!.setup(makeAgentCtx(resumeTools));
-    expect(resumeTools.restrictions).toEqual([{ allow: KEPT_BY_CONTRACT }]);
-    expect(resumeTools.guards).toHaveLength(1);
+    expect(resumeTools.restrictions).toEqual([]);
+    expect(resumeTools.guards).toEqual([]);
   });
 });
 
@@ -1364,7 +1210,6 @@ describe("live model selection", () => {
     const recorder = makeRecordingAgentCtx();
 
     composeAgentSetup(recorder.ctx, {
-      root: "/tmp/ws-root",
       selection: {
         get current() {
           return selection;
