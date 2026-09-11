@@ -306,7 +306,15 @@ describe.skipIf(!realEnabled)("REAL composition (sessions API)", () => {
         close(): Promise<void>;
       }>;
     };
-    const stub = await startStubLlm({ text: "ok from stub" });
+    // Маркер-токен, общий для ОБОИХ входов, из которых движок берёт заголовок:
+    // LLM-провайдер эхом отдаёт текст стаба, а детерминированный fallback режет
+    // префикс первого промпта. Маркер стоит в нулевой позиции обоих входов, так
+    // что обрезку переживает, и не содержит пробелов, так что нормализация
+    // заголовка движком (trim/схлопывание) его не портит.
+    const marker = "probe-7f3a";
+    const promptText = `${marker}: reply with exactly ok`;
+    const stubText = `${marker} ok from stub`;
+    const stub = await startStubLlm({ text: stubText });
     const home = await prepareHome();
     try {
       // Каталог проекта создаётся заранее: сервер поднимается ИМЕННО в нём, чтобы
@@ -325,7 +333,7 @@ describe.skipIf(!realEnabled)("REAL composition (sessions API)", () => {
 
       // Окно прогона: время сессии сверяется с ним, а не просто «разбирается».
       const startedAt = Date.now();
-      const prompt = await postJson(`${base}/api/prompt`, { prompt: "Reply with exactly: ok from stub" }, token);
+      const prompt = await postJson(`${base}/api/prompt`, { prompt: promptText }, token);
       expect(prompt.status, prompt.raw).toBe(200);
       // LLM-граница действительно задействована: стаб записал хотя бы один
       // запрос. Явное утверждение вместо вывода из 200 — 200 сам по себе не
@@ -374,6 +382,13 @@ describe.skipIf(!realEnabled)("REAL composition (sessions API)", () => {
       // заголовок дошёл от движка, а не остался null.
       expect(typeof sessions[0]?.title).toBe("string");
       expect((sessions[0]?.title ?? "").length).toBeGreaterThan(0);
+      // Форма заголовка — ещё не происхождение: константа («Untitled») её
+      // проходит. Поэтому заголовок обязан нести маркер ЭТОГО прогона, который
+      // есть и в промпте, и в тексте стаба — то есть его может сохранить только
+      // заголовок, действительно произведённый движком из входов этого прогона.
+      // Регистронезависимо; маркер без пробелов, поэтому нормализация заголовка
+      // его не рвёт.
+      expect((sessions[0]?.title ?? "").toLowerCase()).toContain(marker);
       expect(Number.isNaN(Date.parse(sessions[0]?.createdAt ?? ""))).toBe(false);
       // Одного Date.parse мало: epoch, любая константная ISO-строка и дата из
       // будущего его удовлетворяют, так что «ручка отдаёт хоть какой-то
