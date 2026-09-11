@@ -240,7 +240,19 @@ describe.skipIf(!realEnabled)("REAL composition (models API)", () => {
       expect(ds?.kind).toBe("deepseek");
       expect(ds?.hasKey).toBe(false);
       expect(ds?.models).toContain("deepseek-v4-flash");
+      expect(ds?.models).toContain("deepseek-flash");
       expect(ds?.isDefault).toBe(true);
+      // Anti-desync guard: models.list's current default must be offered by its
+      // own connection, otherwise the admin select shows a different model and
+      // models.default rejects the engine's actual default with 400.
+      const defaultConnection = body.connections.find((c) => c.routeId === body.default.provider);
+      expect(
+        defaultConnection?.models,
+        `models.list default ${body.default.provider}/${body.default.model} is missing from its connection's catalog`
+      ).toContain(body.default.model);
+      // and that same default is re-savable (the pre-fix behavior was 400 invalid-model)
+      const resaveDefault = await postJson(`${base}/api/models/default`, { provider: body.default.provider, model: body.default.model }, token);
+      expect(resaveDefault.status, JSON.stringify(resaveDefault.json)).toBe(200);
 
       // save a keyed custom route: engine must accept the route config shape
       const saved = await postJson(`${base}/api/models/save`, {
@@ -456,14 +468,17 @@ describe.skipIf(!realEnabled)("REAL composition (models API)", () => {
       expect(openaiBody.provider).toBe("openai");
       expect(openaiBody.models.length, `openai catalog came back empty — runtime engine catalog read failed: ${JSON.stringify(openai.json)}`).toBeGreaterThan(0);
 
-      // deepseek-official -> the engine deepseek catalog (3 ids incl vision-exp)
+      // deepseek-official -> the union engine catalog: native
+      // dsh-llm-deepseek entries first (incl. the 0.1.5 default
+      // deepseek-flash), then pi-ai-only ids; deduplicated by id
       const ds = await postJson(`${base}/api/models/catalog`, { provider: "deepseek-official" }, token);
       expect(ds.status, JSON.stringify(ds.json)).toBe(200);
       const dsBody = ds.json as { provider: string; models: Array<{ id: string; name?: string }> };
       expect(dsBody.provider).toBe("deepseek-official");
-      expect(dsBody.models.map((m) => m.id)).toEqual(expect.arrayContaining([
-        "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"
-      ]));
+      expect(dsBody.models.map((m) => m.id)).toEqual([
+        "deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"
+      ]);
+      expect(new Set(dsBody.models.map((m) => m.id)).size).toBe(dsBody.models.length);
 
       // a custom connection's route id has no engine catalog -> 400
       const saved = await postJson(`${base}/api/models/save`, {
@@ -479,13 +494,20 @@ describe.skipIf(!realEnabled)("REAL composition (models API)", () => {
       expect((unknown.json as { error: { code: string } }).error.code).toBe("invalid-provider");
 
       // models.list: the deepseek connection's models come from the runtime
-      // engine catalog -> all three ids incl. deepseek-v4-flash-vision-exp
+      // union engine catalog -> all four ids, deepseek-flash included
       const listed = await postJson(`${base}/api/models/list`, {}, token);
       expect(listed.status, JSON.stringify(listed.json)).toBe(200);
-      const dsConn = (listed.json as ModelsListBody).connections.find((c) => c.routeId === "deepseek-official");
-      expect(dsConn?.models).toEqual(expect.arrayContaining([
-        "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"
-      ]));
+      const listedBody = listed.json as ModelsListBody;
+      const dsConn = listedBody.connections.find((c) => c.routeId === "deepseek-official");
+      expect(dsConn?.models).toEqual([
+        "deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"
+      ]);
+      // the same anti-desync guard as the first test, now on this boot
+      const defaultConn = listedBody.connections.find((c) => c.routeId === listedBody.default.provider);
+      expect(
+        defaultConn?.models,
+        `models.list default ${listedBody.default.provider}/${listedBody.default.model} is missing from its connection's catalog`
+      ).toContain(listedBody.default.model);
 
       // cleanup: remove the custom route so the shared home stays clean
       const deleted = await postJson(`${base}/api/models/delete`, { routeId: "my-gw" }, token);

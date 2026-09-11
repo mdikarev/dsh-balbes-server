@@ -20,20 +20,64 @@ export interface ModelConnection {
 export const DEEPSEEK_OFFICIAL_ROUTE = "deepseek-official";
 export const DEEPSEEK_API_KEY_REF = "DEEPSEEK_API_KEY";
 
-/** Pinned fallback mirror of the dsh-llm-deepseek catalog (3 models), synced
- *  on engine upgrade. The primary source of the official DeepSeek list is the
- *  runtime engine catalog read through createEngineCatalogReader(); this
- *  constant is only used when that catalog is unavailable. */
-export const DEEPSEEK_OFFICIAL_MODELS: ModelOption[] = [
+/** Pinned mirror of the pi-ai builtin "deepseek" catalog (3 models), synced on
+ *  engine upgrade. It is one half of the reserved route's catalog: the engine's
+ *  own default model (`deepseek-flash`) lives only in the native
+ *  dsh-llm-deepseek catalog below, so this list alone cannot represent the
+ *  route (see DEEPSEEK_OFFICIAL_MODELS). */
+export const PI_AI_DEEPSEEK_MODELS: ModelOption[] = [
   { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash" },
   { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" },
   { id: "deepseek-v4-flash-vision-exp", name: "DeepSeek-V4-Flash-Vision-Exp" }
 ];
 
-/** Reads the builtin model catalog of one engine provider. The primary source
- *  is the engine runtime catalog; the pinned DEEPSEEK_OFFICIAL_MODELS list is
- *  only the fallback used by createEngineCatalogReader when the runtime
- *  catalog cannot be read. */
+/** Pinned mirror of the native @deepseek-ai/dsh-llm-deepseek DEFAULT_MODELS
+ *  catalog (4 models), synced on engine upgrade. This is the catalog of the
+ *  route the plugin reserves — "deepseek-official" is that adapter's PROVIDER
+ *  — and it carries `deepseek-flash`, the engine 0.1.5 fresh-profile default.
+ *  Order is the native catalog order. */
+export const DEEPSEEK_NATIVE_MODELS: ModelOption[] = [
+  { id: "deepseek-flash", name: "DeepSeek-V41-Flash" },
+  { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash" },
+  { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" },
+  { id: "deepseek-v4-flash-vision-exp", name: "DeepSeek-V4-Flash-Vision-Exp" }
+];
+
+/** Order-stable union of model catalogs: catalogs are visited left to right and
+ *  the first occurrence of an id wins both its position and its name. A caller
+ *  layers a primary catalog over fallbacks without duplicates; entries are
+ *  copied, never aliased. */
+export function mergeModelCatalogs(
+  ...catalogs: ReadonlyArray<ReadonlyArray<ModelOption>>
+): ModelOption[] {
+  const seen = new Set<string>();
+  const out: ModelOption[] = [];
+  for (const catalog of catalogs) {
+    for (const model of catalog) {
+      if (seen.has(model.id)) continue;
+      seen.add(model.id);
+      out.push({ ...model });
+    }
+  }
+  return out;
+}
+
+/** Pinned fallback catalog of the reserved deepseek-official route: the union
+ *  of the native and the pi-ai pinned catalogs (native order first). It always
+ *  contains `deepseek-flash`, so a runtime catalog outage cannot desync the
+ *  engine default from the connection's model list. The primary source of the
+ *  same list is the runtime union read through createEngineCatalogReader(). */
+export const DEEPSEEK_OFFICIAL_MODELS: ModelOption[] = mergeModelCatalogs(
+  DEEPSEEK_NATIVE_MODELS,
+  PI_AI_DEEPSEEK_MODELS
+);
+
+/** Reads the model catalog of one engine provider. The primary source is the
+ *  engine runtime catalog; the pinned lists above are only the fallback used by
+ *  createEngineCatalogReader when a runtime read cannot be performed. For the
+ *  "deepseek" key (the reserved deepseek-official route) the result is the
+ *  order-stable union of the native dsh-llm-deepseek catalog and the pi-ai
+ *  builtin catalog. */
 export interface ModelCatalogReader {
   list(providerKey: string): Promise<ModelOption[]> | ModelOption[];
 }
@@ -41,8 +85,16 @@ export interface ModelCatalogReader {
 /** The engine module exposing getBuiltinModels(provider). */
 const ENGINE_CATALOG_MODULE = "@earendil-works/pi-ai/providers/all";
 
+/** The native adapter that owns the reserved deepseek-official route and
+ *  declares that route's 4-model catalog. */
+const NATIVE_CATALOG_MODULE = "@deepseek-ai/dsh-llm-deepseek";
+
 interface CatalogModuleLike {
   getBuiltinModels?(providerKey: string): unknown;
+}
+
+interface NativeCatalogModuleLike {
+  resolveAdapterOptions?(config: Record<string, unknown>, environment?: unknown): unknown;
 }
 
 /** Keeps only {id} / {id, name} entries of an engine catalog result. */
@@ -60,7 +112,7 @@ function toModelOptions(raw: unknown): ModelOption[] | null {
   return out;
 }
 
-/** Loads the engine catalog module (default: a dynamic ESM import). pi-ai
+/** Loads one engine catalog module (default: a dynamic ESM import). pi-ai
  *  ships an ESM-only export map — "./providers/*" declares only an "import"
  *  condition — and plugin modules run as ESM with no ambient require, so a
  *  CommonJS require (even createRequire(import.meta.url)) throws
@@ -72,34 +124,68 @@ function toModelOptions(raw: unknown): ModelOption[] | null {
  *  and getBuiltinModels("openai") returns 39 models. */
 export type EngineCatalogLoader = (specifier: string) => unknown | Promise<unknown>;
 
-/** Creates an engine catalog reader. The module is loaded lazily on the
+/** Reads the pi-ai builtin catalog of one provider key: null when the module,
+ *  the export, the shape, or the result is unavailable/empty. */
+async function readPiAiCatalog(loadModule: EngineCatalogLoader, providerKey: string): Promise<ModelOption[] | null> {
+  try {
+    const mod = (await loadModule(ENGINE_CATALOG_MODULE)) as CatalogModuleLike | undefined;
+    const models = toModelOptions(mod?.getBuiltinModels?.(providerKey));
+    if (models !== null && models.length > 0) return models;
+  } catch {
+    // fall through to the caller's pinned fallback
+  }
+  return null;
+}
+
+/** Reads the native @deepseek-ai/dsh-llm-deepseek catalog through its public
+ *  resolveAdapterOptions seam: an empty config resolves the module's
+ *  DEFAULT_MODELS. Returns null when the module, the export, the shape, or the
+ *  result is unavailable/empty. */
+async function readNativeDeepSeekCatalog(loadModule: EngineCatalogLoader): Promise<ModelOption[] | null> {
+  try {
+    const mod = (await loadModule(NATIVE_CATALOG_MODULE)) as NativeCatalogModuleLike | undefined;
+    if (typeof mod?.resolveAdapterOptions !== "function") return null;
+    const resolved = mod.resolveAdapterOptions({}, undefined) as { models?: unknown } | undefined;
+    const models = toModelOptions(resolved?.models);
+    if (models !== null && models.length > 0) return models;
+  } catch {
+    // fall through to the pinned native fallback
+  }
+  return null;
+}
+
+/** Creates an engine catalog reader. The modules are loaded lazily on the
  *  first list() call: through load when given (unit tests inject fakes),
  *  otherwise through a dynamic ESM import of the specifier (the ESM-safe path
- *  that resolves under the dsh loader / profile mirror). Any load or shape
- *  failure, plus an empty engine result, falls back to the pinned
- *  DEEPSEEK_OFFICIAL_MODELS for the "deepseek" key and to [] for any other
- *  key. */
+ *  that resolves under the dsh loader / profile mirror).
+ *
+ *  For the "deepseek" key (the reserved deepseek-official route) the answer is
+ *  the order-stable union of the native dsh-llm-deepseek catalog and the pi-ai
+ *  builtin catalog (native entries first), deduplicated by id. Each side falls
+ *  back to its own pinned mirror independently, so `deepseek-flash` — the dsh
+ *  0.1.5 engine default — survives any single runtime read failure. For every
+ *  other key the answer is the pi-ai catalog, or [] when that read fails (no
+ *  pinned fallback exists for non-deepseek providers). */
 export function createEngineCatalogReader(load?: EngineCatalogLoader): ModelCatalogReader {
   const loadModule = load ?? ((specifier: string) => import(specifier));
   return {
     async list(providerKey: string): Promise<ModelOption[]> {
-      try {
-        const mod = (await loadModule(ENGINE_CATALOG_MODULE)) as CatalogModuleLike | undefined;
-        const models = toModelOptions(mod?.getBuiltinModels?.(providerKey));
-        if (models !== null && models.length > 0) return models;
-      } catch {
-        // fall through to the pinned/empty fallback
+      if (providerKey === "deepseek") {
+        const native = await readNativeDeepSeekCatalog(loadModule);
+        const piAi = await readPiAiCatalog(loadModule, providerKey);
+        return mergeModelCatalogs(native ?? DEEPSEEK_NATIVE_MODELS, piAi ?? PI_AI_DEEPSEEK_MODELS);
       }
-      return providerKey === "deepseek" ? DEEPSEEK_OFFICIAL_MODELS : [];
+      return (await readPiAiCatalog(loadModule, providerKey)) ?? [];
     }
   };
 }
 
 /** Maps a connection route id to the engine catalog provider key: the reserved
- *  "deepseek-official" route reads the engine "deepseek" catalog (the
- *  dsh-llm-deepseek mirror); a preset connection's route id already equals its
- *  provider id; any other (custom/unknown) route id passes through untouched,
- *  which the reader answers with [] (no engine catalog for it). */
+ *  "deepseek-official" route reads the "deepseek" key, which the reader answers
+ *  with the union of the native dsh-llm-deepseek and pi-ai catalogs; a preset
+ *  connection's route id already equals its provider id; any other
+ *  (custom/unknown) route id passes through untouched, which the reader answers
+ *  with [] (no engine catalog for it). */
 export function catalogKeyForRoute(route: string): string {
   if (route === DEEPSEEK_OFFICIAL_ROUTE) return "deepseek";
   return route;

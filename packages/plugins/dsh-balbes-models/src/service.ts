@@ -71,7 +71,9 @@ export async function readConnections(
   const selection = defaultModel.currentSelection();
   const providers = routeProviders(settings);
   // The deepseek connection's models come from the runtime engine catalog
-  // (primary) with the pinned DEEPSEEK_OFFICIAL_MODELS list as its fallback.
+  // (primary): the union of the native dsh-llm-deepseek catalog and the pi-ai
+  // builtin catalog, with the pinned DEEPSEEK_OFFICIAL_MODELS list as the
+  // fallback for either unavailable side.
   const deepseekModels = (await reader.list(catalogKeyForRoute(DEEPSEEK_OFFICIAL_ROUTE))).map((m) => m.id);
   const out: ModelConnection[] = [{
     routeId: DEEPSEEK_OFFICIAL_ROUTE,

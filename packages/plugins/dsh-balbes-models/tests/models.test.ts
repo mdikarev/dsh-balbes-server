@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   routeIdFromName, refNameForRoute, validateBaseUrl, parseModelIds,
   validateCustomPayload, DEEPSEEK_OFFICIAL_MODELS, DEEPSEEK_OFFICIAL_ROUTE,
+  PI_AI_DEEPSEEK_MODELS, DEEPSEEK_NATIVE_MODELS, mergeModelCatalogs,
   PROVIDER_PRESETS, isPresetProviderId, validatePresetPayload,
-  createEngineCatalogReader, catalogKeyForRoute, isCatalogProvider
+  createEngineCatalogReader, catalogKeyForRoute, isCatalogProvider,
+  type EngineCatalogLoader
 } from "../src/models.js";
 
 describe("models domain", () => {
@@ -49,13 +51,55 @@ describe("models domain", () => {
     expect(cleared).toEqual({ displayName: "X", baseURL: "https://x", key: null, models: ["m1"] });
   });
 
-  it("pins the 3-model official DeepSeek fallback catalog (mirror of dsh-llm-deepseek)", () => {
+  it("pins the 4-model official DeepSeek fallback catalog (native union pi-ai, native order)", () => {
     expect(DEEPSEEK_OFFICIAL_MODELS.map((m) => m.id)).toEqual([
+      "deepseek-flash",
       "deepseek-v4-flash",
       "deepseek-v4-pro",
       "deepseek-v4-flash-vision-exp"
     ]);
+    expect(DEEPSEEK_OFFICIAL_MODELS.find((m) => m.id === "deepseek-flash")?.name).toBe("DeepSeek-V41-Flash");
     expect(DEEPSEEK_OFFICIAL_MODELS.find((m) => m.id === "deepseek-v4-flash-vision-exp")?.name).toBe("DeepSeek-V4-Flash-Vision-Exp");
+  });
+
+  it("pins both source catalogs the official fallback unions", () => {
+    // pi-ai builtin deepseek catalog (3 ids, engine 0.1.5-rc.2 probe)
+    expect(PI_AI_DEEPSEEK_MODELS.map((m) => m.id)).toEqual([
+      "deepseek-v4-flash",
+      "deepseek-v4-pro",
+      "deepseek-v4-flash-vision-exp"
+    ]);
+    // native @deepseek-ai/dsh-llm-deepseek DEFAULT_MODELS (4 ids), the catalog
+    // of the reserved route itself
+    expect(DEEPSEEK_NATIVE_MODELS.map((m) => m.id)).toEqual([
+      "deepseek-flash",
+      "deepseek-v4-flash",
+      "deepseek-v4-pro",
+      "deepseek-v4-flash-vision-exp"
+    ]);
+  });
+
+  it("the pinned official catalog contains the dsh 0.1.5 fresh-profile engine default deepseek-flash", () => {
+    // Regression guard for the models.list / models.default desync: the engine
+    // default must always be resolvable inside its own connection's catalog.
+    expect(DEEPSEEK_OFFICIAL_MODELS.map((m) => m.id)).toContain("deepseek-flash");
+  });
+
+  it("mergeModelCatalogs keeps a defined order and deduplicates by id (first occurrence wins)", () => {
+    const first = [{ id: "x", name: "X-first" }, { id: "y" }];
+    const second = [{ id: "y", name: "Y-second" }, { id: "z", name: "Z-second" }];
+    expect(mergeModelCatalogs(first, second)).toEqual([
+      { id: "x", name: "X-first" },
+      { id: "y" },
+      { id: "z", name: "Z-second" }
+    ]);
+    expect(mergeModelCatalogs([], second)).toEqual([{ id: "y", name: "Y-second" }, { id: "z", name: "Z-second" }]);
+    expect(mergeModelCatalogs(first, [])).toEqual([{ id: "x", name: "X-first" }, { id: "y" }]);
+    expect(mergeModelCatalogs()).toEqual([]);
+    // entries are copies, not aliases of the input catalogs
+    const merged = mergeModelCatalogs(first);
+    merged[0]!.name = "mutated";
+    expect(first[0]!.name).toBe("X-first");
   });
 
   it("mirrors the 11 engine-catalog preset providers from contracts MODEL_PROVIDER_PRESETS", () => {
@@ -107,9 +151,13 @@ describe("models domain", () => {
 });
 
 describe("engine catalog reader", () => {
+  const ENGINE_MODULE = "@earendil-works/pi-ai/providers/all";
+  const NATIVE_MODULE = "@deepseek-ai/dsh-llm-deepseek";
+
   // Fake mirror of @earendil-works/pi-ai/providers/all: getBuiltinModels(key)
-  // returns entries {id, name?} and [] for an unknown key.
-  const fakeCatalogModule = {
+  // returns entries {id, name?} and [] for an unknown key (deepseek order as in
+  // the engine 0.1.5-rc.2 probe).
+  const fakePiAi = {
     getBuiltinModels(key: string): Array<{ id: string; name?: string }> {
       if (key === "deepseek") {
         return [
@@ -123,41 +171,97 @@ describe("engine catalog reader", () => {
     }
   };
 
-  it("lazily requires the engine catalog module and reads getBuiltinModels(provider)", async () => {
+  // Fake mirror of @deepseek-ai/dsh-llm-deepseek: its public
+  // resolveAdapterOptions seam returns the native 4-model DEFAULT_MODELS.
+  const fakeNative = {
+    resolveAdapterOptions(): { models: Array<{ id: string; name?: string }> } {
+      return {
+        models: [
+          { id: "deepseek-flash", name: "DeepSeek-V41-Flash" },
+          { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash" },
+          { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" },
+          { id: "deepseek-v4-flash-vision-exp", name: "DeepSeek-V4-Flash-Vision-Exp" }
+        ]
+      };
+    }
+  };
+
+  /** Loader serving both fakes and recording every specifier it is asked for. */
+  function loaderFor(seen: string[], native: unknown = fakeNative): EngineCatalogLoader {
+    return (specifier: string) => {
+      seen.push(specifier);
+      return specifier === NATIVE_MODULE ? native : fakePiAi;
+    };
+  }
+
+  it("unions the native and pi-ai catalogs for deepseek (native entries first, deduplicated)", async () => {
     const seen: string[] = [];
-    const reader = createEngineCatalogReader((id) => { seen.push(id); return fakeCatalogModule; });
+    const reader = createEngineCatalogReader(loaderFor(seen));
     const models = await reader.list("deepseek");
-    expect(seen).toEqual(["@earendil-works/pi-ai/providers/all"]);
+    expect(seen).toEqual([NATIVE_MODULE, ENGINE_MODULE]);
     expect(models).toEqual([
-      { id: "deepseek-v4-flash" },
-      { id: "deepseek-v4-pro" },
-      { id: "deepseek-v4-flash-vision-exp", name: "Vision Exp" }
+      { id: "deepseek-flash", name: "DeepSeek-V41-Flash" },
+      { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash" },
+      { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" },
+      { id: "deepseek-v4-flash-vision-exp", name: "DeepSeek-V4-Flash-Vision-Exp" }
     ]);
   });
 
-  it("reads a non-empty catalog for an allowlisted preset (openai)", async () => {
-    const reader = createEngineCatalogReader(() => fakeCatalogModule);
+  it("appends a pi-ai-only deepseek id after the native entries, in pi-ai order", async () => {
+    const native = {
+      resolveAdapterOptions: () => ({
+        models: [{ id: "deepseek-flash", name: "N-Flash" }, { id: "deepseek-v4-pro", name: "N-Pro" }]
+      })
+    };
+    const reader = createEngineCatalogReader(loaderFor([], native));
+    expect((await reader.list("deepseek")).map((m) => m.id)).toEqual([
+      "deepseek-flash",
+      "deepseek-v4-pro",
+      "deepseek-v4-flash",
+      "deepseek-v4-flash-vision-exp"
+    ]);
+    expect((await reader.list("deepseek")).find((m) => m.id === "deepseek-v4-flash")?.name).toBeUndefined();
+  });
+
+  it("keeps deepseek-flash (pinned native fallback) when the native catalog read throws", async () => {
+    const reader = createEngineCatalogReader((specifier: string) => {
+      if (specifier === NATIVE_MODULE) throw new Error("module not found");
+      return fakePiAi;
+    });
+    expect((await reader.list("deepseek")).map((m) => m.id)).toEqual([
+      "deepseek-flash",
+      "deepseek-v4-flash",
+      "deepseek-v4-pro",
+      "deepseek-v4-flash-vision-exp"
+    ]);
+  });
+
+  it("falls back to the pinned native catalog when the native module has no usable seam", async () => {
+    const reader = createEngineCatalogReader(loaderFor([], {}));
+    expect(await reader.list("deepseek")).toEqual(DEEPSEEK_OFFICIAL_MODELS);
+  });
+
+  it("returns the pinned union catalog when both runtime reads fail", async () => {
+    const reader = createEngineCatalogReader(() => { throw new Error("module not found"); });
+    expect(await reader.list("deepseek")).toEqual(DEEPSEEK_OFFICIAL_MODELS);
+  });
+
+  it("reads a non-deepseek preset from pi-ai only and never loads the native module", async () => {
+    const seen: string[] = [];
+    const reader = createEngineCatalogReader(loaderFor(seen));
     const models = await reader.list("openai");
-    expect(models.length).toBeGreaterThan(0);
+    expect(seen).toEqual([ENGINE_MODULE]);
     expect(models.map((m) => m.id)).toEqual(["gpt-4o-mini", "gpt-4o"]);
     expect(models[1]?.name).toBe("GPT-4o");
   });
 
   it("returns [] for an unknown provider key (engine empty result has no fallback)", async () => {
-    const reader = createEngineCatalogReader(() => fakeCatalogModule);
+    const reader = createEngineCatalogReader(loaderFor([]));
     expect(await reader.list("totally-unknown")).toEqual([]);
     expect(await reader.list("deepseek-official")).toEqual([]);
   });
 
-  it("falls back to the pinned DeepSeek catalog (3 incl vision-exp) when require fails for deepseek", async () => {
-    const reader = createEngineCatalogReader(() => { throw new Error("module not found"); });
-    const models = await reader.list("deepseek");
-    expect(models.map((m) => m.id)).toEqual([
-      "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"
-    ]);
-  });
-
-  it("returns [] for a non-deepseek key when require fails", async () => {
+  it("returns [] for a non-deepseek key when the pi-ai read fails", async () => {
     const reader = createEngineCatalogReader(() => { throw new Error("module not found"); });
     expect(await reader.list("openai")).toEqual([]);
   });

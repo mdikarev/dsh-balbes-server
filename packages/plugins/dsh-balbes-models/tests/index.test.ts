@@ -135,11 +135,11 @@ describe("balbes-models plugin", () => {
     expect(body.connections[0]).toMatchObject({ routeId: "deepseek-official", kind: "deepseek", hasKey: false, isDefault: true });
   });
 
-  it("deepseek connection in models.list carries the runtime catalog (3 models incl vision-exp)", async () => {
+  it("deepseek connection in models.list carries the runtime catalog (4 models incl the engine default deepseek-flash)", async () => {
     apply(ctx as never, {});
     const { json } = await call("/api/models/list", {});
     const models = (json as { connections: Array<{ routeId: string; models: string[] }> }).connections.find((c) => c.routeId === "deepseek-official")!.models;
-    expect(models).toEqual(["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"]);
+    expect(models).toEqual(["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"]);
   });
 
   it("save custom writes the pi-ai route and the key ref", async () => {
@@ -354,9 +354,11 @@ describe("balbes-models plugin", () => {
 
 describe("models.catalog route", () => {
   // Engine builtin-catalog fixture for the injected fake reader: the same
-  // shapes getBuiltinModels returns ({id} and {id,name} entries).
+  // shapes getBuiltinModels returns ({id} and {id,name} entries); the deepseek
+  // entry mirrors the real union catalog (native dsh-llm-deepseek + pi-ai).
   const engineFixture: Record<string, Array<{ id: string; name?: string }>> = {
     deepseek: [
+      { id: "deepseek-flash", name: "DeepSeek-V41-Flash" },
       { id: "deepseek-v4-flash" },
       { id: "deepseek-v4-pro" },
       { id: "deepseek-v4-flash-vision-exp", name: "Vision Exp" }
@@ -364,7 +366,7 @@ describe("models.catalog route", () => {
     openai: [{ id: "gpt-4o-mini" }, { id: "gpt-4o", name: "GPT-4o" }]
   };
 
-  it("200: deepseek-official returns the engine deepseek catalog (3 ids incl vision-exp)", async () => {
+  it("200: deepseek-official returns the injected reader's deepseek catalog (4 ids incl the engine default)", async () => {
     const { status, json } = await callCatalog(fakeCatalogReader(engineFixture), { provider: "deepseek-official" });
     expect(status).toBe(200);
     expect(json).toEqual({ provider: "deepseek-official", models: engineFixture.deepseek });

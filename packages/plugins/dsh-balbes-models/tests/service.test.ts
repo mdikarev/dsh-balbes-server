@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createModelsService, ModelsServiceError } from "../src/service.js";
+import { DEEPSEEK_OFFICIAL_MODELS } from "../src/models.js";
 
 const LLM_PI_AI_NS = "llm-pi-ai";
 
@@ -76,5 +77,26 @@ describe("balbesModels service", () => {
     expect(unknown?.code).toBe("invalid-route");
     const badModel = await service.saveDefault("openai", "nope").then(() => null, (e: unknown) => e as ModelsServiceError);
     expect(badModel?.code).toBe("invalid-model");
+  });
+
+  it("keeps the engine's own default model inside its connection's catalog and re-savable", async () => {
+    // Anti-desync invariant (dsh 0.1.5 default is deepseek-flash): models.list
+    // must expose the engine default inside its own connection, and saving that
+    // same default must not fail with invalid-model.
+    const defaultModel = makeDefault("deepseek-official", "deepseek-flash");
+    const service = createModelsService({
+      settings: makeSettings({}),
+      credentials: makeCredentials(),
+      defaultModel,
+      reader: { list: () => DEEPSEEK_OFFICIAL_MODELS }
+    });
+
+    const connections = await service.list();
+    const deepseek = connections.find((c) => c.routeId === "deepseek-official");
+    expect(deepseek?.models).toContain(defaultModel.currentSelection().model);
+    await expect(service.saveDefault("deepseek-official", "deepseek-flash")).resolves.toEqual({
+      provider: "deepseek-official",
+      model: "deepseek-flash"
+    });
   });
 });
