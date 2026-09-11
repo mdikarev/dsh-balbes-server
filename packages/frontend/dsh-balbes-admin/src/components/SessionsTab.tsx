@@ -11,8 +11,13 @@ interface SessionsTabProps {
   reloadKey: number;
 }
 
-/** Время создания сессии: ru-RU, с ISO в качестве честного fallback. */
+/**
+ * Время создания сессии: ru-RU, с ISO в качестве честного fallback. Пустая
+ * (или пробельная) строка — отсутствие времени, и тогда показывается заглушка:
+ * пустая ячейка читалась бы как сломанная вёрстка.
+ */
 function formatCreatedAt(iso: string): string {
+  if (iso.trim() === "") return "—";
   const date = new Date(iso);
   return Number.isNaN(date.getTime()) ? iso : date.toLocaleString("ru-RU");
 }
@@ -84,7 +89,7 @@ export default function SessionsTab({ api, workspace, reloadKey }: SessionsTabPr
     <ul className="ws-rows ws-session-rows" data-testid="sessions-list">
       {sessions.map((session) => (
         <li key={session.id} className="ws-session-row" data-testid={`session-row-${session.id}`}>
-          <span className="ws-session-title">{session.title ?? "Без заголовка"}</span>
+          <span className="ws-session-title">{session.title?.trim() ? session.title : "Без заголовка"}</span>
           <span className="ws-session-meta">
             <span className="ws-session-channel">{session.channel}</span>
             <span className="ws-session-time">{formatCreatedAt(session.createdAt)}</span>

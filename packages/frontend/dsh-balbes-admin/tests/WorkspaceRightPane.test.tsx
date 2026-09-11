@@ -32,14 +32,21 @@ function makeApi(overrides: Partial<AdminApi> = {}): AdminApi {
 
 describe("WorkspaceRightPane", () => {
   it("renders one tab and its panel", async () => {
-    render(<WorkspaceRightPane api={makeApi()} workspace={{ scope: "project", name: "alpha" }} />);
+    const listSessions = vi.fn(async () => ({
+      sessions: [
+        { id: "session-alpha", title: "задача", channel: "telegram", createdAt: "2026-09-11T01:40:00.000Z" }
+      ]
+    }));
+    render(<WorkspaceRightPane api={makeApi({ listSessions })} workspace={{ scope: "project", name: "alpha" }} />);
     const tabs = screen.getAllByRole("tab");
     expect(tabs.map((tab) => tab.textContent)).toEqual(["Сессии"]);
     expect(tabs[0]?.getAttribute("aria-selected")).toBe("true");
     expect(screen.getByRole("tabpanel")).toBeDefined();
     // positive half of the "no content without a workspace" check below: with a
-    // workspace selected the active tab really renders its own testid
-    await waitFor(() => expect(screen.getByTestId("sessions-empty")).toBeDefined());
+    // workspace selected the active tab really renders its populated list, so the
+    // sessions-list assertion there is non-vacuous
+    await waitFor(() => expect(screen.getByTestId("sessions-list")).toBeDefined());
+    expect(screen.getByTestId("sessions-list").textContent).toContain("задача");
     cleanup();
   });
 
@@ -57,8 +64,9 @@ describe("WorkspaceRightPane", () => {
     const api = makeApi();
     render(<WorkspaceRightPane api={api} workspace={null} />);
     expect(screen.getByTestId("right-pane-prompt").textContent).toBe("Выберите воркспейс");
-    // no SessionsTab content at all while the placeholder shows (the same three
-    // queries are proven non-vacuous by the positive assertion above)
+    // no SessionsTab content at all while the placeholder shows (sessions-list is
+    // proven non-vacuous by the positive assertion above; sessions-loading and
+    // sessions-empty are asserted positively in SessionsTab.test.tsx)
     expect(screen.queryByTestId("sessions-loading")).toBeNull();
     expect(screen.queryByTestId("sessions-empty")).toBeNull();
     expect(screen.queryByTestId("sessions-list")).toBeNull();

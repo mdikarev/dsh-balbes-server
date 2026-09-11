@@ -37,6 +37,28 @@ describe("SessionsTab", () => {
     expect(screen.getByTestId("session-row-session-old").textContent).toContain("Без заголовка");
   });
 
+  it("falls back for an empty title and an empty time", async () => {
+    const api = makeApi({
+      listSessions: vi.fn(async () => ({
+        sessions: [
+          { id: "session-empty-title", title: "", channel: "telegram", createdAt: "2026-09-11T01:40:00.000Z" },
+          { id: "session-blank-title", title: "   ", channel: "telegram", createdAt: "2026-09-11T01:40:00.000Z" },
+          { id: "session-empty-time", title: "есть заголовок", channel: "telegram", createdAt: "" },
+          { id: "session-bad-time", title: "битая дата", channel: "telegram", createdAt: "не дата" }
+        ]
+      }))
+    });
+    render(<SessionsTab api={api} workspace={{ scope: "home" }} reloadKey={0} />);
+    await waitFor(() => expect(screen.getByTestId("sessions-list")).toBeDefined());
+    // пустой и пробельный заголовок — то же отсутствие заголовка, что и null
+    expect(screen.getByTestId("session-row-session-empty-title").textContent).toContain("Без заголовка");
+    expect(screen.getByTestId("session-row-session-blank-title").textContent).toContain("Без заголовка");
+    // пустое время получает заглушку, а не пустое место
+    expect(screen.getByTestId("session-row-session-empty-time").textContent).toContain("—");
+    // невалидная непустая строка по-прежнему показывается как есть (честный fallback)
+    expect(screen.getByTestId("session-row-session-bad-time").textContent).toContain("не дата");
+  });
+
   it("shows the empty state", async () => {
     const api = makeApi({ listSessions: vi.fn(async () => ({ sessions: [] })) });
     render(<SessionsTab api={api} workspace={{ scope: "home" }} reloadKey={0} />);
