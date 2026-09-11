@@ -4,6 +4,7 @@ import type { WorkspaceListResponse, WorkspaceProject } from "dsh-balbes-contrac
 import WorkspaceList from "../components/WorkspaceList";
 import FileTree from "../components/FileTree";
 import Modal from "../components/Modal";
+import WorkspaceRightPane from "../components/WorkspaceRightPane";
 import type { WorkspaceRef } from "../workspaceRef";
 
 const SELECTED_KEY = "balbes.selectedWorkspace";
@@ -214,7 +215,7 @@ export default function WorkspacesPage({ api }: WorkspacesPageProps) {
           <FileTree api={api} workspace={selected} refreshKey={refreshKey} />
         </div>
         <div className="ws-splitter" data-testid="ws-splitter" onPointerDown={startResize} />
-        <div className="ws-pane ws-void-pane" data-testid="ws-void-pane" />
+        <WorkspaceRightPane api={api} workspace={selected} />
       </div>
       {modal !== null && modal.type === "create" && (
         <Modal title="Создать проект" onClose={() => setModal(null)}>

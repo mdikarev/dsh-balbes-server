@@ -61,7 +61,7 @@ describe("WorkspacesPage layout", () => {
 
   it("starts unselected and prompts to choose a workspace", async () => {
     render(<WorkspacesPage api={makeApi()} />);
-    expect(await screen.findByText("Выберите воркспейс")).toBeTruthy();
+    expect(await screen.findByTestId("tree-prompt")).toBeTruthy();
   });
 
   it("selecting a project loads its tree; the choice survives remount", async () => {
@@ -153,7 +153,7 @@ describe("WorkspacesPage create/delete flows", () => {
     fireEvent.click(screen.getByTestId("workspace-delete-alpha"));
     await waitFor(() => expect(api.deleteWorkspace).toHaveBeenCalledWith("alpha"));
     await waitFor(() => expect(api.listWorkspaces).toHaveBeenCalledTimes(2));
-    expect(screen.getByText("Выберите воркспейс")).toBeTruthy();
+    expect(screen.getByTestId("tree-prompt")).toBeTruthy();
   });
 
   it("cancel keeps the project and performs no deletion", async () => {
@@ -273,7 +273,7 @@ describe("WorkspacesPage live events", () => {
     const cb = cbs[cbs.length - 1]?.[0] as (e: unknown) => void;
     cb({ kind: "list" });
     await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
-    expect(await screen.findByText("Выберите воркспейс")).toBeTruthy();
+    expect(await screen.findByTestId("tree-prompt")).toBeTruthy();
   });
 
   it("shows the action banner when a list-event refresh fails and a later success clears it", async () => {
