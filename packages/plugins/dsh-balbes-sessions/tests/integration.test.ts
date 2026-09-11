@@ -299,7 +299,12 @@ describe.skipIf(!realEnabled)("REAL composition (sessions API)", () => {
   it("lists a real session with the title and creation time from the engine", async () => {
     const stubUrl = new URL("./helpers/stub-llm.mjs", import.meta.url).href;
     const { startStubLlm } = (await import(stubUrl)) as {
-      startStubLlm(options?: { text?: string }): Promise<{ port: number; close(): Promise<void> }>;
+      startStubLlm(options?: { text?: string }): Promise<{
+        port: number;
+        /** Записанные стабом запросы: доказательство, что LLM-граница реально задействована. */
+        calls: unknown[];
+        close(): Promise<void>;
+      }>;
     };
     const stub = await startStubLlm({ text: "ok from stub" });
     const home = await prepareHome();
@@ -318,8 +323,14 @@ describe.skipIf(!realEnabled)("REAL composition (sessions API)", () => {
       const base = `http://127.0.0.1:${port}`;
       const token = await bootServerWithCwd(home, projectDir);
 
+      // Окно прогона: время сессии сверяется с ним, а не просто «разбирается».
+      const startedAt = Date.now();
       const prompt = await postJson(`${base}/api/prompt`, { prompt: "Reply with exactly: ok from stub" }, token);
       expect(prompt.status, prompt.raw).toBe(200);
+      // LLM-граница действительно задействована: стаб записал хотя бы один
+      // запрос. Явное утверждение вместо вывода из 200 — 200 сам по себе не
+      // говорит, что движок куда-то ходил.
+      expect(stub.calls.length).toBeGreaterThan(0);
 
       const sessionId = await findNewSessionId(home);
       expect(sessionId).toMatch(/^session-/);
@@ -364,6 +375,15 @@ describe.skipIf(!realEnabled)("REAL composition (sessions API)", () => {
       expect(typeof sessions[0]?.title).toBe("string");
       expect((sessions[0]?.title ?? "").length).toBeGreaterThan(0);
       expect(Number.isNaN(Date.parse(sessions[0]?.createdAt ?? ""))).toBe(false);
+      // Одного Date.parse мало: epoch, любая константная ISO-строка и дата из
+      // будущего его удовлетворяют, так что «ручка отдаёт хоть какой-то
+      // timestamp» осталось бы зелёным. Поэтому время привязано к окну ЭТОГО
+      // прогона: createdAt — поле header'а сессии, записанного движком при её
+      // создании, то есть не раньше старта промпта (запас 5 s) и не позже
+      // текущего момента. Значение из другого времени/константа окно не пройдёт.
+      const createdMs = Date.parse(sessions[0]?.createdAt ?? "");
+      expect(createdMs).toBeGreaterThanOrEqual(startedAt - 5_000);
+      expect(createdMs).toBeLessThanOrEqual(Date.now());
     } finally {
       await stopServer();
       await rm(home, { recursive: true, force: true });
