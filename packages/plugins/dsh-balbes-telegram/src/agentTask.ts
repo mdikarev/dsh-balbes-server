@@ -138,8 +138,21 @@ export const QUEUE_MAX_WAITING = 3;
 const BUSY_MESSAGE = "a task for this workspace is already running";
 const QUEUE_FULL_MESSAGE = `the workspace task queue is full (${QUEUE_MAX_WAITING} waiting tasks max)`;
 const AGENT_ERROR_MESSAGE = "agent task failed";
-const RESET_DROP_MESSAGE = "task dropped because the workspace context was reset";
-const RESET_ABORT_MESSAGE = "task aborted because the workspace context was reset";
+/**
+ * The two phrases a run interrupted by the owner's own «Сбросить контекст»
+ * settles with: the turn that was in flight ("aborted") and a task that was
+ * still waiting in the queue ("dropped"). A reset is not a stop — the session
+ * is destroyed, and the chat answers with its own reset copy — but the runner
+ * has no `reset` result code, so the reset path genuinely reports itself BY
+ * MESSAGE.
+ *
+ * They are exported for exactly one reason: the chat matches them, and a
+ * matcher that restated the literals could drift out of sync with the raiser
+ * and start reporting an intentional reset as an agent crash. ONE source, two
+ * readers — never a copy (the drift this file's own review flagged).
+ */
+export const RESET_DROP_MESSAGE = "task dropped because the workspace context was reset";
+export const RESET_ABORT_MESSAGE = "task aborted because the workspace context was reset";
 /**
  * The `cancelled` code and this message are what a deliberate owner stop
  * reports. It is deliberately NOT shaped like the reset phrases (chat.ts maps
@@ -303,16 +316,22 @@ function summarizeTurn(session: AgentLike["session"], firstSeq: number): TurnOut
  * omitted: `write`/`edit` arguments carry whole file bodies, and a card that
  * rendered them would push workspace content into the chat. The whitelist is
  * consulted FIRST, so no tool outside it can contribute an argument at all.
+ *
+ * A `Map` and not an object literal: `PROGRESS_TARGET_ARG["constructor"]` on a
+ * plain object answers with an inherited member, so a tool the model named
+ * after a prototype member would slip PAST the "whitelist first" rule and could
+ * contribute an argument the card must never render. A Map has no prototype
+ * chain to inherit from.
  */
-const PROGRESS_TARGET_ARG: Record<string, string> = {
-  read: "file_path",
-  read_image: "file_path",
-  write: "file_path",
-  edit: "file_path",
-  glob: "path",
-  grep: "path",
-  web_search: "query"
-};
+const PROGRESS_TARGET_ARG = new Map<string, string>([
+  ["read", "file_path"],
+  ["read_image", "file_path"],
+  ["write", "file_path"],
+  ["edit", "file_path"],
+  ["glob", "path"],
+  ["grep", "path"],
+  ["web_search", "query"]
+]);
 /** Longest target the card may show, before the ellipsis. */
 const PROGRESS_TARGET_MAX = 80;
 /** How many of the turn's newest steps a progress read returns. */
@@ -327,7 +346,7 @@ const PROGRESS_STEP_MAX = 5;
  * may be long, multi-line or contain the model's own newlines.
  */
 function progressTarget(tool: string, rawArguments: string): string | undefined {
-  const argName = PROGRESS_TARGET_ARG[tool];
+  const argName = PROGRESS_TARGET_ARG.get(tool);
   if (argName === undefined) return undefined;
   let parsed: unknown;
   try {
@@ -566,13 +585,20 @@ const FALLBACK_DENIED_TOOL_NAMES = [
   "list_agents"
 ] as const;
 
-/** Model-facing tools whose string path argument must stay inside the root. */
-const READ_PATH_ARG_BY_TOOL: Record<string, string> = {
-  read: "file_path",
-  read_image: "file_path",
-  glob: "path",
-  grep: "path"
-};
+/**
+ * Model-facing tools whose string path argument must stay inside the root.
+ *
+ * A `Map`, like {@link PROGRESS_TARGET_ARG}: this one is the containment guard,
+ * and an inherited prototype member answering for a tool named e.g.
+ * `constructor` would make the guard read a path argument out of a name it was
+ * never meant to guard. Only the own entries of this table may ever match.
+ */
+const READ_PATH_ARG_BY_TOOL = new Map<string, string>([
+  ["read", "file_path"],
+  ["read_image", "file_path"],
+  ["glob", "path"],
+  ["grep", "path"]
+]);
 
 /** A path-taking tool execution as the registry guard sees it. */
 interface GuardExecLike {
@@ -691,7 +717,7 @@ export function composeAgentSetup(agentCtx: unknown, options: AgentSetupOptions)
   restrictToolSurface(tools);
   const escapes = rootEscapes(options.root);
   tools.guard((exec) => {
-    const argName = READ_PATH_ARG_BY_TOOL[exec.name];
+    const argName = READ_PATH_ARG_BY_TOOL.get(exec.name);
     if (argName === undefined) return undefined;
     const raw = (exec.arguments as Record<string, unknown> | undefined)?.[argName];
     if (typeof raw !== "string" || raw === "") return undefined;

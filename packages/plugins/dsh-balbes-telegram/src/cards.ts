@@ -4,7 +4,7 @@
  * machine owns snapshots and dispatch, this module owns copy and layout.
  */
 import type { TaskProgressStep, TaskProgressTodo } from "./agentTask.js";
-import { paginationRow } from "./keyboards.js";
+import { menuRow, paginationRow } from "./keyboards.js";
 import type { InlineKeyboardMarkup } from "./keyboards.js";
 
 export interface CardView {
@@ -28,7 +28,10 @@ export const HELP_TEXT = [
   "/reset — сбросить контекст (сессия удаляется)",
   "/stop — остановить задачу (контекст сохраняется)",
   "/help — эта справка.",
-  "Любой другой текст уходит агенту как задача."
+  // Accurate, and no longer a promise the chat does not keep: the alias word
+  // opens the workspace list instead of running, and text with no workspace
+  // selected is answered with the hint, never handed to the agent.
+  "Прочий текст — задача агенту (нужен воркспейс; «Воркспейсы» — список)."
 ].join("\n");
 
 /** `m:ss` below one hour, `h:mm:ss` above. */
@@ -41,7 +44,24 @@ export function formatElapsed(ms: number): string {
   return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${minutes}:${pad(seconds)}`;
 }
 
-const MENU_BUTTON = { text: "⬅ Меню", callback_data: "mnu" } as const;
+/**
+ * The Russian form of the counted noun: `pluralRu(1, "шаг", "шага", "шагов")`
+ * is «шаг», 2 → «шага», 5 → «шагов». The 11–14 range takes the "many" form
+ * whatever its last digit («11 шагов», «12 шагов»), while 21/22/25 follow the
+ * last digit again («21 шаг», «22 шага») — the exception a bare `% 10` gets
+ * wrong. Counts are taken by absolute value, so a negative never parses as 1.
+ */
+export function pluralRu(count: number, one: string, few: string, many: string): string {
+  const n = Math.abs(Math.trunc(count));
+  if (Number.isNaN(n)) return many;
+  const mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 14) return many;
+  const mod10 = n % 10;
+  if (mod10 === 1) return one;
+  if (mod10 >= 2 && mod10 <= 4) return few;
+  return many;
+}
+
 const REFRESH_ROW = [{ text: "🔄 Обновить", callback_data: "mnu:refresh" }];
 
 export function menuCard(opts: {
@@ -94,7 +114,7 @@ export function modelConnectionsCard(opts: {
     { text: `${row.isDefault ? "• " : ""}${row.label}`, callback_data: `mdl:c:${row.index}` }
   ]);
   if (opts.pages > 1) rows.push(paginationRow("mdl:pg", opts.page, opts.pages));
-  rows.push([MENU_BUTTON]);
+  rows.push(menuRow());
   return { text: lines.join("\n"), keyboard: { inline_keyboard: rows } };
 }
 
@@ -122,6 +142,26 @@ export function modelListCard(opts: {
 const STEP_MARK: Record<TaskProgressStep["status"], string> = { running: "…", ok: "✔", failed: "✖" };
 const TODO_MARK: Record<TaskProgressTodo["status"], string> = { completed: "☑", in_progress: "▸", pending: "☐" };
 
+/**
+ * How many todo lines a live card renders at most, and how long one of them may
+ * be. The agent writes BOTH the number of todos and their text, so without a
+ * ceiling a verbose plan grows the card past Telegram's message limit — and a
+ * card that cannot be edited is frozen by the three-failure rule, which costs
+ * the owner the receipt too. Bounded here, the card renders at any plan size.
+ */
+export const MAX_TODO_LINES = 10;
+export const MAX_TODO_LINE_CHARS = 100;
+
+/** One agent-written line: whitespace collapsed (its own newlines included) and cut. */
+function clampCardLine(line: string, max: number): string {
+  const collapsed = line.replace(/\s+/g, " ").trim();
+  if (collapsed.length <= max) return collapsed;
+  // Never cut a surrogate pair in half: half a pair is not sendable text.
+  const last = collapsed.charCodeAt(max - 1);
+  const end = last >= 0xd800 && last <= 0xdbff ? max - 1 : max;
+  return `${collapsed.slice(0, end)}…`;
+}
+
 export function progressCard(opts: {
   workspaceLabel: string;
   taskText: string;
@@ -134,7 +174,16 @@ export function progressCard(opts: {
   const head = `⏳ ${opts.workspaceLabel} · ${formatElapsed(opts.elapsedMs)}${opts.step === undefined ? "" : ` · шаг ${opts.step}`}`;
   const lines = [head];
   if (opts.todos !== undefined && opts.todos.length > 0) {
-    lines.push("", ...opts.todos.map((todo) => `${TODO_MARK[todo.status]} ${todo.content}`));
+    // Both ends are capped: the plan of a long task may be dozens of items long
+    // and any single item may be a paragraph. The hidden count is stated rather
+    // than silently dropped.
+    const shown = opts.todos.slice(0, MAX_TODO_LINES);
+    lines.push(
+      "",
+      ...shown.map((todo) => `${TODO_MARK[todo.status]} ${clampCardLine(todo.content, MAX_TODO_LINE_CHARS)}`)
+    );
+    const hidden = opts.todos.length - shown.length;
+    if (hidden > 0) lines.push(`…и ещё ${hidden}`);
   }
   if (opts.steps.length > 0) {
     lines.push("", ...opts.steps.map((step) => `🔧 ${step.name}${step.target === undefined ? "" : ` ${step.target}`} ${STEP_MARK[step.status]}`));
@@ -142,7 +191,7 @@ export function progressCard(opts: {
   if (opts.queued > 0) lines.push("", `Очередь: ${opts.queued}`);
   return {
     text: lines.join("\n"),
-    keyboard: { inline_keyboard: [[{ text: "⏹ Стоп", callback_data: "stp" }, MENU_BUTTON]] }
+    keyboard: { inline_keyboard: [[{ text: "⏹ Стоп", callback_data: "stp" }, ...menuRow()]] }
   };
 }
 
@@ -155,7 +204,7 @@ export function progressCard(opts: {
 export function queuedCard(opts: { workspaceLabel: string; taskText: string; position: number }): CardView {
   return {
     text: [`🕓 ${opts.workspaceLabel} · в очереди №${opts.position}`, "", opts.taskText].join("\n"),
-    keyboard: { inline_keyboard: [[{ text: "⏹ Стоп", callback_data: "stp" }, MENU_BUTTON]] }
+    keyboard: { inline_keyboard: [[{ text: "⏹ Стоп", callback_data: "stp" }, ...menuRow()]] }
   };
 }
 
@@ -168,11 +217,11 @@ export function receiptCard(opts: {
   const elapsed = formatElapsed(opts.elapsedMs);
   const text =
     opts.kind === "done"
-      ? `✅ Готово · ${elapsed} · ${opts.steps} шагов`
+      ? `✅ Готово · ${elapsed} · ${opts.steps} ${pluralRu(opts.steps, "шаг", "шага", "шагов")}`
       : opts.kind === "stopped"
         ? `⏹ Остановлено владельцем · ${elapsed}`
         : opts.kind === "reset"
           ? "⏹ Остановлено сбросом контекста"
           : `⚠️ Ошибка · ${elapsed}${opts.detail === undefined ? "" : `: ${opts.detail}`}`;
-  return { text, keyboard: { inline_keyboard: [[MENU_BUTTON]] } };
+  return { text, keyboard: { inline_keyboard: [menuRow()] } };
 }

@@ -1015,6 +1015,37 @@ describe("task progress", () => {
    * window where a stale slice would otherwise be summarized is the next
    * queued task's set-up.
    */
+  /**
+   * The whitelist is consulted FIRST, so a tool outside it can never contribute
+   * an argument to the card — and "outside it" has to include the names a plain
+   * object INHERITS. `PROGRESS_TARGET_ARG["constructor"]` on an object literal
+   * answers with a member of Object.prototype, which is not `undefined`, so the
+   * old lookup walked straight past the whitelist for a tool the model named
+   * after a prototype member. A Map has no prototype chain to inherit from.
+   */
+  it("renders no target for a tool named after a prototype member", () => {
+    // The argument key the inherited lookup would have answered with: the
+    // stringified member becomes the property name it reads.
+    const nativeKey = (name: string): string =>
+      String((Object.prototype as unknown as Record<string, unknown>)[name] as object);
+    const session = fakeSessionWith([
+      { type: "turn/start", data: {} },
+      toolCall("c1", "toString", { [nativeKey("toString")]: "/etc/shadow" }),
+      toolCall("c2", "constructor", { [nativeKey("constructor")]: "/etc/passwd" }),
+      toolCall("c3", "hasOwnProperty", { [nativeKey("hasOwnProperty")]: "/etc/hosts" })
+    ]);
+
+    const progress = summarizeProgress(session, SessionSeqLike(0));
+
+    expect(progress.steps).toEqual([
+      { name: "toString", status: "running" },
+      { name: "constructor", status: "running" },
+      { name: "hasOwnProperty", status: "running" }
+    ]);
+    // Nothing the whitelist does not name reached the card, paths included.
+    expect(JSON.stringify(progress)).not.toContain("/etc/");
+  });
+
   it("reports the running turn and never the turn that already settled", async () => {
     const { agents, runner } = await makeRunner();
     agents.cfg({ holdIdle: true, answers: ["первый ответ", "второй ответ"] });
@@ -1203,6 +1234,31 @@ describe("composeAgentSetup tool surface", () => {
     const guard = tools.guards[0]!;
     expect(guard({ name: "read", arguments: { file_path: "notes.txt" } })).toBeUndefined();
     expect(guard({ name: "read", arguments: { file_path: "../bravo/secret.txt" } })).toContain("outside the workspace root");
+  });
+
+  /**
+   * The containment guard's table is security-relevant, so it is a Map too: on
+   * an object literal, `READ_PATH_ARG_BY_TOOL["constructor"]` answers with an
+   * inherited member and the guard would judge a call for a tool name it never
+   * listed. Only the OWN names of the table may ever be guarded.
+   */
+  it("guards a path argument only for the tool names of its own table", () => {
+    const tools = makeTools([...KEPT_BY_CONTRACT]);
+    composeAgentSetup(makeAgentCtx(tools), { root: "/tmp/ws-root", selection: { current: SELECTION } });
+    const guard = tools.guards[0]!;
+    const nativeKey = String(
+      (Object.prototype as unknown as Record<string, unknown>)["constructor"] as object
+    );
+
+    // Not a path tool of the table: its arguments are none of the guard's
+    // business, however they are named.
+    expect(guard({ name: "constructor", arguments: { [nativeKey]: "../../etc/passwd" } })).toBeUndefined();
+    expect(guard({ name: "toString", arguments: { [nativeKey]: "../../etc/passwd" } })).toBeUndefined();
+    // A tool the table DOES name is still judged exactly as before.
+    expect(guard({ name: "read", arguments: { file_path: "../../etc/passwd" } })).toContain(
+      "outside the workspace root"
+    );
+    expect(guard({ name: "read", arguments: { file_path: "notes.txt" } })).toBeUndefined();
   });
 
   /**

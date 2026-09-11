@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  HELP_TEXT,
+  MAX_TODO_LINES,
+  MAX_TODO_LINE_CHARS,
   TASK_IDLE_LINE,
   formatElapsed,
   menuCard,
   modelConnectionsCard,
   modelListCard,
+  pluralRu,
   progressCard,
   queuedCard,
   receiptCard
@@ -24,6 +28,47 @@ describe("formatElapsed", () => {
     expect(formatElapsed(61_000)).toBe("1:01");
     expect(formatElapsed(3_599_000)).toBe("59:59");
     expect(formatElapsed(-1)).toBe("0:00");
+  });
+});
+
+describe("pluralRu", () => {
+  const step = (n: number): string => pluralRu(n, "шаг", "шага", "шагов");
+
+  it("picks the form by the last digit: 1 шаг, 2 шага, 5 шагов", () => {
+    expect(step(1)).toBe("шаг");
+    expect(step(2)).toBe("шага");
+    expect(step(3)).toBe("шага");
+    expect(step(4)).toBe("шага");
+    expect(step(5)).toBe("шагов");
+    expect(step(0)).toBe("шагов");
+  });
+
+  it("keeps the 11–14 exception and resumes counting after it", () => {
+    expect(step(11)).toBe("шагов");
+    expect(step(12)).toBe("шагов");
+    expect(step(13)).toBe("шагов");
+    expect(step(14)).toBe("шагов");
+    expect(step(15)).toBe("шагов");
+    expect(step(21)).toBe("шаг");
+    expect(step(22)).toBe("шага");
+    expect(step(25)).toBe("шагов");
+    expect(step(101)).toBe("шаг");
+    expect(step(111)).toBe("шагов");
+  });
+});
+
+describe("HELP_TEXT", () => {
+  it("names every command and states what happens to other text accurately", () => {
+    for (const command of ["/menu", "/status", "/ws", "/model", "/reset", "/stop", "/help"]) {
+      expect(HELP_TEXT).toContain(command);
+    }
+    // The old line promised that ANY other text reaches the agent as a task,
+    // which is untrue twice over: the alias word opens the list, and with no
+    // workspace selected the text is answered with the hint instead.
+    expect(HELP_TEXT).toContain(
+      "Прочий текст — задача агенту (нужен воркспейс; «Воркспейсы» — список)."
+    );
+    expect(HELP_TEXT).not.toContain("Любой другой текст уходит агенту как задача.");
   });
 });
 
@@ -182,6 +227,53 @@ describe("progressCard", () => {
     expect(card.text).toContain("☐ Дописать тесты");
     expect(card.text).toContain("Очередь: 2");
   });
+
+  /**
+   * The agent writes the plan, so both its length and its line count are
+   * unbounded input on a surface with a hard message limit: an unbounded card
+   * is one Telegram refuses to edit, and the three-failure rule then freezes it
+   * for the rest of the task.
+   */
+  it("clamps a verbose todo list to a bounded number of lines", () => {
+    const todos = Array.from({ length: 40 }, (_, i) => ({
+      content: `пункт ${i + 1}`,
+      status: "pending" as const
+    }));
+
+    const card = progressCard({
+      workspaceLabel: "Проект: balbes",
+      taskText: "t",
+      elapsedMs: 1000,
+      steps: [],
+      todos,
+      queued: 0
+    });
+
+    const lines = card.text.split("\n").filter((line) => line.startsWith("☐ "));
+    expect(lines).toHaveLength(MAX_TODO_LINES);
+    expect(lines[0]).toBe("☐ пункт 1");
+    // The truncation is stated, never silent, and is itself one bounded line.
+    expect(card.text).toContain(`…и ещё ${todos.length - MAX_TODO_LINES}`);
+    expect(card.text.length).toBeLessThan(4096);
+  });
+
+  it("clamps ONE todo line: newlines collapse and the line is cut with an ellipsis", () => {
+    const card = progressCard({
+      workspaceLabel: "Проект: balbes",
+      taskText: "t",
+      elapsedMs: 1000,
+      steps: [],
+      todos: [{ content: `${"я".repeat(500)}\n\nвторая строка плана`, status: "in_progress" }],
+      queued: 0
+    });
+
+    const todoLines = card.text.split("\n").filter((line) => line.startsWith("▸ "));
+    expect(todoLines).toHaveLength(1);
+    // The mark plus the bounded content plus the ellipsis, nothing more.
+    expect(todoLines[0]).toHaveLength(MAX_TODO_LINE_CHARS + 3);
+    expect(todoLines[0]!.endsWith("…")).toBe(true);
+    expect(card.text).not.toContain("вторая строка плана");
+  });
 });
 
 describe("queuedCard", () => {
@@ -202,6 +294,15 @@ describe("receiptCard", () => {
     expect(receiptCard({ kind: "reset", elapsedMs: 10_000, steps: 2 }).text).toBe("⏹ Остановлено сбросом контекста");
     expect(receiptCard({ kind: "error", elapsedMs: 10_000, steps: 2 }).text).toBe("⚠️ Ошибка · 0:10");
     expect(data(receiptCard({ kind: "done", elapsedMs: 1, steps: 0 }))).toEqual(["mnu"]);
+  });
+
+  it("counts the steps in Russian: 1 шаг, 2 шага, 5 шагов", () => {
+    expect(receiptCard({ kind: "done", elapsedMs: 1000, steps: 1 }).text).toBe("✅ Готово · 0:01 · 1 шаг");
+    expect(receiptCard({ kind: "done", elapsedMs: 1000, steps: 2 }).text).toBe("✅ Готово · 0:01 · 2 шага");
+    expect(receiptCard({ kind: "done", elapsedMs: 1000, steps: 3 }).text).toBe("✅ Готово · 0:01 · 3 шага");
+    expect(receiptCard({ kind: "done", elapsedMs: 1000, steps: 5 }).text).toBe("✅ Готово · 0:01 · 5 шагов");
+    expect(receiptCard({ kind: "done", elapsedMs: 1000, steps: 11 }).text).toBe("✅ Готово · 0:01 · 11 шагов");
+    expect(receiptCard({ kind: "done", elapsedMs: 1000, steps: 21 }).text).toBe("✅ Готово · 0:01 · 21 шаг");
   });
 
   it("appends the failure detail to an error and nothing else", () => {

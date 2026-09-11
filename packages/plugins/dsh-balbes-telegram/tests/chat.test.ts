@@ -354,6 +354,13 @@ function makeHarness(
     failEditPlan?: boolean[];
     failSends?: number;
     deferEditAt?: number;
+    /**
+     * A logger whose `warn` THROWS. The chat logs a code on every refused card
+     * edit, so this is the one injected dependency that can turn an already
+     * handled failure back into a rejection — the card's chain has to stay
+     * throw-proof or that rejection costs the owner their receipt.
+     */
+    warnThrows?: boolean;
   } = {}
 ): Harness {
   const bot = makeBot({
@@ -381,6 +388,7 @@ function makeHarness(
     logger: {
       warn: (message) => {
         warns.push(message);
+        if (opts.warnThrows === true) throw new Error("logger.warn exploded");
       }
     }
   });
@@ -459,12 +467,28 @@ describe("chat machine: root menu and workspace list", () => {
 
     expect(h.bot.lastEdit().messageId).toBe(710);
     expect(h.bot.lastEdit().text).toContain("Выберите воркспейс");
-    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual(["ws:pick:0", "ws:pick:1", "ws:pick:2"]);
+    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual(["ws:pick:0", "ws:pick:1", "ws:pick:2", "mnu"]);
     expect(h.bot.buttons(h.bot.lastEdit().markup).map((button) => button.text)).toEqual([
       "Дом агента",
       "Проект: alpha",
-      "Проект: bravo"
+      "Проект: bravo",
+      "⬅ Меню"
     ]);
+  });
+
+  it("the workspace list carries the «⬅ Меню» row and returns to the card from its own message", async () => {
+    const h = makeHarness();
+    h.workspaces.projects.push("alpha");
+
+    await h.machine.onCallback(callback("ws", 780));
+
+    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual(["ws:pick:0", "ws:pick:1", "mnu"]);
+
+    await h.machine.onCallback(callback("mnu", 780));
+
+    expect(h.bot.lastEdit().messageId).toBe(780);
+    expect(h.bot.lastEdit().text).toContain("🤖 Агент сервера");
+    expect(h.bot.editTexts().at(-1)).not.toContain("Выберите воркспейс");
   });
 
   it("paginates a long workspace list and clamps an out-of-range page", async () => {
@@ -479,14 +503,15 @@ describe("chat machine: root menu and workspace list", () => {
       "ws:pick:2",
       "ws:pick:3",
       "ws:pg:0",
-      "ws:pg:1"
+      "ws:pg:1",
+      "mnu"
     ]);
     expect(h.bot.lastEdit().text).toContain("Страница 1/2");
 
     await h.machine.onCallback(callback("ws:pg:1", 720));
     expect(h.bot.lastEdit().messageId).toBe(720);
     expect(h.bot.lastEdit().text).toContain("Страница 2/2");
-    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual(["ws:pick:4", "ws:pick:5", "ws:pg:0", "ws:pg:1"]);
+    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual(["ws:pick:4", "ws:pick:5", "ws:pg:0", "ws:pg:1", "mnu"]);
 
     const editsBefore = h.bot.edits.length;
     await h.machine.onCallback(callback("ws:pg:9", 720));
@@ -501,7 +526,7 @@ describe("chat machine: root menu and workspace list", () => {
 
     await h.machine.onCallback(callback("ws", 730));
 
-    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual(["ws:pick:0", "ws:pick:1"]);
+    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual(["ws:pick:0", "ws:pick:1", "mnu"]);
     expect(h.bot.lastEdit().text).not.toContain("Страница");
   });
 
@@ -513,7 +538,7 @@ describe("chat machine: root menu and workspace list", () => {
 
     expect(h.bot.sent).toHaveLength(1);
     expect(h.bot.sent[0]!.text).toContain("Выберите воркспейс");
-    expect(h.bot.data(h.bot.sent[0]!.markup)).toEqual(["ws:pick:0", "ws:pick:1"]);
+    expect(h.bot.data(h.bot.sent[0]!.markup)).toEqual(["ws:pick:0", "ws:pick:1", "mnu"]);
   });
 
   it("a list rendered from a text alias is immediately usable (no false stale toast)", async () => {
@@ -1295,6 +1320,134 @@ describe("chat machine: progress card", () => {
     await settle();
   });
 
+  /**
+   * Ruling R22. «⬅ Меню» on a message that still has a LIVE card takes that
+   * message over: the card stops ticking AND gives up the receipt it would
+   * otherwise stamp when the run settles. Without the take-over the next tick
+   * (≈3.5s later) edits the progress card straight back over the menu, and for
+   * a queued card the menu survives only until that task starts.
+   */
+  for (const press of ["mnu", "mnu:refresh"] as const) {
+    it(`«${press}» on a live card keeps the menu and the card stamps no receipt`, async () => {
+      vi.useFakeTimers();
+      try {
+        const h = makeHarness({ progressIntervalMs: 3500 });
+        withActive(h);
+        const gate = h.runner.hold();
+        await h.machine.onMessage(message("долгая"));
+        const cardId = h.bot.sent[0]!.messageId;
+        h.runner.progress.mockReturnValue({
+          phase: "running",
+          taskText: "долгая",
+          startedAt: Date.now(),
+          steps: [{ name: "read", status: "running" }],
+          queued: 0
+        });
+
+        await h.machine.onCallback(callback(press, cardId));
+
+        expect(h.bot.lastEdit().messageId).toBe(cardId);
+        expect(h.bot.messageText(cardId)).toContain("🤖 Агент сервера");
+        const editsAfterMenu = h.bot.edits.length;
+
+        // Three intervals later the abandoned card has still not touched the
+        // message it gave up.
+        await vi.advanceTimersByTimeAsync(3500 * 3);
+        expect(h.bot.edits).toHaveLength(editsAfterMenu);
+        expect(h.bot.messageText(cardId)).toContain("🤖 Агент сервера");
+
+        // The run settles: its answer arrives as its OWN message (that part of
+        // the behaviour is kept) and the card stamps nothing over the menu.
+        gate.release({ ok: true, text: "готово", sessionId: "s-1" });
+        await drain();
+
+        expect(h.bot.sent.at(-1)!.text).toBe("готово");
+        expect(h.bot.edits).toHaveLength(editsAfterMenu);
+        expect(h.bot.messageText(cardId)).toContain("🤖 Агент сервера");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  }
+
+  it("«mnu» on a queued card survives that task starting", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness({ progressIntervalMs: 3500 });
+      withActive(h);
+      const gate = h.runner.hold();
+      await h.machine.onMessage(message("первая"));
+      h.runner.progress.mockReturnValue({
+        phase: "running",
+        taskText: "первая",
+        startedAt: Date.now(),
+        steps: [],
+        queued: 1
+      });
+      await h.machine.onMessage(message("вторая"));
+      const queuedId = h.bot.sent[1]!.messageId;
+      expect(h.bot.messageText(queuedId)).toContain("🕓");
+
+      await h.machine.onCallback(callback("mnu", queuedId));
+      expect(h.bot.messageText(queuedId)).toContain("🤖 Агент сервера");
+      const editsAfterMenu = h.bot.edits.length;
+
+      // The turn is «вторая»'s now: a card that had not given the message up
+      // would silently replace the menu at exactly this moment.
+      h.runner.progress.mockReturnValue({
+        phase: "running",
+        taskText: "вторая",
+        startedAt: Date.now(),
+        steps: [{ name: "read", status: "running" }],
+        queued: 0
+      });
+      await vi.advanceTimersByTimeAsync(3500 * 3);
+
+      expect(h.bot.edits).toHaveLength(editsAfterMenu);
+      expect(h.bot.messageText(queuedId)).toContain("🤖 Агент сервера");
+
+      h.runner.progress.mockReturnValue({ phase: "idle", steps: [], queued: 0 });
+      gate.release({ ok: true, text: "готово", sessionId: "s-1" });
+      await drain();
+      expect(h.bot.messageText(queuedId)).toContain("🤖 Агент сервера");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the receipt when the logger itself throws inside a failing tick", async () => {
+    vi.useFakeTimers();
+    try {
+      // `failEdits: 1` refuses the first card edit; the warning the card logs
+      // for it THROWS. A chain that propagated that rejection would skip every
+      // later tick and reject the very `idle()` the receipt waits for — the
+      // owner would lose the card AND the receipt over a logging failure.
+      const h = makeHarness({ progressIntervalMs: 3500, failEdits: 1, warnThrows: true });
+      withActive(h);
+      const gate = h.runner.hold();
+      await h.machine.onMessage(message("долгая"));
+      const cardId = h.bot.sent[0]!.messageId;
+      h.runner.progress.mockReturnValue({
+        phase: "running",
+        taskText: "долгая",
+        startedAt: Date.now(),
+        steps: [{ name: "read", status: "running" }],
+        queued: 0
+      });
+
+      await vi.advanceTimersByTimeAsync(3500);
+      await vi.advanceTimersByTimeAsync(3500);
+
+      gate.release({ ok: true, text: "готово", sessionId: "s-1" });
+      await drain();
+
+      expect(h.bot.messageText(cardId)).toContain("✅ Готово");
+      expect(h.warns.some((line) => line.includes("progress card edit failed"))).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("runs the task and edits nothing when its card could not be sent", async () => {
     // Only the card's own send is refused: the answer still reaches the owner.
     const h = makeHarness({ failSends: 1 });
@@ -1607,13 +1760,28 @@ describe("chat machine: context reset", () => {
 
     expect(h.bot.lastEdit().messageId).toBe(950);
     expect(h.bot.lastEdit().text).toContain("Сбросить контекст");
-    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual(["reset:yes", "reset:no"]);
+    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual(["reset:yes", "reset:no", "mnu"]);
 
     await h.machine.onCallback(callback("reset:yes", 950));
 
     expect(h.runner.resets).toEqual([HOME]);
     expect(h.bot.lastEdit().text).toBe("Контекст сессии сброшен");
     expect(h.machine.activeWorkspace()).toEqual(HOME);
+  });
+
+  it("the reset confirmation carries the «⬅ Меню» row and returns to the card", async () => {
+    const h = makeHarness();
+    withActive(h);
+
+    await h.machine.onCallback(callback("act:reset", 970));
+    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual(["reset:yes", "reset:no", "mnu"]);
+
+    await h.machine.onCallback(callback("mnu", 970));
+
+    expect(h.bot.lastEdit().messageId).toBe(970);
+    expect(h.bot.lastEdit().text).toContain("🤖 Агент сервера");
+    // Leaving the confirmation is not an answer to it: nothing was reset.
+    expect(h.runner.resets).toHaveLength(0);
   });
 
   it("cancels the reset on reset:no without touching the runner", async () => {
@@ -1790,7 +1958,7 @@ describe("chat machine: commands and menu card", () => {
 
     expect(h.runner.runs).toHaveLength(0);
     expect(h.bot.sent[0]!.text).toContain("Выберите воркспейс");
-    expect(h.bot.data(h.bot.sent[0]!.markup)).toEqual(["ws:pick:0", "ws:pick:1"]);
+    expect(h.bot.data(h.bot.sent[0]!.markup)).toEqual(["ws:pick:0", "ws:pick:1", "mnu"]);
   });
 
   it("the menu card reflects the active workspace and the live task line", async () => {
@@ -1831,6 +1999,26 @@ describe("chat machine: commands and menu card", () => {
     await h.machine.onCallback(callback("mnu:refresh", sentId));
 
     expect(h.bot.lastEdit().text).toContain("Сессия: активна");
+  });
+
+  it("/status renders the extended card while /menu stays the plain one", async () => {
+    const h = makeHarness();
+    h.machine.setActiveWorkspace(HOME);
+    h.runner.sessionIdOf.mockReturnValue("session-1");
+
+    await h.machine.onMessage(message("/status"));
+    await h.machine.onMessage(message("/menu"));
+
+    expect(h.bot.sent[0]!.text).toContain("Сессия: активна");
+    expect(h.bot.sent[1]!.text).toContain("🤖 Агент сервера");
+    expect(h.bot.sent[1]!.text).not.toContain("Сессия:");
+    // The same card, the same buttons: only the state lines differ.
+    expect(h.bot.data(h.bot.sent[0]!.markup)).toEqual(h.bot.data(h.bot.sent[1]!.markup));
+
+    const fresh = makeHarness();
+    fresh.machine.setActiveWorkspace(HOME);
+    await fresh.machine.onMessage(message("/status"));
+    expect(fresh.bot.sent[0]!.text).toContain("Сессия: не создана");
   });
 
   it("renders the model line only when the models slice is injected", async () => {
@@ -1884,7 +2072,7 @@ describe("chat machine: commands and menu card", () => {
 
     const confirm = h.bot.sent.at(-1)!;
     expect(confirm.text).toContain("Сбросить контекст");
-    expect(h.bot.data(confirm.markup)).toEqual(["reset:yes", "reset:no"]);
+    expect(h.bot.data(confirm.markup)).toEqual(["reset:yes", "reset:no", "mnu"]);
     expect(h.runner.resets).toHaveLength(0);
 
     await h.machine.onCallback(callback("reset:yes", confirm.messageId));
@@ -2138,6 +2326,8 @@ describe("chat machine: stop", () => {
 
     expect(h.bot.answers.at(-1)!.text).toBe("Сейчас ничего не выполняется");
     expect(h.bot.sent).toHaveLength(0);
+    // A message with no live card falls back to the active workspace.
+    expect(h.runner.cancel).toHaveBeenCalledWith(HOME);
   });
 
   it("never reports the task it stopped as an agent failure", async () => {
@@ -2157,6 +2347,69 @@ describe("chat machine: stop", () => {
     ]);
     // The stopped task's own card becomes the receipt instead of a failure.
     expect(h.bot.lastEdit().text).toBe("⏹ Остановлено владельцем · 0:00");
+  });
+
+  /**
+   * Ruling R21. The spec allows the owner to switch workspace mid-task and the
+   * card stays labelled with the RUNNING task's workspace, so a stop that
+   * resolved the active workspace would either answer «Сейчас ничего не
+   * выполняется» about a task that is still running, or cancel an unrelated
+   * workspace's task and drop its queue.
+   */
+  it("cancels the pressed card's own workspace, never whatever is active now", async () => {
+    const h = makeHarness();
+    h.machine.setActiveWorkspace(HOME);
+    h.workspaces.projects.push("alpha");
+    const gate = h.runner.hold();
+    await h.machine.onMessage(message("долгая"));
+    const cardId = h.bot.sent[0]!.messageId;
+    h.runner.cancel.mockResolvedValue({ cancelled: true, dropped: 1 });
+
+    // Mid-task switch: the card keeps the workspace of its own task.
+    h.machine.setActiveWorkspace(project("alpha"));
+
+    await h.machine.onCallback(callback("stp", cardId));
+
+    expect(h.runner.cancel).toHaveBeenCalledTimes(1);
+    expect(h.runner.cancel).toHaveBeenCalledWith(HOME);
+    expect(h.runner.cancel).not.toHaveBeenCalledWith(project("alpha"));
+    expect(h.bot.sent.at(-1)!.text).toBe(
+      "Остановил. Отменено задач в очереди: 1. Контекст сохранён — можно ставить новую задачу."
+    );
+    // The selection the owner made is theirs: a stop never moves it.
+    expect(h.machine.activeWorkspace()).toEqual(project("alpha"));
+
+    gate.release({ ok: false, code: "cancelled", message: "task cancelled by the owner" });
+    await settle();
+    // The stopped task's own card is the receipt, exactly as for a menu stop.
+    expect(h.bot.lastEdit().messageId).toBe(cardId);
+    expect(h.bot.lastEdit().text).toBe("⏹ Остановлено владельцем · 0:00");
+  });
+
+  it("keeps typed /stop on the ACTIVE workspace, which a menu card's stop shares", async () => {
+    const h = makeHarness();
+    h.machine.setActiveWorkspace(HOME);
+    h.workspaces.projects.push("alpha");
+    const gate = h.runner.hold();
+    await h.machine.onMessage(message("долгая"));
+    h.runner.cancel.mockResolvedValue({ cancelled: true, dropped: 0 });
+
+    h.machine.setActiveWorkspace(project("alpha"));
+    await h.machine.onMessage(message("/stop"));
+
+    expect(h.runner.cancel).toHaveBeenCalledTimes(1);
+    expect(h.runner.cancel).toHaveBeenCalledWith(project("alpha"));
+    expect(h.runner.cancel).not.toHaveBeenCalledWith(HOME);
+
+    // A press on a message with no live card (the menu) means the same thing.
+    const menuId = (await h.machine.onMessage(message("/menu")), h.bot.sent.at(-1)!.messageId);
+    await h.machine.onCallback(callback("stp", menuId));
+
+    expect(h.runner.cancel).toHaveBeenCalledTimes(2);
+    expect(h.runner.cancel).toHaveBeenLastCalledWith(project("alpha"));
+
+    gate.release({ ok: true, text: "готово", sessionId: "s-1" });
+    await settle();
   });
 
   it("hints at the workspace instead of cancelling when none is active", async () => {

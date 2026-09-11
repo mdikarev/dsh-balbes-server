@@ -24,6 +24,18 @@ const NEXT_LABEL = "▶";
 const UP_LABEL = "⬆ вверх";
 const NEXT_PAGE_LABEL = "Дальше";
 const BACK_TO_LIST_LABEL = "⬆ назад к списку";
+const MENU_LABEL = "⬅ Меню";
+
+/**
+ * The ONE row that takes a sub-card back to the menu card. Canon gives every
+ * sub-card that return (the workspace list, the model picker and the reset
+ * confirmation), and the label and the `mnu` code are the same on all of them:
+ * building the row here — and nowhere else — is what keeps them from drifting
+ * apart, one card at a time.
+ */
+export function menuRow(): InlineKeyboardButton[] {
+  return [{ text: MENU_LABEL, callback_data: "mnu" }];
+}
 
 /**
  * The «◀ ▶» row of a paged view. Both arrows are always rendered (the owner
@@ -48,7 +60,10 @@ export interface WorkspaceRowButton {
   label: string;
 }
 
-/** The workspace list: one button per row plus the pagination row. */
+/**
+ * The workspace list: one button per row, the pagination row when there are
+ * several pages, and always the way back to the menu.
+ */
 export function workspacesKeyboard(opts: {
   rows: WorkspaceRowButton[];
   page: number;
@@ -58,6 +73,7 @@ export function workspacesKeyboard(opts: {
     { text: row.label, callback_data: `ws:pick:${row.index}` }
   ]);
   if (opts.pages > 1) rows.push(paginationRow("ws:pg", opts.page, opts.pages));
+  rows.push(menuRow());
   return { inline_keyboard: rows };
 }
 
@@ -107,14 +123,18 @@ export function fileKeyboard(opts: { page: number; hasMore: boolean }): InlineKe
   return { inline_keyboard: rows };
 }
 
-/** The context-reset confirmation. */
+/**
+ * The context-reset confirmation: the decision, and the way out of it back to
+ * the menu (canon promises every sub-card that return).
+ */
 export function resetConfirmKeyboard(): InlineKeyboardMarkup {
   return {
     inline_keyboard: [
       [
         { text: "Да, сбросить", callback_data: "reset:yes" },
         { text: "Отмена", callback_data: "reset:no" }
-      ]
+      ],
+      menuRow()
     ]
   };
 }

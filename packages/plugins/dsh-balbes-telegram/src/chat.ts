@@ -1,5 +1,10 @@
 import type { AgentTaskRunner, WorkspaceRef } from "./agentTask.js";
-import { QUEUE_MAX_WAITING, workspaceRefKey } from "./agentTask.js";
+import {
+  QUEUE_MAX_WAITING,
+  RESET_ABORT_MESSAGE,
+  RESET_DROP_MESSAGE,
+  workspaceRefKey
+} from "./agentTask.js";
 import type { BotClient } from "./bot.js";
 import {
   HELP_TEXT,
@@ -59,9 +64,16 @@ import type { ClassifiedUpdate } from "./updates.js";
  * wedge the poller.
  *
  * Callback protocol (payloads stay far below Telegram's 64-character limit):
- *   mnu                       re-render the menu card in the message it is in
+ *   mnu                       re-render the menu card in the message it is in;
+ *                             pressed on a LIVE task card it takes that message
+ *                             over — the card stops ticking and stamps no receipt
  *   mnu:refresh               the same card, with its extended state lines
- *   stp                       stop the active task and clear its queue
+ *   stp                       stop the task of the CARD this button belongs to:
+ *                             a running/queued card cancels its OWN workspace,
+ *                             a card with no live task (the menu, a receipt)
+ *                             cancels the active workspace — never the active
+ *                             workspace's task for a card that belongs to
+ *                             another one
  *   ws                        workspace list, first page
  *   ws:pg:<n>                 workspace list, page n
  *   ws:pick:<i>               i-th row of the last rendered workspace list
@@ -326,13 +338,14 @@ const MODEL_SAVE_FAILED = "Не удалось сменить модель — �
  * `agent-error` — either the in-flight turn ("aborted") or a queued task
  * ("dropped"). Matching those two exact phrases is what keeps an intentional
  * reset from being reported as an agent crash; a genuine agent failure never
- * produces them (they mirror `RESET_ABORT_MESSAGE`/`RESET_DROP_MESSAGE` in
- * agentTask.ts).
+ * produces them.
+ *
+ * The phrases come FROM the runner's own exported constants rather than being
+ * restated here: a copy is a second source of truth that drifts silently, and
+ * the drift is invisible until an intentional reset is reported as a crash.
+ * One literal, two readers — never a copy.
  */
-const RESET_ABORT_PHRASES = new Set([
-  "task aborted because the workspace context was reset",
-  "task dropped because the workspace context was reset"
-]);
+const RESET_ABORT_PHRASES = new Set<string>([RESET_ABORT_MESSAGE, RESET_DROP_MESSAGE]);
 
 /** The legacy text alias an older keyboard may still send for the list. */
 const WS_ALIAS = "Воркспейсы";
@@ -490,6 +503,14 @@ interface ProgressCardHandle {
   steps(): number;
   stop(): void;
   /**
+   * True once the owner took this message over from the chat's side («⬅ Меню»
+   * pressed on a live card): the card then owns the message no longer, so it
+   * must not edit it again — not by a tick, and not by its receipt.
+   */
+  abandoned(): boolean;
+  /** Give the message up for good: stop ticking and never stamp a receipt. */
+  abandon(): void;
+  /**
    * Resolves when the tick that is in flight right now (if any) has finished its
    * Telegram round-trip. {@link ProgressCardHandle.stop} only prevents NEW ticks,
    * so a receipt stamped without awaiting this can be overtaken by an edit that
@@ -498,6 +519,26 @@ interface ProgressCardHandle {
    * waits for it to be idle before writing the receipt.
    */
   idle(): Promise<void>;
+}
+
+/**
+ * One LIVE card message: the workspace whose task the card shows — and whose
+ * «⏹ Стоп» must therefore cancel — plus the way to give the message up when the
+ * owner takes it over. The chat keeps these keyed by message, because the card
+ * is what the press belongs to: the spec allows the owner to switch workspace
+ * mid-task while the card stays labelled with the running task's workspace, so
+ * the card's own ref is the only correct target for its stop button.
+ *
+ * Registered where the card is created and removed the moment that card stops
+ * (receipt stamped, run settled, message abandoned), so a message with no entry
+ * — the menu card, a receipt, a card from before a restart — falls back to the
+ * active workspace, which is exactly what a menu card's stop means.
+ */
+interface LiveCard {
+  /** The chat the card lives in: a foreign chat never resolves here. */
+  chatId: number;
+  ref: WorkspaceRef;
+  abandon(): void;
 }
 
 /**
@@ -540,6 +581,12 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
       : DEFAULT_MAX_FILE_BYTES;
 
   const snapshots = new Map<number, Snapshot>();
+  /**
+   * The messages that currently carry a LIVE task card (a running or queued
+   * task), by message id. See {@link LiveCard}: this is what lets a card's own
+   * «⏹ Стоп» cancel the card's workspace instead of whatever is active now.
+   */
+  const liveCards = new Map<number, LiveCard>();
   let active: WorkspaceRef | undefined;
 
   function warn(message: string): void {
@@ -574,6 +621,18 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
   function applyActive(ref: WorkspaceRef | undefined): void {
     active = copyRef(ref);
     deps.onActiveChange(copyRef(active));
+  }
+
+  /**
+   * The live card of one message, or `undefined` when that message carries no
+   * running/queued task (the menu, a receipt, a list, a card from before a
+   * restart). Checked against the chat for the same reason snapshots are:
+   * `message_id` is unique per chat only, and a lookup that mixed two chats
+   * would act on one chat's card from another.
+   */
+  function liveCardOf(chatId: number, messageId: number): LiveCard | undefined {
+    const live = liveCards.get(messageId);
+    return live !== undefined && live.chatId === chatId ? live : undefined;
   }
 
   /**
@@ -659,10 +718,11 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
    * Send one message that carries the menu keyboard and remember it as a card,
    * so the buttons of a message that was SENT work exactly like the buttons of
    * one that was edited: `text` defaults to the card's own text (a hint, or a
-   * confirmation line, reuses the same keyboard).
+   * confirmation line, reuses the same keyboard). `extended` is the `/status`
+   * card — the same menu with its extended state lines.
    */
-  async function sendMenu(chatId: number, text?: string): Promise<void> {
-    const view = await menuView();
+  async function sendMenu(chatId: number, text?: string, extended = false): Promise<void> {
+    const view = await menuView({ extended });
     const messageId = await send(chatId, text ?? view.text, view.keyboard);
     if (messageId !== undefined) putSnapshot(messageId, { kind: "menu", chatId });
   }
@@ -1087,6 +1147,8 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
     let lastText = initialText;
     let seenSteps = 0;
     let failures = 0;
+    /** The owner pressed «⬅ Меню» on this card: the message is theirs now. */
+    let abandoned = false;
     /** The tick in flight, or a settled promise: what {@link idle} waits for. */
     let pending: Promise<void> = Promise.resolve();
     /**
@@ -1131,17 +1193,41 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
       // Telegram round-trip slower than the interval would otherwise leave two
       // ticks overlapping with only the newest one tracked — the same
       // out-of-order write the receipt wait exists to prevent.
-      pending = pending.then(() => tick());
+      //
+      // Two handlers, for two different rejections. The rejection handler on the
+      // `then` catches a PREVIOUS link that rejected (see below) instead of
+      // letting it poison every later link; the trailing `catch` catches a tick
+      // that rejected anyway, so the promise this assignment hands to `idle()`
+      // is always fulfilled. Without the second one a throwing `logger.warn`
+      // inside a refused edit becomes an unhandled rejection — which Node
+      // reports, and which nothing may ever await.
+      pending = pending.then(() => tick(), () => {}).catch(() => {});
     }, progressIntervalMs);
     // A card is not a reason to keep the process alive.
     timer.unref?.();
-    return {
+    const handle: ProgressCardHandle = {
       messageId,
       startedAt,
       steps: () => seenSteps,
-      stop: () => clearInterval(timer),
-      idle: () => pending
+      stop: () => {
+        clearInterval(timer);
+        liveCards.delete(messageId);
+      },
+      abandoned: () => abandoned,
+      abandon: () => {
+        abandoned = true;
+        clearInterval(timer);
+        liveCards.delete(messageId);
+      },
+      // `idle` never rejects either: it is awaited in the receipt's `finally`,
+      // where a rejection would replace the run's outcome with its own error and
+      // cost the owner the one notification the cancelled path has.
+      idle: () => pending.catch(() => undefined)
     };
+    // Registered under the message the card lives in: this is what a press on
+    // its own «⏹ Стоп» resolves its workspace from.
+    liveCards.set(messageId, { chatId, ref: copyRef(ref)!, abandon: () => handle.abandon() });
+    return handle;
   }
 
   /**
@@ -1232,7 +1318,12 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
       // has nothing else to go by (the cancelled path sends no message at all).
       card?.stop();
       await card?.idle();
-      if (card !== undefined && receipt !== undefined) {
+      // …unless the owner took the message over while this run was in flight
+      // («⬅ Меню» on a live card): the menu they opened is what must stay in
+      // that message, so an abandoned card stamps nothing. The run's own outcome
+      // is not lost with it — the final answer and the failure texts are their
+      // own messages, sent above.
+      if (card !== undefined && receipt !== undefined && !card.abandoned()) {
         const view = receiptCard({ ...receipt, elapsedMs: Date.now() - card.startedAt });
         await edit(chatId, card.messageId, view.text, view.keyboard);
       }
@@ -1247,16 +1338,24 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
   async function dispatchCallback(update: CallbackUpdate): Promise<string | undefined> {
     const { chatId, messageId, data } = update;
 
-    if (data === "mnu") {
-      await renderMenu(chatId, messageId);
-      return undefined;
-    }
-    if (data === "mnu:refresh") {
-      await renderMenu(chatId, messageId, true);
+    if (data === "mnu" || data === "mnu:refresh") {
+      // A LIVE card gives the message up before the menu takes it over: without
+      // this the next tick (≈3.5s later) would edit the progress card back over
+      // the menu the owner just opened — and a queued card would replace it
+      // silently the moment its task started.
+      liveCardOf(chatId, messageId)?.abandon();
+      await renderMenu(chatId, messageId, data === "mnu:refresh");
       return undefined;
     }
     if (data === "stp") {
-      const outcome = await cancelActive();
+      // The CARD's own workspace, never blindly the active one: the owner may
+      // have switched workspace while this task keeps running, and cancelling
+      // whatever is active now would either answer «Сейчас ничего не выполняется»
+      // about a task that is still running or cancel an unrelated workspace's
+      // task and drop its queue. A message with no live card (the menu, a
+      // receipt) keeps the active-workspace meaning its own label shows.
+      const live = liveCardOf(chatId, messageId);
+      const outcome = live === undefined ? await cancelActive() : await deps.runner.cancel(live.ref);
       const stopped = outcome === undefined ? undefined : stopText(outcome);
       // Nothing to stop is a toast, not a message: the owner pressed stop on a
       // chat that had no task, and the card they are looking at still holds.
@@ -1494,8 +1593,14 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
           await send(update.chatId, HELP_TEXT);
           return;
         }
-        if (command === "menu" || command === "status") {
+        if (command === "menu") {
           await sendMenu(update.chatId);
+          return;
+        }
+        if (command === "status") {
+          // The spec's `/status` is the menu card WITH its extended state lines
+          // (the session line): `/menu` and `/start` stay the short card.
+          await sendMenu(update.chatId, undefined, true);
           return;
         }
         if (command === "ws") {

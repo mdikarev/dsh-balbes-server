@@ -831,8 +831,8 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
         from
       );
       expect(list.body.message_id).toBe(menuId);
-      expect(buttonsOf(list).map((button) => button.text)).toEqual(["Дом агента", "Проект: demo"]);
-      expect(buttonsOf(list).map((button) => button.callback_data)).toEqual(["ws:pick:0", "ws:pick:1"]);
+      expect(buttonsOf(list).map((button) => button.text)).toEqual(["Дом агента", "Проект: demo", "⬅ Меню"]);
+      expect(buttonsOf(list).map((button) => button.callback_data)).toEqual(["ws:pick:0", "ws:pick:1", "mnu"]);
 
       // (h) pick the agent home
       pressButton(menuId, "ws:pick:0");
@@ -968,7 +968,12 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
         "the workspace list with both projects",
         from
       );
-      expect(buttonsOf(list).map((button) => button.callback_data)).toEqual(["ws:pick:0", "ws:pick:1", "ws:pick:2"]);
+      expect(buttonsOf(list).map((button) => button.callback_data)).toEqual([
+        "ws:pick:0",
+        "ws:pick:1",
+        "ws:pick:2",
+        "mnu"
+      ]);
       pressButton(menuId, "ws:pick:2");
       await waitForOutbound(
         (entry) => entry.method === "sendMessage" && entry.body.text === "Выбран: Проект: two",
@@ -1336,10 +1341,12 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
   /**
    * The stop path across a real agent loop: `/stop` aborts the parked turn and
    * the receipt lands in the card's own message, the SESSION survives (the next
-   * task continues it, transcript included), and `/reset` is its counterpart —
-   * it clears the mapping. Its own fresh home, like the case above.
+   * task continues it, transcript included), `/reset` is its counterpart — it
+   * clears the mapping AND the memory — and a workspace whose FIRST task is
+   * stopped still gets its session onto disk. Its own fresh home, like the case
+   * above.
    */
-  it("REAL: /stop ends the running task with a receipt, the next task keeps the same session, /reset clears it", async () => {
+  it("REAL: /stop ends the running task with a receipt, the next task keeps the same session, /reset clears it and forgets", async () => {
     home = await prepareHome("balbes-telegram-stop-");
     const server = requireApi();
     const llm = requireStub();
@@ -1450,6 +1457,102 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
       );
       expect(Object.keys(cleared.sessions)).toEqual([]);
       await waitForMessage((text) => text === "Контекст сессии сброшен", "the reset confirmation to be honoured", resetFrom);
+
+      // (g) the spec's Testing promise for the reset: a task sent AFTER it does
+      // not remember the earlier conversation. A cleared mapping on disk is a
+      // weaker claim than that — what proves the transcript really starts clean
+      // is the request the stub RECEIVES.
+      const afterResetFrom = server.outbound.length;
+      llm.setScript([{ text: FOLLOW_UP_REPLY }]);
+      llm.setDelay(0);
+      const callsBeforeResetTask = llm.calls.length;
+      server.enqueueMessage({ fromId: OWNER_USER_ID, text: FOLLOW_UP_PROMPT });
+      await waitForMessage((text) => text === FOLLOW_UP_REPLY, "the answer after the reset", afterResetFrom, 180_000);
+      const afterResetTurn = await waitFor(
+        () => (llm.calls.length > callsBeforeResetTask ? llm.calls.at(-1) : undefined),
+        "the post-reset model request"
+      );
+      const afterResetBody = JSON.stringify(afterResetTurn?.body ?? {});
+      // The request is this task's own (never a stray call of the composition)…
+      expect(afterResetBody, afterResetBody.slice(0, 2000)).toContain(FOLLOW_UP_PROMPT);
+      // …and it carries no trace of the conversation the reset destroyed.
+      expect(afterResetBody, afterResetBody.slice(0, 2000)).not.toContain(MEMORY_PROMPT);
+      // A fresh session: a strictly shorter transcript than the one that DID
+      // remember the earlier task.
+      expect(afterResetTurn?.body.messages?.length ?? 0).toBeLessThan(followTurn?.body.messages?.length ?? 0);
+
+      // (h) a workspace whose FIRST task is the one stopped: no successful run
+      // came before it, so the mapping can only come from the cancelled run —
+      // exactly what the stop's own «Контекст сохранён» promises, and what a
+      // restart before any successful task would otherwise lose.
+      const created = await post(`${baseUrl()}/api/workspaces/create`, { name: "stopfirst" }, token);
+      expect(created.status, created.text).toBe(200);
+      const stopFirstFrom = server.outbound.length;
+      const switchCard = await openMenu(stopFirstFrom);
+      const switchCardId = sentMessageId(switchCard);
+      pressButton(switchCardId, "ws");
+      const listWithProject = await waitForMessage(
+        (text) => text.startsWith("Выберите воркспейс"),
+        "the workspace list with the new project",
+        stopFirstFrom
+      );
+      const projectButton = buttonsOf(listWithProject.entry).find((button) => button.text.includes("stopfirst"));
+      expect(projectButton, JSON.stringify(buttonsOf(listWithProject.entry))).toBeDefined();
+      pressButton(switchCardId, projectButton!.callback_data);
+      await waitForMessage(
+        (text) => text === "Выбран: Проект: stopfirst",
+        "the project confirmation",
+        stopFirstFrom
+      );
+      // The premise of the case: this workspace has no mapping on disk at all.
+      expect((await readState()).sessions["project:stopfirst"]).toBeUndefined();
+
+      const projectHeldAt = Date.now();
+      const callsBeforeProject = llm.calls.length;
+      llm.setDelay(HOLD_MS);
+      server.enqueueMessage({ fromId: OWNER_USER_ID, text: LONG_PROMPT });
+      const projectCard = await waitForOutbound(
+        (entry) =>
+          entry.method === "sendMessage" &&
+          String(entry.body.text ?? "").startsWith("⏳ Проект: stopfirst"),
+        "the task card of the new project",
+        stopFirstFrom
+      );
+      const projectCardId = sentMessageId(projectCard);
+      await waitFor(
+        () => (llm.calls.length > callsBeforeProject ? true : undefined),
+        "the held project turn to reach the stub"
+      );
+
+      server.enqueueMessage({ fromId: OWNER_USER_ID, text: "/stop" });
+      const projectStopped = await waitForMessage(
+        (text) => text.includes("Остановил."),
+        "the project stop acknowledgement",
+        stopFirstFrom
+      );
+      expect(projectStopped.text).toContain("Контекст сохранён");
+      await waitForOutbound(
+        (entry) =>
+          entry.method === "editMessageText" &&
+          entry.body.message_id === projectCardId &&
+          String(entry.body.text ?? "").startsWith("⏹ Остановлено владельцем"),
+        "the stop receipt in the project's own card",
+        stopFirstFrom
+      );
+
+      // THE assertion of this case: the cancelled run left its session on disk,
+      // so a restart before any successful task in this workspace resumes the
+      // conversation instead of starting a fresh one.
+      const afterStop = await waitForState(
+        (current) => current.sessions["project:stopfirst"] !== undefined,
+        "the stopped FIRST task's session to be persisted"
+      );
+      expect(afterStop.sessions["project:stopfirst"]).toBeTruthy();
+      // …and it took its place beside the home workspace's own mapping.
+      expect(Object.keys(afterStop.sessions).sort()).toEqual(["home", "project:stopfirst"]);
+
+      llm.setDelay(0);
+      await sleep(Math.max(0, HOLD_MS - (Date.now() - projectHeldAt)));
     } finally {
       await stopServer();
     }

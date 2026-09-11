@@ -142,9 +142,13 @@ export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: stri
   const settings = ctx.get("settings") as SettingsLike;
   const credentials = ctx.get("credentials") as CredentialsServiceLike;
   const workspaces = ctx.get("balbesWorkspaces") as WorkspacesServiceLike | undefined;
-  // The models plugin's service, whose members are exactly the chat's
-  // `models` slice. Read through `ctx.get` and passed only when present, so an
-  // absent service degrades the chat to MODELS_UNAVAILABLE instead of throwing.
+  // The models plugin's service, whose members are exactly the chat's `models`
+  // slice. `inject` above makes that service MANDATORY (Cordis 4 has no
+  // optional inject): a profile that composes this channel must also compose
+  // the models plugin, and dropping the `balbesModels` entry from `inject`
+  // breaks the channel instead of degrading it. This read is therefore the
+  // chat's defensive slice and nothing more — an absent service here means the
+  // composition is already broken, not that a models-less profile is supported.
   const balbesModels = ctx.get("balbesModels") as ChatDeps["models"] | undefined;
 
   // Registering the namespace is an effect: it makes the stored section
@@ -280,6 +284,21 @@ export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: stri
             }
             live.sessions[key] = result.sessionId;
             persist();
+            return result;
+          }
+          // A cancelled run keeps its session (the stop's own copy promises
+          // «Контекст сохранён»), but its TaskResult carries no id — a rejected
+          // result has no sessionId field. Read it from the live handle and
+          // persist it: otherwise a workspace whose FIRST task was stopped has
+          // no mapping on disk, and a restart before any successful task starts
+          // a fresh session, which contradicts the answer the owner just got.
+          if (result.code === "cancelled") {
+            const sessionId = runner.sessionIdOf(ref);
+            // The same empty-id guard as above, for the same reason.
+            if (sessionId !== undefined && sessionId !== "" && live.sessions[key] !== sessionId) {
+              live.sessions[key] = sessionId;
+              persist();
+            }
           }
           return result;
         });
