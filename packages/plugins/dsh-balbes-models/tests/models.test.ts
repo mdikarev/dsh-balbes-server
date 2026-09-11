@@ -63,11 +63,12 @@ describe("models domain", () => {
   });
 
   it("pins both source catalogs the official fallback unions", () => {
-    // pi-ai builtin deepseek catalog (3 ids, engine 0.1.5-rc.2 probe)
-    expect(PI_AI_DEEPSEEK_MODELS.map((m) => m.id)).toEqual([
-      "deepseek-v4-flash",
-      "deepseek-v4-pro",
-      "deepseek-v4-flash-vision-exp"
+    // pi-ai builtin deepseek catalog (3 ids), as returned by the installed
+    // pi-ai 0.85.1: order flash, vision-exp, pro; names are space-separated.
+    expect(PI_AI_DEEPSEEK_MODELS).toEqual([
+      { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" },
+      { id: "deepseek-v4-flash-vision-exp", name: "DeepSeek V4 Flash Vision Exp" },
+      { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro" }
     ]);
     // native @deepseek-ai/dsh-llm-deepseek DEFAULT_MODELS (4 ids), the catalog
     // of the reserved route itself
@@ -155,15 +156,16 @@ describe("engine catalog reader", () => {
   const NATIVE_MODULE = "@deepseek-ai/dsh-llm-deepseek";
 
   // Fake mirror of @earendil-works/pi-ai/providers/all: getBuiltinModels(key)
-  // returns entries {id, name?} and [] for an unknown key (deepseek order as in
-  // the engine 0.1.5-rc.2 probe).
+  // returns entries {id, name?} and [] for an unknown key. The deepseek entry
+  // mirrors the installed pi-ai 0.85.1 builtin catalog (order flash,
+  // vision-exp, pro; space-separated names).
   const fakePiAi = {
     getBuiltinModels(key: string): Array<{ id: string; name?: string }> {
       if (key === "deepseek") {
         return [
-          { id: "deepseek-v4-flash" },
-          { id: "deepseek-v4-pro" },
-          { id: "deepseek-v4-flash-vision-exp", name: "Vision Exp" }
+          { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" },
+          { id: "deepseek-v4-flash-vision-exp", name: "DeepSeek V4 Flash Vision Exp" },
+          { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro" }
         ];
       }
       if (key === "openai") return [{ id: "gpt-4o-mini" }, { id: "gpt-4o", name: "GPT-4o" }];
@@ -220,7 +222,9 @@ describe("engine catalog reader", () => {
       "deepseek-v4-flash",
       "deepseek-v4-flash-vision-exp"
     ]);
-    expect((await reader.list("deepseek")).find((m) => m.id === "deepseek-v4-flash")?.name).toBeUndefined();
+    // the appended pi-ai-only entry keeps the pi-ai name
+    expect((await reader.list("deepseek")).find((m) => m.id === "deepseek-v4-flash")?.name).toBe("DeepSeek V4 Flash");
+    expect((await reader.list("deepseek")).find((m) => m.id === "deepseek-v4-flash-vision-exp")?.name).toBe("DeepSeek V4 Flash Vision Exp");
   });
 
   it("keeps deepseek-flash (pinned native fallback) when the native catalog read throws", async () => {

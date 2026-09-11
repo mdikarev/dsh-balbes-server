@@ -21,14 +21,15 @@ export const DEEPSEEK_OFFICIAL_ROUTE = "deepseek-official";
 export const DEEPSEEK_API_KEY_REF = "DEEPSEEK_API_KEY";
 
 /** Pinned mirror of the pi-ai builtin "deepseek" catalog (3 models), synced on
- *  engine upgrade. It is one half of the reserved route's catalog: the engine's
- *  own default model (`deepseek-flash`) lives only in the native
- *  dsh-llm-deepseek catalog below, so this list alone cannot represent the
- *  route (see DEEPSEEK_OFFICIAL_MODELS). */
+ *  engine upgrade. Order and names mirror the installed pi-ai 0.85.1 builtin
+ *  catalog (order flash, vision-exp, pro; names are space-separated). It is one
+ *  half of the reserved route's catalog: the engine's own default model
+ *  (`deepseek-flash`) lives only in the native dsh-llm-deepseek catalog below,
+ *  so this list alone cannot represent the route (see DEEPSEEK_OFFICIAL_MODELS). */
 export const PI_AI_DEEPSEEK_MODELS: ModelOption[] = [
-  { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash" },
-  { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" },
-  { id: "deepseek-v4-flash-vision-exp", name: "DeepSeek-V4-Flash-Vision-Exp" }
+  { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" },
+  { id: "deepseek-v4-flash-vision-exp", name: "DeepSeek V4 Flash Vision Exp" },
+  { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro" }
 ];
 
 /** Pinned mirror of the native @deepseek-ai/dsh-llm-deepseek DEFAULT_MODELS

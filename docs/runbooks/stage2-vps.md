@@ -416,15 +416,20 @@ curl -sS -X POST http://127.0.0.1:8080/api/workspaces/delete \
 ```
 
 Модели: список подключений и дефолтная модель — `POST /api/models/list`
-(bearer). Полный smoke — REAL-тест пакета `dsh-balbes-models`; с настроенным
-ключом DeepSeek ожидается подключение `deepseek-official`:
+(bearer). Полный smoke — REAL-тест пакета `dsh-balbes-models`; на свежем доме
+движок 0.1.5 дефолтит на `deepseek-flash`, и с настроенным ключом DeepSeek
+ожидается подключение `deepseek-official`:
 
 ```bash
 # models.list (JWT из входа)
 curl -sS -X POST http://127.0.0.1:8080/api/models/list \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{}'
-# ожидается: {"connections":[{"routeId":"deepseek-official","kind":"deepseek","hasKey":true,...}],
-#             "default":{"provider":"deepseek-official","model":"deepseek-v4-flash"}}
+# ожидается: "default":{"provider":"deepseek-official","model":"deepseek-flash"}
+#             (дефолт свежего профиля движка 0.1.5) и подключение
+#             deepseek-official с 4 моделями каталога движка:
+#             deepseek-flash, deepseek-v4-flash, deepseek-v4-pro,
+#             deepseek-v4-flash-vision-exp; дефолт входит в каталог своего
+#             соединения, поэтому models.default его принимает
 ```
 
 ```bash
@@ -432,8 +437,8 @@ curl -sS -X POST http://127.0.0.1:8080/api/models/list \
 curl -sS -X POST http://127.0.0.1:8080/api/models/catalog \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"provider":"deepseek-official"}'
-# ожидается: models содержит deepseek-v4-flash, deepseek-v4-pro,
-#             deepseek-v4-flash-vision-exp (3)
+# ожидается: models содержит те же 4 id — deepseek-flash, deepseek-v4-flash,
+#             deepseek-v4-pro, deepseek-v4-flash-vision-exp (4)
 curl -sS -X POST http://127.0.0.1:8080/api/models/catalog \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"provider":"openai"}'
