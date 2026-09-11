@@ -97,6 +97,8 @@ let http: { post(path: string, auth: string, handler: Seat["handler"]): void };
 let settings: FakeSettings;
 let credentials: FakeCredentials;
 let workspaces: FakeWorkspaces;
+/** Every `balbesSessions.register` call the plugin made during one test. */
+let registered: Array<{ ref: unknown; sessionId: string; channel: string }>;
 let warns: string[];
 let disposers: Array<() => unknown>;
 let servers: Server[];
@@ -117,6 +119,11 @@ function makeCtx(o: MakeCtxOptions = {}): {
         : key === "settings" ? settings
         : key === "credentials" ? credentials
         : key === "balbesWorkspaces" ? workspaces
+        : key === "balbesSessions" ? {
+            register: async (ref: unknown, sessionId: string, channel: string) => {
+              registered.push({ ref, sessionId, channel });
+            }
+          }
         : key === "agents" ? { create: async () => {}, resume: async () => {} }
         : key === "sessions" ? { flush: async () => {} }
         : key === "agentDefaultModel" ? { currentSelection: () => ({ provider: "test-provider", model: "test-model" }) }
@@ -197,6 +204,7 @@ beforeEach(async () => {
   settings = new FakeSettings();
   credentials = new FakeCredentials();
   workspaces = new FakeWorkspaces();
+  registered = [];
   warns = [];
   disposers = [];
   servers = [];
@@ -223,6 +231,10 @@ describe("balbes-telegram plugin", () => {
     );
     expect(typeof Config).toBe("function");
     expect(typeof apply).toBe("function");
+  });
+
+  it("declares balbesSessions as a dependency", () => {
+    expect(inject).toContain("balbesSessions");
   });
 
   it("pins the bot token credentials ref", () => {
@@ -383,6 +395,41 @@ describe("balbes-telegram plugin", () => {
     await sleep(50);
 
     expect(await readFile(stateFile, "utf8")).toBe(original);
+  });
+
+  it("syncs the persisted session map into the workspace registry on apply", async () => {
+    // Состояние до старта: так выглядит уже работавший сервер после обновления.
+    await writeFile(
+      stateFile,
+      JSON.stringify({
+        version: 1,
+        sessions: { home: "session-home", "project:alpha": "session-alpha" },
+        activeWorkspace: "project:alpha"
+      }),
+      "utf8"
+    );
+
+    apply(makeCtx(), { dshHome: home });
+
+    // Синк идёт в продолжении загрузки состояния — ждём эффект, а не тайминг.
+    await vi.waitFor(() => expect(registered).toHaveLength(2), { timeout: 5000 });
+    expect([...registered].sort((a, b) => a.sessionId.localeCompare(b.sessionId))).toEqual([
+      { ref: { scope: "project", name: "alpha" }, sessionId: "session-alpha", channel: "telegram" },
+      { ref: { scope: "home" }, sessionId: "session-home", channel: "telegram" }
+    ]);
+  });
+
+  it("ignores an unmappable state key and warns instead of inventing a workspace", async () => {
+    await writeFile(
+      stateFile,
+      JSON.stringify({ version: 1, sessions: { "weird:key": "session-weird" } }),
+      "utf8"
+    );
+
+    apply(makeCtx(), { dshHome: home });
+
+    await vi.waitFor(() => expect(warns.some((w) => w.includes("weird:key"))).toBe(true), { timeout: 5000 });
+    expect(registered).toEqual([]);
   });
 });
 

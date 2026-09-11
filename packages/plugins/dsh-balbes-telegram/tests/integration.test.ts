@@ -41,6 +41,7 @@ const here = fileURLToPath(new URL(".", import.meta.url)); // tests/ dir
 const pkgRoot = join(here, ".."); // dsh-balbes-telegram package root
 const hostPkgRoot = join(pkgRoot, "..", "..", "bundles", "dsh-balbes-host");
 const workspacesPkgRoot = join(pkgRoot, "..", "dsh-balbes-workspaces");
+const sessionsPkgRoot = join(pkgRoot, "..", "dsh-balbes-sessions");
 const fixtureProfile = join(here, "fixtures", "balbes-telegram-profile");
 const PROFILE = "balbes-telegram-test";
 
@@ -197,15 +198,17 @@ async function freePort(): Promise<number> {
 }
 
 /**
- * Compile src -> lib for the plugin under test, the workspaces plugin and the
- * host bundle (tsc straight from the store, cwd package). The plugin and the
- * workspaces package use tsconfig.build.json so their tsconfig.json can
- * typecheck src + tests.
+ * Compile src -> lib for the plugin under test, the workspaces plugin, the
+ * sessions plugin (composed as a dependency: the registry the plugin under test
+ * writes into lives there) and the host bundle (tsc straight from the store,
+ * cwd package). The plugin and the other packages use tsconfig.build.json so
+ * their tsconfig.json can typecheck src + tests.
  */
 async function buildPackages(): Promise<void> {
   const configs: Array<[string, string]> = [
     [pkgRoot, "tsconfig.build.json"],
     [workspacesPkgRoot, "tsconfig.build.json"],
+    [sessionsPkgRoot, "tsconfig.build.json"],
     [hostPkgRoot, "tsconfig.json"]
   ];
   for (const [root, cfg] of configs) {
@@ -386,10 +389,10 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
 
   /**
    * One deployable test home: the fixture profile plus the built host bundle
-   * and both plugins in its node_modules (install.sh in miniature), an admin
-   * auth file and a `settings.yaml` that points the agent at the LLM stub.
-   * Scenario 3 gets its OWN home so a failure there cannot be blamed on the
-   * state scenarios 1-2 left behind (and vice versa).
+   * and all three plugins in its node_modules (install.sh in miniature), an
+   * admin auth file and a `settings.yaml` that points the agent at the LLM
+   * stub. Scenario 3 gets its OWN home so a failure there cannot be blamed on
+   * the state scenarios 1-2 left behind (and vice versa).
    */
   async function prepareHome(prefix: string): Promise<string> {
     if (auth === undefined || stub === undefined) throw new Error("beforeAll did not initialize auth/stub");
@@ -407,6 +410,7 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
     }
     for (const [pkg, dirName] of [
       [workspacesPkgRoot, "dsh-balbes-workspaces"],
+      [sessionsPkgRoot, "dsh-balbes-sessions"],
       [pkgRoot, "dsh-balbes-telegram"]
     ] as Array<[string, string]>) {
       await cp(join(pkg, "lib"), join(nm, dirName, "lib"), { recursive: true });
@@ -806,7 +810,23 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
       expect(state.offset ?? 0).toBeGreaterThan(0);
       expect(JSON.stringify(state)).not.toContain(BOT_TOKEN);
 
-      // (k) the file view of the workspace that owns note.txt: the agent home
+      // (k) the workspace registry: the session this turn created is listed for
+      // the workspace that created it. The id is read from the telegram state
+      // document (written by the same turn), never from internal structures, and
+      // the workspace key is this scenario's actual one: the task above ran in
+      // the AGENT HOME ("Дом агента"), not in project demo. The read is not
+      // racy: run() awaits its registry write before the chat sends the reply,
+      // and (i) already waited for that reply.
+      const registry = JSON.parse(await readFile(join(home, "workspace-sessions.json"), "utf8")) as {
+        version: number;
+        workspaces: Record<string, Array<{ sessionId: string; channel: string }>>;
+      };
+      const sessionId = state.sessions["home"];
+      expect(sessionId).toBeTruthy();
+      expect(registry.version).toBe(1);
+      expect(registry.workspaces["home"]).toEqual([{ sessionId, channel: "telegram" }]);
+
+      // (l) the file view of the workspace that owns note.txt: the agent home
       // roots at $DSH_HOME/agent and the projects live under $DSH_HOME/projects,
       // so the note is reachable by selecting «Проект: demo» (the very same
       // chat flow, one «Другой воркспейс» press later).

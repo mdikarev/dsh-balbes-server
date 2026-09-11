@@ -46,6 +46,7 @@ export const inject = [
   "settings",
   "credentials",
   "balbesWorkspaces",
+  "balbesSessions",
   "agents",
   "sessions",
   "agentDefaultModel"
@@ -119,8 +120,27 @@ interface PluginCtx {
   effect?(execute: () => () => void, label?: string): unknown;
 }
 
+/**
+ * Structural slice of the sessions registry service (`balbesSessions`, provided
+ * by the composed `dsh-balbes-sessions` plugin): the telegram package never
+ * imports that plugin — the profile composes both.
+ */
+interface SessionsRegistryLike {
+  register(ref: WorkspaceRef, sessionId: string, channel: string): Promise<void>;
+}
+
 function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** `home` | `project:<имя>` -> ссылка на воркспейс (формат ключа из state). */
+function refFromStateKey(key: string): WorkspaceRef | undefined {
+  if (key === "home") return { scope: "home" };
+  if (key.startsWith("project:")) {
+    const name = key.slice("project:".length);
+    return name === "" ? undefined : { scope: "project", name };
+  }
+  return undefined;
 }
 
 export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: string; maxFileBytes?: number }): void {
@@ -132,6 +152,10 @@ export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: stri
   const settings = ctx.get("settings") as SettingsLike;
   const credentials = ctx.get("credentials") as CredentialsServiceLike;
   const workspaces = ctx.get("balbesWorkspaces") as WorkspacesServiceLike | undefined;
+  const sessionsRegistry = ctx.get("balbesSessions") as SessionsRegistryLike | undefined;
+  if (sessionsRegistry === undefined) {
+    ctx.logger.warn("balbes-telegram: balbesSessions service is not available; sessions will not be listed in the admin");
+  }
 
   // Registering the namespace is an effect: it makes the stored section
   // schema-valid and reachable by the settings UI from boot onward.
@@ -254,7 +278,7 @@ export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: stri
         // Lazy resume: the persisted session id is offered on the first task of
         // a workspace (the runner ignores it while it already holds a handle).
         const sessionId = opts?.sessionId ?? live.sessions[key];
-        return runner.run(ref, text, sessionId === undefined ? undefined : { sessionId }).then((result) => {
+        return runner.run(ref, text, sessionId === undefined ? undefined : { sessionId }).then(async (result) => {
           if (result.ok) {
             // An empty id is rejected by the state store's shape check and would
             // make every later save of the whole document fail: never store one.
@@ -264,6 +288,19 @@ export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: stri
             }
             live.sessions[key] = result.sessionId;
             persist();
+            if (sessionsRegistry !== undefined) {
+              // Витрина сессий воркспейса: сбой записи в реестр не меняет исход
+              // задачи — регистрация логируется и остаётся best-effort.
+              await sessionsRegistry
+                .register(ref, result.sessionId, "telegram")
+                .catch((error: unknown) =>
+                  ctx.logger.warn(
+                    `balbes-telegram: registering session ${result.sessionId} in the workspace registry failed: ${
+                      error instanceof Error ? error.message : String(error)
+                    }`
+                  )
+                );
+            }
           }
           return result;
         });
@@ -362,11 +399,30 @@ export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: stri
     setActive: (ref: WorkspaceRef | undefined) => chat.setActiveWorkspace(ref),
     logger: ctx.logger
   })
-    .then((outcome) => {
+    .then(async (outcome) => {
       live = outcome.data;
       // The remembered workspace was deleted while the server was down: persist
       // the removal instead of leaving a dangling key on disk.
       if (outcome.clearedActive) persist();
+      // Sessions that already existed before this boot (or before the registry
+      // was introduced) reach the admin through this idempotent upsert: a
+      // repeated key is a no-op in the registry, so nothing is ever duplicated.
+      if (sessionsRegistry !== undefined) {
+        for (const [key, sessionId] of Object.entries(live.sessions)) {
+          const ref = refFromStateKey(key);
+          if (ref === undefined) {
+            ctx.logger.warn(`balbes-telegram: cannot map state key "${key}" to a workspace; session not registered`);
+            continue;
+          }
+          await sessionsRegistry.register(ref, sessionId, "telegram").catch((error: unknown) =>
+            ctx.logger.warn(
+              `balbes-telegram: syncing session ${sessionId} into the workspace registry failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`
+            )
+          );
+        }
+      }
     })
     .catch((error: unknown) => {
       // Boot restore is best-effort by construction; keep `booted` resolvable so
