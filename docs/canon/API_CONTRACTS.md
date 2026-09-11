@@ -78,7 +78,7 @@
   `createdAt` берётся из реестра-индекса `$DSH_HOME/projects.json`, если строка
   есть; осиротевшие строки реестра вычищаются при list.
 
-### workspaces.create — создать проект (пустой каталог)
+### workspaces.create — создать проект (каталог + проектные скиллы)
 - method: POST
 - path: /api/workspaces/create
 - auth: bearer
@@ -87,8 +87,9 @@
 - errors: 400 `invalid-name` (нарушение slug-правила), 409 `name-exists`
   (каталог уже существует — включая созданный руками), 401, 500
 - notes: имя — строгий slug `[A-Za-z0-9._-]` ≤ 64 без `/`, `..`, пробелов и
-  ведущих/хвостовых точек; создаёт пустой каталог
-  `$DSH_HOME/projects/<имя>/` + upsert строки реестра (`createdAt: now`).
+  ведущих/хвостовых точек; создаёт каталог `$DSH_HOME/projects/<имя>/`,
+  идемпотентно кладёт `<project>/.dsh/skills/README` (проектные скиллы) и
+  upsert строки реестра (`createdAt: now`).
 
 ### workspaces.delete — удалить проект (каталог + запись)
 - method: POST
