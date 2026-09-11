@@ -122,7 +122,8 @@ long polling, выбор воркспейса, persistent dsh-сессии, за
   `node_modules` для сборки/typecheck (следует симлинкам; nested и hoisted
   раскладки npm).
 - `.github/workflows/ci.yml` — CI без LLM: Node 22, corepack pnpm, глобальный
-  dsh, `pnpm install` → `link-core` → сборка → typecheck → unit-тесты →
+  dsh из пина `scripts/engine-version.txt`, `pnpm install` → `link-core` → сборка
+  → typecheck → unit-тесты →
   синк профиля + копия host → `--dump-config` → проверка отсутствия
   headless/web-app → `bash -n` → JSON-валидация манифеста.
 - `docs/runbooks/stage1-vps.md`, `docs/runbooks/stage2-vps.md` —
@@ -131,12 +132,17 @@ long polling, выбор воркспейса, persistent dsh-сессии, за
 ## Key flows
 
 - Установка одной командой: `curl -fsSL <raw install.sh> | bash` → окружение →
-  глобальный dsh → клон репо → сборка workspace (install → link-core → build)
+  клон репо → dsh (версия — единый пин `scripts/engine-version.txt`: если `dsh`
+  нет — глобальная установка этой версии; если есть — сверка фактической версии
+  `dsh --version` с пином: совпало — info-строка, разошлось или не определить —
+  предупреждение в stderr, автопереустановки нет и установка продолжается)
+  → сборка workspace (install → link-core → build)
   → синк профиля → копия host → SPA в `$DSH_HOME/balbes/ui` → ключ
   (env или /dev/tty) → композиция (`--dump-config`) → генерация/печать
   учётных данных админки (один раз) → systemd enable+restart → health
-  (ретраи) → сводка. Повторный запуск = обновление (сервис перезапускается,
-  креды не меняются).
+  (ретраи) → сводка. Повторный запуск = обновление профиля и сервиса (сервис
+  перезапускается, креды не меняются); сам движок повторным запуском не
+  обновляется — рассинхрон версии только сигнализируется.
 - Вход и промпт: браузер `POST /api/auth/login` {login,password} → JWT →
   SPA хранит токен в localStorage и шлёт `Authorization: Bearer`;
   `POST /api/prompt` → сервер через реестр ядра создаёт свежего агента
@@ -248,7 +254,8 @@ long polling, выбор воркспейса, persistent dsh-сессии, за
 
 ## Tech & constraints
 
-- Технологии: dsh 0.1.5-rc.2 (глобально), TypeScript (strict, ESM) — наши
+- Технологии: dsh (глобально; версия — единый пин `scripts/engine-version.txt`),
+  TypeScript (strict, ESM) — наши
   пакеты, bash (установщик), YAML (профиль/патч/CI), React+Vite (SPA),
   GitHub Actions. Без Python.
 - Node ≥ 22 (dsh использует `node:sqlite`); Ubuntu + apt; sudo для системного
