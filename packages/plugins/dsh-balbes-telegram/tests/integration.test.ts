@@ -1573,6 +1573,32 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
       // …and it took its place beside the home workspace's own mapping.
       expect(Object.keys(afterStop.sessions).sort()).toEqual(["home", "project:stopfirst"]);
 
+      // …and the spec's registry invariant — «создал сессию для воркспейса ⇒ она
+      // в реестре» — closes on this path too: the session is not merely
+      // remembered in telegram-state.json, it is listed in the workspace
+      // registry the admin's «Сессии» tab reads. Polled rather than read once
+      // (unlike (k) in scenario 1): the receipt proving the stop was delivered
+      // by the /stop command itself and is NOT awaited by run(), so this turn's
+      // registry write may still be in flight when the state file lands — a
+      // single read here would race the very write it asserts.
+      // A local copy: the narrowing of the module-level `home` does not survive
+      // into the polling closure below.
+      const stopHome = home;
+      const cancelledRegistry = await waitFor(async () => {
+        const raw = await readFile(join(stopHome, "workspace-sessions.json"), "utf8").catch(() => undefined);
+        if (raw === undefined) return undefined;
+        const parsed = JSON.parse(raw) as {
+          workspaces: Record<string, Array<{ sessionId: string; channel: string }>>;
+        };
+        return parsed.workspaces["project:stopfirst"] === undefined ? undefined : parsed;
+      }, "the cancelled FIRST run's session to reach the workspace registry");
+      // Exactly the session the cancelled run kept, in this channel, listed for
+      // the workspace that created it — the same shape (k) asserts for a
+      // successful first run.
+      expect(cancelledRegistry.workspaces["project:stopfirst"]).toEqual([
+        { sessionId: afterStop.sessions["project:stopfirst"], channel: "telegram" }
+      ]);
+
       llm.setDelay(0);
       await sleep(Math.max(0, HOLD_MS - (Date.now() - projectHeldAt)));
     } finally {

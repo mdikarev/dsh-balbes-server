@@ -338,6 +338,27 @@ export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: stri
               live.sessions[key] = sessionId;
               persist();
             }
+            // The spec's invariant — «создал сессию для воркспейса ⇒ она в
+            // реестре» — holds on this path too: a stop KEEPS the session (the
+            // receipt promises «Контекст сохранён»), so a workspace whose FIRST
+            // run was stopped must still show up in the admin's «Сессии» tab.
+            // Without this the mapping lands in telegram-state.json and nowhere
+            // else, and the session stays invisible until some later successful
+            // task happens to re-register it. Same contract as the successful
+            // path above: an empty id is never registered (the registry rejects
+            // it) and a registry failure is logged without changing the task
+            // outcome. The registry dedupes by id, so a repeat stop is a no-op.
+            if (sessionId !== undefined && sessionId !== "" && sessionsRegistry !== undefined) {
+              await sessionsRegistry
+                .register(ref, sessionId, "telegram")
+                .catch((error: unknown) =>
+                  ctx.logger.warn(
+                    `balbes-telegram: registering session ${sessionId} in the workspace registry failed: ${
+                      error instanceof Error ? error.message : String(error)
+                    }`
+                  )
+                );
+            }
           }
           return result;
         });
