@@ -174,7 +174,7 @@ export function validateCustomPayload(p: {
 /**
  * Preset provider catalog (id + label). Display/validation copy of
  * MODEL_PROVIDER_PRESETS in packages/contracts — keep both lists in sync; the
- * engine pi-ai catalog provider ids (dsh 0.1.2-rc.1) are the ground truth and
+ * engine pi-ai catalog provider ids (dsh 0.1.5-rc.2) are the ground truth and
  * route ids of preset connections equal these provider ids.
  */
 export const PROVIDER_PRESETS: ReadonlyArray<{ providerId: string; label: string }> = [

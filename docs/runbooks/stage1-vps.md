@@ -66,7 +66,7 @@ curl -fsSL https://raw.githubusercontent.com/mdikarev/dsh-balbes-server/main/scr
    NodeSource и ставит Node 22 LTS через `apt`; если нет pnpm — ставит его
    глобально через npm; если нет git — ставит `git` через `apt`.
 2. **dsh.** Если команда `dsh` отсутствует — ставит глобально:
-   `sudo npm i -g @deepseek-ai/dsh`.
+   `sudo npm i -g @deepseek-ai/dsh@0.1.5-rc.2`.
 3. **Репозиторий.** Клонирует https://github.com/mdikarev/dsh-balbes-server в
    `$HOME/dsh-balbes-server` (или в каталог из `$DSH_BALBES_REPO_DIR`, если он
    задан); если клон уже есть — обновляет его через `git pull --ff-only`.
@@ -136,7 +136,7 @@ cp -R "$HOME/dsh-balbes-server/profiles/balbes" "${DSH_HOME:-$HOME/.dsh}/profile
 Новая версия самого dsh ставится глобально:
 
 ```bash
-sudo npm i -g @deepseek-ai/dsh
+sudo npm i -g @deepseek-ai/dsh@0.1.5-rc.2
 ```
 
 ## Устранение неполадок
@@ -164,7 +164,7 @@ npm registry публикует устаревшие сломанные верс
 и `cordis.patch.yml`), без `node_modules`. Бандлы резолвятся из зеркала
 установленного dsh: `$DSH_HOME/profiles/node_modules` — симлинки на каталог
 установки dsh. Если `dsh --profile balbes --dump-config` падает с ошибкой
-«бандл не найден» — переустановите dsh (`sudo npm i -g @deepseek-ai/dsh`) и
+«бандл не найден» — переустановите dsh (`sudo npm i -g @deepseek-ai/dsh@0.1.5-rc.2`) и
 повторите синхронизацию профиля; `pnpm add` проблему не решит.
 
 ### Ключ не принят (ошибка авторизации при smoke)

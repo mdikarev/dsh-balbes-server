@@ -81,7 +81,7 @@ curl -fsSL https://raw.githubusercontent.com/mdikarev/dsh-balbes-server/main/scr
    NodeSource и ставит Node 22 LTS через `apt`; если нет pnpm — ставит его
    глобально через npm; если нет git — ставит `git` через `apt`.
 2. **dsh.** Если команда `dsh` отсутствует — ставит глобально:
-   `sudo npm i -g @deepseek-ai/dsh`.
+   `sudo npm i -g @deepseek-ai/dsh@0.1.5-rc.2`.
 3. **Репозиторий.** Клонирует https://github.com/mdikarev/dsh-balbes-server в
    `$HOME/dsh-balbes-server` (или в каталог из `$DSH_BALBES_REPO_DIR`); если
    клон уже есть — обновляет его через `git pull --ff-only`.
@@ -961,7 +961,7 @@ sudo journalctl -u dsh-balbes -n 50
 ```
 
 Типичные причины: порт занят (см. ниже), `dsh` не найден по `ExecStart`
-(переустановите глобально: `sudo npm i -g @deepseek-ai/dsh` и повторите
+(переустановите глобально: `sudo npm i -g @deepseek-ai/dsh@0.1.5-rc.2` и повторите
 установщик), неверный `DSH_HOME` (юнит пишется со значениями на момент
 установки — при другом `DSH_HOME` повторите установку с
 `export DSH_HOME=...` перед запуском). После ручной правки юнита —

@@ -27,7 +27,7 @@ function candidates() {
 const src = candidates().find((c) => existsSync(c));
 if (!src) {
   console.error("link-core: no @deepseek-ai mirror found (a global dsh install or $DSH_HOME is required).");
-  console.error("Install it with: npm i -g @deepseek-ai/dsh  (CI installs it itself).");
+  console.error("Install it with: npm i -g @deepseek-ai/dsh@0.1.5-rc.2  (CI installs it itself).");
   process.exit(1);
 }
 mkdirSync(dirname(target), { recursive: true });

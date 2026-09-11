@@ -85,7 +85,7 @@ export const Config = z.object({
 
 /**
  * Schema of the `balbes-telegram` settings namespace, registered in apply.
- * Written in the schemastery 3.x grammar pinned by dsh 0.1.2-rc.1 for the
+ * Written in the schemastery 3.x grammar pinned by dsh 0.1.5-rc.2 for the
  * brief's zod expression: `enabled: z.boolean().default(false)` is verbatim;
  * `allowedUserId: z.number().int().min(1).nullable().default(null)` maps to
  * `z.natural().min(1)` (natural enforces the integer) unioned with

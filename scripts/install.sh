@@ -306,8 +306,10 @@ ensure_dsh() {
         info "dsh already installed"
         return 0
     fi
-    info "Installing @deepseek-ai/dsh globally (npm i -g @deepseek-ai/dsh)..."
-    run_priv npm install -g @deepseek-ai/dsh
+    # Pin the CLI: an unpinned `latest` has silently drifted the whole engine
+    # under the server before (see docs/superpowers/plans/2026-09-11-dsh-engine-upgrade.md).
+    info "Installing @deepseek-ai/dsh@0.1.5-rc.2 globally (npm i -g @deepseek-ai/dsh@0.1.5-rc.2)..."
+    run_priv npm install -g @deepseek-ai/dsh@0.1.5-rc.2
     hash -r
     # npm's global bin dir may not be on this shell's PATH; locate dsh there.
     if ! command -v dsh >/dev/null 2>&1; then
