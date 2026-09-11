@@ -128,9 +128,10 @@ HTTP-ручек (`readConnections` в `src/index.ts`), а Telegram-плагин�
 а ручка `/api/models/default` начинает переиспользовать `saveDefault`, чтобы
 админка и Telegram ходили через одну валидацию.
 
-`dsh-balbes-telegram` добавляет `balbesModels` в `inject`; отсутствие сервиса
-(профиль собран без моделей) — деградация: `/model` отвечает «Раздел моделей
-недоступен», бот продолжает работать.
+`dsh-balbes-telegram` добавляет `balbesModels` в `inject` — обязательную
+зависимость композиции канала: в Cordis 4 нет необязательного `inject`, а
+развёртываемый профиль всегда собирает плагин моделей. Профиль без моделей
+канал не поднимает.
 
 ### Bot API (`packages/plugins/dsh-balbes-telegram/src/bot.ts`)
 
