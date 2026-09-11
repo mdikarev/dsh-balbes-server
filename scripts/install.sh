@@ -273,39 +273,57 @@ prompt_api_key() {
 
 # read_engine_version — print the pinned version. Looks next to this script
 # first, then in the repo checkout (the piped-install case, where the script
-# itself has no directory on disk). A missing, empty or unreadable file is a
-# loud warning, never a crash: the installer keeps going, it just cannot pin.
+# itself has no directory on disk and the pin arrives with the clone).
+# A candidate that is present but unusable is reported with its own reason
+# (missing / not a regular file / unreadable / empty) and the search continues,
+# so an empty file next to the script still falls back to the repo checkout.
+# If no candidate yields a version the function warns once more and returns
+# non-zero; it never dies — the installer keeps going, it just cannot pin.
 read_engine_version() {
     local file ver
+    local reasons=()
     local candidates=()
     if [[ -n "${ENGINE_VERSION_FILE:-}" ]]; then
         candidates+=("$ENGINE_VERSION_FILE")
     fi
     candidates+=("$REPO_DIR/scripts/engine-version.txt")
     for file in "${candidates[@]}"; do
-        [[ -f "$file" ]] || continue
-        ver="$(head -n 1 "$file" | tr -d '[:space:]')"
+        if [[ ! -e "$file" ]]; then
+            reasons+=("missing: $file")
+            continue
+        fi
+        if [[ ! -f "$file" ]]; then
+            warn "engine version file $file is not a regular file — skipping it."
+            reasons+=("not-a-file: $file")
+            continue
+        fi
+        if [[ ! -r "$file" ]]; then
+            warn "engine version file $file exists but is not readable — skipping it."
+            reasons+=("unreadable: $file")
+            continue
+        fi
+        ver="$(head -n 1 "$file" | tr -d '[:space:]')" || true
         if [[ -z "$ver" ]]; then
-            warn "engine version file $file is empty — cannot pin @deepseek-ai/dsh."
-            warn "restore it (one version line) from the repository and re-run."
-            return 1
+            warn "engine version file $file is empty — skipping it."
+            reasons+=("empty: $file")
+            continue
         fi
         printf '%s' "$ver"
         return 0
     done
-    warn "engine version file not found (looked at: ${candidates[*]})."
-    warn "cannot pin @deepseek-ai/dsh; scripts/engine-version.txt in the repo is the source of truth."
+    warn "cannot determine the pinned @deepseek-ai/dsh version: ${reasons[*]}"
+    warn "restore scripts/engine-version.txt (one version line) in the repository and re-run."
     return 1
 }
 
-# dsh_installed_version — the version the `dsh` on PATH actually reports, or an
-# empty string when nothing version-like comes back. The command may wrap the
-# version ("dsh/0.1.5-rc.1", "@deepseek-ai/dsh@0.1.5-rc.1") or print a
-# multi-line banner, so take the first line and the first semver-like token.
-dsh_installed_version() {
-    dsh --version 2>/dev/null | head -n 1 \
+# dsh_version_tokens — every semver-like token `dsh --version` prints, one per
+# line, de-duplicated in output order. The command may print a banner such as
+# "node v22.11.0 dsh/0.1.5-rc.1", so parsing a single first-line token would
+# report a false mismatch when the engine version is not the first token.
+dsh_version_tokens() {
+    dsh --version 2>/dev/null \
         | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([-+.][0-9A-Za-z.-]+)?' \
-        | head -n 1 || true
+        | awk '!seen[$0]++' || true
 }
 
 # engine_version_mismatch_warning INSTALLED EXPECTED — loud, multi-line,
@@ -385,19 +403,28 @@ ensure_tooling() {
 }
 
 ensure_dsh() {
-    local expected installed
+    local expected tokens count
     expected="$(read_engine_version || true)"
     if command -v dsh >/dev/null 2>&1; then
-        installed="$(dsh_installed_version)"
+        tokens="$(dsh_version_tokens)"
+        count=0
+        if [[ -n "$tokens" ]]; then
+            count="$(printf '%s\n' "$tokens" | wc -l | tr -d '[:space:]')"
+        fi
         if [[ -z "$expected" ]]; then
             info "dsh already installed (pinned version unknown — see the warning above)"
-        elif [[ -z "$installed" ]]; then
-            warn "could not determine the installed dsh version — dsh --version returned nothing version-like."
+        elif [[ "$count" -eq 0 ]]; then
+            warn "could not determine the installed dsh version — dsh --version printed nothing version-like."
             warn "cannot compare it against the expected $expected (scripts/engine-version.txt); continuing."
-        elif [[ "$installed" == "$expected" ]]; then
-            info "dsh already installed ($installed — matches scripts/engine-version.txt)"
+        elif printf '%s\n' "$tokens" | grep -qxF "$expected"; then
+            # The expected version is one of the tokens (it need not be the
+            # first: `dsh --version` may print a banner with other versions).
+            info "dsh already installed ($expected — matches scripts/engine-version.txt)"
+        elif [[ "$count" -eq 1 ]]; then
+            engine_version_mismatch_warning "$tokens" "$expected"
         else
-            engine_version_mismatch_warning "$installed" "$expected"
+            warn "could not determine the installed dsh version — dsh --version printed several versions ($(printf '%s' "$tokens" | tr '\n' ' '))."
+            warn "cannot compare them against the expected $expected (scripts/engine-version.txt); continuing."
         fi
         # Never reinstall here: the owner may have pinned a version on this host
         # on purpose, and a reinstall would require sudo on ordinary runs.

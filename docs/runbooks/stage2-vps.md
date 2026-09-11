@@ -86,7 +86,9 @@ curl -fsSL https://raw.githubusercontent.com/mdikarev/dsh-balbes-server/main/scr
    обновляется раньше движка: из него установщик берёт пин версии
    `scripts/engine-version.txt`.
 3. **dsh.** Версия движка читается из единственного источника —
-   `scripts/engine-version.txt` (рядом со скриптом). Если команда `dsh`
+   `scripts/engine-version.txt` (поиск: сначала рядом со скриптом, затем в
+   клоне репозитория; при запуске через `curl | bash` файла рядом со скриптом
+   нет, поэтому пин приезжает именно с клоном). Если команда `dsh`
    отсутствует — ставит глобально:
    `sudo npm i -g "@deepseek-ai/dsh@$(cat scripts/engine-version.txt)"`.
    Если `dsh` уже установлен, установщик **сверяет его версию** с пином:

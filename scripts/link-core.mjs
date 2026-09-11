@@ -6,6 +6,20 @@ import { execFileSync } from "node:child_process";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const target = join(root, "node_modules", "@deepseek-ai");
 
+// The pinned engine version lives in exactly one place:
+// scripts/engine-version.txt, next to this script. Never inline a version in a
+// message here — a stale hint would tell the owner to install an old engine,
+// which is the drift this pin exists to prevent.
+function pinnedEngineVersion() {
+  try {
+    const file = join(dirname(fileURLToPath(import.meta.url)), "engine-version.txt");
+    const first = readFileSync(file, "utf8").split("\n")[0].trim();
+    return first.length > 0 ? first : null;
+  } catch {
+    return null;
+  }
+}
+
 function candidates() {
   const list = [];
   if (process.env.DSH_HOME) list.push(join(process.env.DSH_HOME, "profiles", "node_modules", "@deepseek-ai"));
@@ -26,8 +40,14 @@ function candidates() {
 
 const src = candidates().find((c) => existsSync(c));
 if (!src) {
+  const pin = pinnedEngineVersion();
   console.error("link-core: no @deepseek-ai mirror found (a global dsh install or $DSH_HOME is required).");
-  console.error("Install it with: npm i -g @deepseek-ai/dsh@0.1.5-rc.2  (CI installs it itself).");
+  if (pin) {
+    console.error(`Install it with: npm i -g "@deepseek-ai/dsh@${pin}"  (CI installs it itself).`);
+  } else {
+    console.error("Install it with the version pinned in scripts/engine-version.txt");
+    console.error("(that file could not be read — see it in the repository; CI installs dsh itself).");
+  }
   process.exit(1);
 }
 mkdirSync(dirname(target), { recursive: true });
