@@ -69,7 +69,7 @@ function toModelOptions(raw: unknown): ModelOption[] | null {
  *  ($DSH_HOME/profiles/node_modules), where @earendil-works/pi-ai is linked.
  *  Evidence: live dsh probe — typeof require === "undefined" in plugin scope,
  *  createRequire load fails ERR_PACKAGE_PATH_NOT_EXPORTED, import() succeeds
- *  and getBuiltinModels("openai") returns 38 models. */
+ *  and getBuiltinModels("openai") returns 39 models. */
 export type EngineCatalogLoader = (specifier: string) => unknown | Promise<unknown>;
 
 /** Creates an engine catalog reader. The module is loaded lazily on the

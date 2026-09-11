@@ -138,6 +138,20 @@ function yamlBlockForKey(yaml: string, key: string): string {
   return out.join("\n");
 }
 
+/**
+ * Model ids declared in one YAML provider block, independent of the serializer
+ * style: the engine emits either a flow list (`models: [ { id: a } ]`) or a
+ * block list (`models:\n  - id: a`). Matching `id:` on its own avoids the
+ * prefix trap (`gpt-4o` vs `gpt-4o-mini`).
+ */
+function yamlModelIds(block: string): string[] {
+  const ids: string[] = [];
+  const re = /\bid:\s*([A-Za-z0-9._:-]+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(block)) !== null) ids.push(match[1]!);
+  return ids;
+}
+
 const runReal = (process.env.RUN_REAL ?? "").trim() !== "";
 const realEnabled = runReal ? await hasDsh() : false;
 
@@ -214,11 +228,14 @@ describe.skipIf(!realEnabled)("REAL composition (models API)", () => {
       expect((await postJson(`${base}/api/models/delete`, { routeId: "x" })).status).toBe(401);
       expect((await postJson(`${base}/api/models/default`, { provider: "deepseek-official", model: "deepseek-v4-flash" })).status).toBe(401);
 
-      // fresh home: pinned deepseek route is the default, no key stored
+      // fresh home: the engine default selection is
+      // {provider: "deepseek-official", model: "deepseek-flash"} (dsh-base
+      // cordis.patch.yml `agent-default-model`, engine 0.1.5); the reserved
+      // deepseek route is the one marked isDefault, no key stored yet.
       const empty = await postJson(`${base}/api/models/list`, {}, token);
       expect(empty.status, JSON.stringify(empty.json)).toBe(200);
       const body = empty.json as ModelsListBody;
-      expect(body.default).toEqual({ provider: "deepseek-official", model: "deepseek-v4-flash" });
+      expect(body.default).toEqual({ provider: "deepseek-official", model: "deepseek-flash" });
       const ds = body.connections.find((c) => c.routeId === "deepseek-official");
       expect(ds?.kind).toBe("deepseek");
       expect(ds?.hasKey).toBe(false);
@@ -391,15 +408,14 @@ describe.skipIf(!realEnabled)("REAL composition (models API)", () => {
       const yamlAfterEdit = await readIfPresent(join(home, "settings.yaml"));
       const openaiAfterEdit = yamlBlockForKey(yamlAfterEdit, "openai");
       expect(openaiAfterEdit).not.toBe("");
-      // the engine serializes llm-pi-ai as a flow-style mapping, so the model
-      // list appears inline: models: [ { id: gpt-4o-mini } ]
+      // dsh 0.1.5 serializes the llm-pi-ai section block-style
+      // (`models:\n  - id: gpt-4o-mini`) instead of the 0.1.2 inline flow list;
+      // the id extraction below is style-independent, so the check tracks the
+      // stored fact (which models sit under `openai`) rather than the emitter.
       expect(openaiAfterEdit).toContain("apiKeyEnv: BALBES_OPENAI_API_KEY");
-      expect(openaiAfterEdit).toContain("models: [ { id: gpt-4o-mini } ]");
+      expect(yamlModelIds(openaiAfterEdit)).toEqual(["gpt-4o-mini"]);
       expect(openaiAfterEdit).not.toContain("baseURL:");
       expect(openaiAfterEdit).not.toContain("custom-openai.example");
-      // the removed gpt-4o entry (and the dropped override) must not linger
-      expect(openaiAfterEdit).not.toContain("gpt-4o }");
-      expect(openaiAfterEdit).not.toContain("gpt-4o,");
       const listedAfterEdit = (await postJson(`${base}/api/models/list`, {}, token)).json as ModelsListBody;
       const connAfterEdit = listedAfterEdit.connections.find((c) => c.routeId === "openai");
       expect(connAfterEdit?.baseURL).toBeUndefined();
