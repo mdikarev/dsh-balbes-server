@@ -1077,6 +1077,7 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
       const messagesAfter = turnTwo?.body.messages?.length ?? 0;
       expect(messagesAfter, JSON.stringify(turnTwo?.body).slice(0, 2000)).toBeGreaterThan(messagesBefore);
       expect(JSON.stringify(turnTwo?.body)).toContain(PROMPT_TWO);
+
     } finally {
       await stopServer();
     }

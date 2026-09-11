@@ -378,9 +378,9 @@ function resultCallId(message: SessionEventLike["data"]["message"]): string | un
 /**
  * A `tool/result` reports a failed call when the tool itself said so (the
  * model-facing result block is an error) or when the harness attached a failure
- * identity. Both matter: a path-guard denial — the containment this deployment
- * relies on — is an `isError` result with NO identity, so reading only the
- * identity would render a denied read as a success.
+ * identity. Both matter: a sandbox/approval denial is an `isError` result with
+ * NO identity, so reading only the identity would render a denied call as a
+ * success.
  */
 function resultFailed(event: SessionEventLike): boolean {
   return event.data.message?.content?.[0]?.isError === true || event.data.error !== undefined;
