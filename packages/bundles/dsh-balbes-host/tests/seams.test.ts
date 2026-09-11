@@ -416,8 +416,10 @@ describe.skipIf(!realEnabled)("REAL seams probe: session cwd, fs tool containmen
     // dsh 0.1.2-rc.1 seam fact: absolute reads are NOT fenced — /etc/hosts
     // (any host-readable path) is returned verbatim. fs-sandbox's per-call
     // policy fence covers the two mutations only ("every mode permits
-    // reading"). Any workspace-root read policy must be layered on in the
-    // agent setup (Task 7 composeAgentSetup guard), never assumed from dsh.
+    // reading"). No workspace-root read policy is layered on in the agent
+    // setup: the Telegram channel ships the full process surface and relies on
+    // the engine sandbox directly, so reads may reach any host-readable path
+    // while writes stay fenced.
     expect(result.reason?.kind).toBe("completed");
     const results = toolResults(result.calls);
     expect(results.join("\n")).toContain("localhost");
@@ -506,10 +508,11 @@ describe.skipIf(!realEnabled)("REAL seams probe: session cwd, fs tool containmen
     // Both outcomes are asserted below and exactly one must hold, so the suite
     // stays honest on either platform instead of pinning this host's accident
     // (a Linux-only branch cannot be exercised from macOS; no platform skip).
-    // This is precisely why the Telegram channel does not rely on the shell
-    // policy at all: it REMOVES `bash` (and every other read-capable channel)
-    // from the agent's tool surface in composeAgentSetup, which is the only
-    // boundary that holds on both kinds of host.
+    // This is why the Telegram channel now ships the FULL process surface
+    // (composeAgentSetup installs no restriction and no read guard): the
+    // engine sandbox is the boundary, and it is deliberately relied upon
+    // rather than compensated for. Reads and the shell may reach any
+    // host-readable path; writes stay fenced by the sandbox policy.
     expect(result.reason?.kind).toBe("completed");
     const joined = toolResults(result.calls).join("\n");
     const failedClosed = joined.includes("no sandbox backend is usable");
