@@ -92,6 +92,17 @@ describe("WorkspacesPage layout", () => {
     await waitFor(() => expect(api.readWorkspaceDir).toHaveBeenCalledWith("home", undefined, ""));
   });
 
+  it("loads sessions for the selected workspace", async () => {
+    const api = makeApi();
+    render(<WorkspacesPage api={api} />);
+    // the brief wrote this row's testid as `ws-row-alpha`; WorkspaceList renders
+    // `ws-row-${refKey(ref)}` (WorkspaceList.tsx:91), i.e. `ws-row-project:alpha`
+    await waitFor(() => expect(screen.getByTestId("ws-row-project:alpha")).toBeDefined());
+    fireEvent.click(screen.getByTestId("ws-row-project:alpha"));
+    await waitFor(() => expect(api.listSessions).toHaveBeenCalledWith("project", "alpha"));
+    expect(screen.getByTestId("ws-tabs")).toBeDefined();
+  });
+
   it("shows an error with retry when the initial list load fails, then recovers", async () => {
     const api = makeApi({
       listWorkspaces: vi.fn().mockRejectedValueOnce(new Error("registry unreadable")).mockResolvedValueOnce(listBody)

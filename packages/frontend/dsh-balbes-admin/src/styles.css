@@ -306,6 +306,15 @@ button.ws-tree-row:hover { background: var(--surface); }
 .ws-tab.active { color: var(--text); border-bottom-color: var(--accent); }
 .ws-tabstrip-refresh { margin-left: auto; font-size: 12px; }
 .ws-tabpanel { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
+.ws-tab-error { margin: 0; padding: 12px 14px; }
+.ws-session-rows { padding: 10px 12px; gap: 6px; }
+.ws-session-row {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 9px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
+}
+.ws-session-title { font-size: 13.5px; color: var(--text); overflow-wrap: anywhere; }
+.ws-session-meta { display: flex; align-items: center; gap: 8px; color: var(--text-dim); font-size: 11px; }
+.ws-session-channel { font-family: var(--mono); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; }
 .ws-center-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
 
 /* ── modal flows on the workspaces page ─────────────────── */
