@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, statSync, symlinkSync, unlinkSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, statSync, symlinkSync, unlinkSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
@@ -33,9 +33,10 @@ if (!src) {
 mkdirSync(dirname(target), { recursive: true });
 mkdirSync(target, { recursive: true });
 
-// link(name) — make target/name point at mirror/name.
-function link(name) {
-  const from = join(src, name);
+// link(name [, from]) — make target/name point at the mirror entry (or at an
+// explicit source path, used below for the dsh CLI itself, which lives outside
+// the mirror).
+function link(name, from = join(src, name)) {
   const to = join(target, name);
   let stat = null;
   try {
@@ -68,5 +69,42 @@ for (const name of readdirSync(src)) {
   } catch { /* dangling entry; nothing to link */ }
   if (!isDir) continue;
   link(name);
+}
+
+// npm's nested global layout mirrors only what dsh itself depends on: that
+// node_modules holds every dsh-* package but NOT dsh, because the CLI root is
+// the directory one level ABOVE it. Linking the mirror entries alone therefore
+// leaves the workspace without @deepseek-ai/dsh, and REAL suites that resolve
+// @deepseek-ai/dsh/package.json to locate the install anchor (e.g.
+// packages/bundles/dsh-balbes-host/tests/seams.test.ts) die with "Cannot find
+// module" on a fresh runner, where no $DSH_HOME/profiles mirror exists yet and
+// this nested candidate is the only one available.
+if (!existsSync(join(target, "dsh"))) {
+  const isCliRoot = (dir) => {
+    try {
+      return JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).name === "@deepseek-ai/dsh";
+    } catch { /* no readable package.json here: not the CLI root */ }
+    return false;
+  };
+  // For the nested layout the CLI root is <X> of "<X>/node_modules/@deepseek-ai";
+  // for any other candidate fall back to the global install path.
+  let cli = null;
+  const nestedRoot = resolve(src, "..", "..");
+  if (isCliRoot(nestedRoot)) cli = nestedRoot;
+  else {
+    try {
+      const g = execFileSync("npm", ["root", "-g"], { encoding: "utf8" }).trim();
+      const globalDsh = join(g, "@deepseek-ai", "dsh");
+      if (existsSync(globalDsh)) cli = globalDsh;
+    } catch { /* npm root is unavailable; reported below */ }
+  }
+  if (cli === null) {
+    // Not fatal on purpose: some CI jobs run without the REAL suites, which are
+    // the only ones that need the CLI package itself.
+    console.error("link-core: WARNING: could not find the dsh CLI package to link as @deepseek-ai/dsh.");
+    console.error("link-core: REAL suites that resolve @deepseek-ai/dsh will fail.");
+  } else {
+    link("dsh", cli);
+  }
 }
 console.log(`link-core: linked @deepseek-ai from ${src}`);
