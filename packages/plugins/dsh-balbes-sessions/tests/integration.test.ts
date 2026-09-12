@@ -232,6 +232,11 @@ describe.skipIf(!realEnabled)("REAL composition (sessions API)", () => {
       const anon = await postJson(`${base}/api/sessions/list`, { scope: "home" });
       expect(anon.status).toBe(401);
 
+      // 401 без токена для чтения диалога
+      expect((await postJson(`${base}/api/sessions/read`, { scope: "home", sessionId: "s-1" })).status).toBe(401);
+      // 400: нет sessionId
+      expect((await postJson(`${base}/api/sessions/read`, { scope: "home" }, token)).status).toBe(400);
+
       // 400: битая форма, неизвестный scope, name у дома
       expect((await postJson(`${base}/api/sessions/list`, [], token)).status).toBe(400);
       expect((await postJson(`${base}/api/sessions/list`, { scope: "galaxy" }, token)).status).toBe(400);
@@ -246,9 +251,18 @@ describe.skipIf(!realEnabled)("REAL composition (sessions API)", () => {
       expect((missing.json as { error?: { code?: string } }).error?.code).toBe("not-found");
       expect((missing.json as { error?: { message?: string } }).error?.message).toMatch(/^project not found: nope$/);
 
+      const readMissing = await postJson(`${base}/api/sessions/read`, { scope: "project", name: "nope", sessionId: "s-1" }, token);
+      expect(readMissing.status).toBe(404);
+      expect((readMissing.json as { error?: { message?: string } }).error?.message).toMatch(/^project not found: nope$/);
+
       // проект создаётся реальной ручкой, список сессий пуст (реестра ещё нет)
       const created = await postJson(`${base}/api/workspaces/create`, { name: "alpha" }, token);
       expect(created.status, created.raw).toBe(200);
+
+      // 404: сессия не зарегистрирована за воркспейсом
+      const readForeign = await postJson(`${base}/api/sessions/read`, { scope: "project", name: "alpha", sessionId: "session-nope" }, token);
+      expect(readForeign.status).toBe(404);
+      expect((readForeign.json as { error?: { message?: string } }).error?.message).toMatch(/^session not found in workspace: session-nope$/);
       const empty = await postJson(`${base}/api/sessions/list`, { scope: "project", name: "alpha" }, token);
       expect(empty.status, empty.raw).toBe(200);
       expect(empty.json).toEqual({ sessions: [] });
@@ -273,6 +287,10 @@ describe.skipIf(!realEnabled)("REAL composition (sessions API)", () => {
       const ghost = await postJson(`${base}/api/sessions/list`, { scope: "project", name: "alpha" }, token);
       expect(ghost.status, ghost.raw).toBe(200);
       expect(ghost.json).toEqual({ sessions: [] });
+
+      // 404: запись реестра есть, но движок сессию не знает
+      const readGhost = await postJson(`${base}/api/sessions/read`, { scope: "project", name: "alpha", sessionId: "session-ghost" }, token);
+      expect(readGhost.status).toBe(404);
 
       // повреждённый реестр — 500, а не «пусто»
       await stopServer();
@@ -399,6 +417,18 @@ describe.skipIf(!realEnabled)("REAL composition (sessions API)", () => {
       const createdMs = Date.parse(sessions[0]?.createdAt ?? "");
       expect(createdMs).toBeGreaterThanOrEqual(startedAt - 5_000);
       expect(createdMs).toBeLessThanOrEqual(Date.now());
+
+      // Диалог реальной сессии: заголовок/канал — из реестра и движка, реплики — из лога.
+      const read = await postJson(`${base}/api/sessions/read`, { scope: "project", name: "alpha", sessionId }, token);
+      expect(read.status, read.raw).toBe(200);
+      const transcript = read.json as {
+        session: { id: string; channel: string };
+        messages: Array<{ role: string; kind: string; text: string; inContext: boolean }>;
+      };
+      expect(transcript.session.id).toBe(sessionId);
+      expect(transcript.session.channel).toBe("telegram");
+      expect(transcript.messages.some((m) => m.role === "user" && m.text.includes(marker))).toBe(true);
+      expect(transcript.messages.some((m) => m.role === "assistant")).toBe(true);
     } finally {
       await stopServer();
       await rm(home, { recursive: true, force: true });
