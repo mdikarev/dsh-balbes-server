@@ -41,6 +41,7 @@ function makeApi(overrides: Partial<AdminApi> = {}): AdminApi {
       entries: scope === "project" && name === "alpha" ? [{ name: "src", kind: "dir" as const }] : []
     })),
     listSessions: vi.fn(async () => ({ sessions: [] })),
+    readSession: vi.fn(async () => ({ session: { id: "s", title: null, channel: "telegram", createdAt: "" }, messages: [] })),
     subscribeWorkspaceEvents: vi.fn(() => () => {}),
     ...overrides
   } as AdminApi;

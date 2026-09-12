@@ -31,7 +31,9 @@ import type {
   TelegramDisableResponse,
   TelegramClearTokenResponse,
   SessionsListRequest,
-  SessionsListResponse
+  SessionsListResponse,
+  SessionsReadRequest,
+  SessionsReadResponse
 } from "dsh-balbes-contracts";
 import { createSseParser } from "./sse";
 
@@ -66,6 +68,7 @@ export interface AdminApi {
   deleteWorkspace(name: string): Promise<WorkspaceDeleteResponse>;
   readWorkspaceDir(scope: WorkspaceScope, name: string | undefined, path: string): Promise<WorkspaceTreeResponse>;
   listSessions(scope: WorkspaceScope, name?: string): Promise<SessionsListResponse>;
+  readSession(scope: WorkspaceScope, name: string | undefined, sessionId: string): Promise<SessionsReadResponse>;
   listModels(): Promise<ModelsListResponse>;
   saveModel(req: ModelsSaveRequest): Promise<ModelsSaveResponse>;
   deleteModel(routeId: string): Promise<ModelsDeleteResponse>;
@@ -180,6 +183,10 @@ export function createApiClient(): AdminApi {
     listSessions: (scope, name) => {
       const body: SessionsListRequest = name === undefined ? { scope } : { scope, name };
       return guard(request<SessionsListResponse>("/api/sessions/list", body));
+    },
+    readSession: (scope, name, sessionId) => {
+      const body: SessionsReadRequest = name === undefined ? { scope, sessionId } : { scope, name, sessionId };
+      return guard(request<SessionsReadResponse>("/api/sessions/read", body));
     },
     listModels: () => guard(request<ModelsListResponse>("/api/models/list", {})),
     saveModel: (req) => guard(request<ModelsSaveResponse>("/api/models/save", req satisfies ModelsSaveRequest)),

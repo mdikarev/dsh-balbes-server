@@ -89,6 +89,7 @@ function makeApi(initial: TelegramSettingsStatus, overrides: Partial<AdminApi> =
     createWorkspace: vi.fn(),
     deleteWorkspace: vi.fn(),
     readWorkspaceDir: vi.fn(),
+    readSession: vi.fn(async () => ({ session: { id: "s", title: null, channel: "telegram", createdAt: "" }, messages: [] })),
     listModels: vi.fn(),
     saveModel: vi.fn(),
     deleteModel: vi.fn(),

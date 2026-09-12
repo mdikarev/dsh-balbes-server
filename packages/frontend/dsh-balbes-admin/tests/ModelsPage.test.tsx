@@ -150,6 +150,7 @@ function makeApi(
     createWorkspace: vi.fn(),
     deleteWorkspace: vi.fn(),
     readWorkspaceDir: vi.fn(),
+    readSession: vi.fn(async () => ({ session: { id: "s", title: null, channel: "telegram", createdAt: "" }, messages: [] })),
     onUnauthorized: vi.fn(),
     subscribeWorkspaceEvents: vi.fn(() => () => {}),
     listModels,

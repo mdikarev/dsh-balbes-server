@@ -319,4 +319,18 @@ describe("api client", () => {
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(String(init.body))).toEqual({ scope: "home" });
   });
+
+  it("readSession POSTs to /api/sessions/read with the session id", async () => {
+    localStorage.setItem(TOKEN_KEY, "tok-1");
+    const body = { session: { id: "s-1", title: "задача", channel: "telegram", createdAt: "2026-09-12T00:00:00.000Z" }, messages: [] };
+    const fetchMock = mockFetchOnce(200, body);
+    vi.stubGlobal("fetch", fetchMock);
+    const api = createApiClient();
+    const res = await api.readSession("project", "alpha", "s-1");
+    expect(res.session.id).toBe("s-1");
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/sessions/read");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({ scope: "project", name: "alpha", sessionId: "s-1" });
+  });
 });
