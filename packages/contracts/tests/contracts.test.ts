@@ -106,3 +106,67 @@ describe("telegram contracts", () => {
     expect([status, statusRes, saveReq, saveRes, disableReq, disableRes, clearReq, clearRes, testReq, testRes, states]).toBeTruthy();
   });
 });
+
+// Session transcript contracts — structural shape is the contract (R-API-1 + types win).
+import type {
+  SessionsReadRequest,
+  SessionsReadResponse,
+  TranscriptEntry,
+  TranscriptKind,
+  TranscriptRole
+} from "../src/index.js";
+
+describe("session transcript contracts", () => {
+  it("exposes the documented transcript shapes", () => {
+    const role: TranscriptRole = "assistant";
+    const kind: TranscriptKind = "tool-call";
+    // exactOptionalPropertyTypes guard: omitted optional fields stay absent, never undefined
+    const message: TranscriptEntry = {
+      seq: 1,
+      time: "2026-09-12T00:00:00.000Z",
+      role: "user",
+      kind: "message",
+      text: "hello",
+      inContext: true
+    };
+    const collapsed: TranscriptEntry = {
+      seq: 2,
+      time: "2026-09-12T00:00:01.000Z",
+      role,
+      kind,
+      text: "",
+      detail: '{"path":"a"}',
+      toolName: "Read",
+      inContext: false
+    };
+    const toolResult: TranscriptEntry = {
+      seq: 3,
+      time: "2026-09-12T00:00:02.000Z",
+      role: "assistant",
+      kind: "tool-result",
+      text: "file body",
+      isError: true,
+      inContext: true
+    };
+    const context: TranscriptEntry = {
+      seq: 4,
+      time: "2026-09-12T00:00:03.000Z",
+      role: "system",
+      kind: "context",
+      text: "system prompt",
+      form: "system-prompt",
+      inContext: true
+    };
+    const homeReq: SessionsReadRequest = { scope: "home", sessionId: "s1" };
+    const projectReq: SessionsReadRequest = { scope: "project", name: "alpha", sessionId: "s1" };
+    const res: SessionsReadResponse = {
+      session: { id: "s1", title: null, channel: "telegram", createdAt: "2026-09-12T00:00:00.000Z" },
+      messages: [message, collapsed, toolResult, context]
+    };
+    expect(res.messages).toHaveLength(4);
+    expect(message.detail).toBeUndefined();
+    expect(collapsed.toolName).toBe("Read");
+    expect(homeReq.name).toBeUndefined();
+    expect(projectReq.name).toBe("alpha");
+  });
+});

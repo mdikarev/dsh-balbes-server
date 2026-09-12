@@ -245,3 +245,37 @@ export interface SessionsListResponse {
   sessions: WorkspaceSessionInfo[];
 }
 
+// Session transcript surface — one workspace session's dialogue
+export type TranscriptRole = "user" | "assistant" | "system";
+export type TranscriptKind = "message" | "tool-call" | "tool-result" | "context";
+
+export interface TranscriptEntry {
+  seq: number;
+  time: string; // ISO 8601
+  role: TranscriptRole;
+  kind: TranscriptKind;
+  /** Видимое тело; "" для строк, у которых тело в detail. */
+  text: string;
+  /** Техническое тело свёрнутой строки (аргументы, результат, служебный текст). */
+  detail?: string;
+  /** kind === "tool-call". */
+  toolName?: string;
+  /** kind === "context": plugin ContextForm, когда объявлен. */
+  form?: string;
+  /** kind === "tool-result". */
+  isError?: boolean;
+  /** Событие входит в текущую модельную поверхность. */
+  inContext: boolean;
+}
+
+export interface SessionsReadRequest {
+  scope: WorkspaceScope;
+  /** Проект-слаг; обязателен для scope === "project", отсутствует для "home". */
+  name?: string;
+  sessionId: string;
+}
+export interface SessionsReadResponse {
+  session: WorkspaceSessionInfo;
+  messages: TranscriptEntry[];
+}
+
