@@ -15,7 +15,7 @@
 | --- | --- | --- | --- |
 | 1 | Воркспейсы на сервере: дом агента и проекты | absorbed | p0-agent-workspaces.md |
 | 2 | Сессии и чат в воркспейсе | absorbed | p1-workspace-sessions-chat.md |
-| 3 | Просмотр сессий в админке | draft | p2-session-view.md |
+| 3 | Просмотр сессий в админке | implementing | p2-session-view.md |
 | 4 | Просмотр файлов в админке | draft | p3-file-view.md |
 
 Базовый слой (воркспейсы) реализован; витрина сессий воркспейса (p1)

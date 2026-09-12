@@ -15,7 +15,7 @@
   `workspaces.tree`, `workspaces.events`, `models.list`, `models.catalog`,
   `models.save`, `models.delete`, `models.default`, `telegram.status`,
   `telegram.save`, `telegram.test`, `telegram.disable`, `telegram.clear-token`,
-  `sessions.list`.
+  `sessions.list`, `sessions.read`.
 - Вне scope: статика SPA (не API), внутренние сервисные интерфейсы Cordis
   (в т.ч. сервис `balbesModels` и командная поверхность Telegram-канала),
   streaming-доставка ответов модели (Telegram отправляет финальные сообщения и
@@ -309,6 +309,28 @@
 - notes: список — записи серверного реестра воркспейса (`$DSH_HOME/workspace-sessions.json`);
   заголовок и `createdAt` берутся из движка одним вызовом `sessionQuery.readTitleSnapshots`;
   `id`, неизвестный движку, из ответа выпадает; реестр чтением не переписывается.
+
+### sessions.read — диалог сессии
+- method: POST
+- path: /api/sessions/read
+- auth: bearer
+- request: `{scope: "home" | "project", name?: string, sessionId: string}` (`name` обязателен для `project`, запрещён для `home`; `sessionId` — непустая строка)
+- response: `{session: {id: string, title: string | null, channel: string, createdAt: string(ISO)}, messages: TranscriptEntry[]}` (вся история сессии сразу, без пагинации)
+- errors: 400 (`bad-request`: форма тела, scope, лишний `name`, пустой `sessionId`), 401, 404 (`not-found`: проект отсутствует; сессия не зарегистрирована за этим воркспейсом; движок не знает id), 500 (`internal`: лог нечитаем/битый, отказ движка, нарушение surface-метаданных)
+- notes: containment — сначала `balbesWorkspaces.list()` (для `project`), затем
+  запись реестра сессий для этого воркспейса; только после этого чтение у движка.
+  Диалог — гибридный источник: реплики владельца/модели/инструментов — durable
+  append-origin события лога, системный промпт и служебный контекст — текущая
+  модельная поверхность; `inContext` показывает, входит ли событие в текущую
+  поверхность (см. ARCHITECTURE.md). Нормализация — на сервере
+  (`deriveEventMessage`), SPA только рендерит и сворачивает; типы движка в
+  контракт не протекают.
+
+`TranscriptEntry` (`role: "user" | "assistant" | "system"`; `kind: "message" | "tool-call" | "tool-result" | "context"`):
+
+- обязательные: `seq: number`, `time: string(ISO)`, `role: TranscriptRole`, `kind: TranscriptKind`, `text: string` (видимое тело; `""` для строк, у которых тело в `detail`), `inContext: boolean`;
+- опциональные: `detail?: string` (техническое тело свёрнутой строки), `toolName?: string` (`kind: "tool-call"`), `form?: string` (`kind: "context"`: plugin `ContextForm`, когда объявлен), `isError?: boolean` (`kind: "tool-result"`);
+- компиляторный SoT — `packages/contracts/src/index.ts` (типы `TranscriptEntry`, `SessionsReadRequest`, `SessionsReadResponse`).
 
 ## Rules & invariants
 
