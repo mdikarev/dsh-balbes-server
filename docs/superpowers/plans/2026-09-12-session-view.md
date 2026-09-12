@@ -1161,7 +1161,9 @@ git commit -m "feat(admin): make session rows open a transcript"
     await waitFor(() => expect(screen.getByTestId("session-transcript-empty")).toBeDefined());
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Сессии", "задача"]);
 
-    // повторный клик не дублирует таб
+    // повторное открытие не дублирует таб: список скрыт, поэтому сначала возвращаемся на «Сессии»
+    fireEvent.click(screen.getByTestId("ws-tab-sessions"));
+    await waitFor(() => expect(screen.getByTestId("session-row-session-alpha")).toBeDefined());
     fireEvent.click(screen.getByTestId("session-row-session-alpha"));
     expect(screen.getAllByRole("tab")).toHaveLength(2);
 
