@@ -938,8 +938,13 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
         "the file tree of project demo",
         treeFrom
       );
-      expect(buttonsOf(tree).map((button) => button.text)).toContain("📄 note.txt");
-      pressButton(menuId, "e:0");
+      const treeButtons = buttonsOf(tree);
+      expect(treeButtons.map((button) => button.text)).toContain("📄 note.txt");
+      // Select note.txt by its label, not by index: the project root now also
+      // holds the seeded .dsh/skills directory, so index 0 is not the note.
+      const noteButton = treeButtons.find((button) => button.text === "📄 note.txt");
+      expect(noteButton, JSON.stringify(treeButtons)).toBeDefined();
+      pressButton(menuId, noteButton!.callback_data);
       const file = await waitForOutbound(
         (entry) => entry.method === "editMessageText" && String(entry.body.text ?? "").includes("note inside project demo"),
         "the note page",

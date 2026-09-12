@@ -249,6 +249,7 @@ describe.skipIf(!realEnabled)("REAL composition (workspaces API)", () => {
       const tree = await postJson(`${base}/api/workspaces/tree`, { scope: "project", name: "alpha", path: "" }, token);
       expect(tree.status, JSON.stringify(tree.json)).toBe(200);
       expect((tree.json as { entries?: Array<{ name: string; kind: string }> }).entries).toEqual([
+        { name: ".dsh", kind: "dir" },
         { name: "src", kind: "dir" },
         { name: ".hidden", kind: "file" }
       ]);
