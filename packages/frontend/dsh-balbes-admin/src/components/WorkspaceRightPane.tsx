@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { WorkspaceSessionInfo } from "dsh-balbes-contracts";
 import type { AdminApi } from "../api/client";
 import type { WorkspaceRef } from "../workspaceRef";
-import { isSameRef } from "../workspaceRef";
+import { isSameRef, refKey } from "../workspaceRef";
+import { formatCreatedAt } from "../format";
 import SessionsTab from "./SessionsTab";
 import SessionTranscript from "./SessionTranscript";
 
@@ -10,6 +11,10 @@ interface SessionTab {
   id: string;
   sessionId: string;
   title: string | null;
+  channel: string;
+  createdAt: string;
+  /** refKey воркспейса, в котором таб открыт: защита от чтения сессии за чужой воркспейс. */
+  refKey: string;
 }
 
 interface WorkspaceRightPaneProps {
@@ -42,11 +47,20 @@ export default function WorkspaceRightPane({ api, workspace }: WorkspaceRightPan
     }
   }, [workspace]);
 
-  const openSession = useCallback((session: WorkspaceSessionInfo): void => {
-    const id = `session:${session.id}`;
-    setSessionTabs((tabs) => (tabs.some((tab) => tab.id === id) ? tabs : [...tabs, { id, sessionId: session.id, title: session.title }]));
-    setActive(id);
-  }, []);
+  const openSession = useCallback(
+    (session: WorkspaceSessionInfo): void => {
+      if (workspace === null) return;
+      const id = `session:${session.id}`;
+      const key = refKey(workspace);
+      setSessionTabs((tabs) =>
+        tabs.some((tab) => tab.id === id)
+          ? tabs
+          : [...tabs, { id, sessionId: session.id, title: session.title, channel: session.channel, createdAt: session.createdAt, refKey: key }]
+      );
+      setActive(id);
+    },
+    [workspace]
+  );
 
   const closeSession = useCallback(
     (id: string): void => {
@@ -58,7 +72,12 @@ export default function WorkspaceRightPane({ api, workspace }: WorkspaceRightPan
     [sessionTabs, active]
   );
 
-  const openTab = sessionTabs.find((tab) => tab.id === active);
+  // Смена воркспейса рендерится раньше пассивного эффекта очистки: фильтруем
+  // табы по refKey текущего воркспейса прямо в рендере, чтобы дочерний
+  // SessionTranscript не успел прочитать сессию прошлого воркспейса.
+  const currentRefKey = workspace === null ? null : refKey(workspace);
+  const visibleTabs = currentRefKey === null ? [] : sessionTabs.filter((tab) => tab.refKey === currentRefKey);
+  const openTab = visibleTabs.find((tab) => tab.id === active);
   const panelId = `ws-tabpanel-${active}`;
 
   return (
@@ -79,7 +98,7 @@ export default function WorkspaceRightPane({ api, workspace }: WorkspaceRightPan
         >
           Сессии
         </button>
-        {sessionTabs.map((tab) => {
+        {visibleTabs.map((tab) => {
           const selected = tab.id === active;
           const label = sessionLabel(tab.title);
           return (
@@ -92,7 +111,7 @@ export default function WorkspaceRightPane({ api, workspace }: WorkspaceRightPan
                 aria-controls={`ws-tabpanel-${tab.id}`}
                 className={selected ? "ws-tab active" : "ws-tab"}
                 data-testid={`ws-tab-${tab.id}`}
-                title={`${label} · ${tab.sessionId}`}
+                title={`${label} · ${tab.channel} · ${formatCreatedAt(tab.createdAt)}`}
                 onClick={() => {
                   setActive(tab.id);
                   setReloadKey((key) => key + 1);

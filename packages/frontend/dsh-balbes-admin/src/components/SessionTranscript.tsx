@@ -35,6 +35,9 @@ export default function SessionTranscript({ api, workspace, sessionId, reloadKey
     const myGen = generation.current;
     const mySeq = ++loadSeq.current;
     const stale = (): boolean => generation.current !== myGen || loadSeq.current !== mySeq;
+    // сброс на старте каждого запроса: смена сессии или reload не должны
+    // показывать транскрипт прошлой сессии, пока новая читается
+    setData(null);
     setError(null);
     try {
       const res = await api.readSession(workspace.scope, workspace.name, sessionId);

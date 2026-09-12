@@ -86,3 +86,22 @@ export function toolResult(seq: number, text: string, isError = false): SessionE
     }
   });
 }
+
+/**
+ * Текст-less результат инструмента: блок пуст, но у события есть failure-identity
+ * (error.name/error.code). Конкатенация text-блоков даёт пустую строку, поэтому
+ * detail обязан прийти из fallback extractSessionEventText.
+ */
+export function toolResultWithError(seq: number, name: string, code: string): SessionEvent {
+  return event("tool/result", seq, "append", {
+    turn: 0,
+    step: 0,
+    message: {
+      id: `m${seq}`,
+      role: "user",
+      content: [{ type: "tool-result", toolCallId: "call-1", content: [], isError: true }],
+      source: { kind: "tool", callId: "call-1" }
+    },
+    error: { name, code }
+  });
+}

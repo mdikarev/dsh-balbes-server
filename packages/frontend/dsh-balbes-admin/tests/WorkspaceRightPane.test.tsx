@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import WorkspaceRightPane from "../src/components/WorkspaceRightPane";
+import { formatCreatedAt } from "../src/format";
 import type { AdminApi } from "../src/api/client";
 
 function makeApi(overrides: Partial<AdminApi> = {}): AdminApi {
@@ -106,6 +107,10 @@ describe("WorkspaceRightPane", () => {
     fireEvent.click(screen.getByTestId("session-row-session-alpha"));
     await waitFor(() => expect(screen.getByTestId("session-transcript-empty")).toBeDefined());
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Сессии", "задача"]);
+    // title-атрибут различает одноимённые табы: канал и форматированное время
+    expect(screen.getByRole("tab", { name: "задача" }).getAttribute("title")).toBe(
+      `задача · telegram · ${formatCreatedAt(session.createdAt)}`
+    );
 
     // повторное открытие не дублирует таб: список скрыт, поэтому сначала возвращаемся на «Сессии»
     fireEvent.click(screen.getByTestId("ws-tab-sessions"));
@@ -131,6 +136,26 @@ describe("WorkspaceRightPane", () => {
 
     rerender(<WorkspaceRightPane api={api} workspace={{ scope: "project", name: "beta" }} />);
     await waitFor(() => expect(screen.queryByRole("tab", { name: "задача" })).toBeNull());
+    cleanup();
+  });
+
+  it("does not read the previous workspace's session after a workspace switch", async () => {
+    const session = { id: "session-alpha", title: "задача", channel: "telegram", createdAt: "2026-09-11T01:40:00.000Z" };
+    const readSession = vi.fn(async () => ({ session, messages: [] }));
+    const api = makeApi({
+      listSessions: vi.fn(async () => ({ sessions: [session] })),
+      readSession
+    });
+    const { rerender } = render(<WorkspaceRightPane api={api} workspace={{ scope: "project", name: "alpha" }} />);
+    await waitFor(() => expect(screen.getByTestId("session-row-session-alpha")).toBeDefined());
+    fireEvent.click(screen.getByTestId("session-row-session-alpha"));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "задача" })).toBeDefined());
+    expect(readSession).toHaveBeenCalledWith("project", "alpha", "session-alpha");
+
+    rerender(<WorkspaceRightPane api={api} workspace={{ scope: "project", name: "beta" }} />);
+    // render guard: чужой таб не показывается и не успевает прочитать сессию beta
+    expect(screen.queryByRole("tab", { name: "задача" })).toBeNull();
+    expect(readSession).not.toHaveBeenCalledWith("project", "beta", "session-alpha");
     cleanup();
   });
 

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { render, screen, waitFor, fireEvent, cleanup } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, cleanup, act } from "@testing-library/react";
 import SessionTranscript from "../src/components/SessionTranscript";
 import type { AdminApi } from "../src/api/client";
 import type { SessionsReadResponse } from "dsh-balbes-contracts";
@@ -10,6 +10,14 @@ function response(messages: SessionsReadResponse["messages"]): SessionsReadRespo
 }
 function makeApi(overrides: Partial<AdminApi> = {}): AdminApi {
   return { readSession: vi.fn(async () => response([])), ...overrides } as unknown as AdminApi;
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
 }
 
 afterEach(() => cleanup());
@@ -49,5 +57,29 @@ describe("SessionTranscript", () => {
     const api = makeApi();
     render(<SessionTranscript api={api} workspace={null} sessionId="s-1" reloadKey={0} />);
     expect(api.readSession).not.toHaveBeenCalled();
+  });
+
+  it("clears the previous transcript when the session changes", async () => {
+    const pending = deferred<SessionsReadResponse>();
+    const readSession = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response([{ seq: 0, time: "2026-09-12T00:00:00.000Z", role: "assistant", kind: "message", text: "ответ A", inContext: true }])
+      )
+      .mockImplementationOnce(() => pending.promise);
+    const api = makeApi({ readSession });
+    const { rerender } = render(
+      <SessionTranscript api={api} workspace={{ scope: "project", name: "alpha" }} sessionId="s-a" reloadKey={0} />
+    );
+    await waitFor(() => expect(screen.getByText("ответ A")).toBeDefined());
+
+    // B ещё читается: экран обязан показать «Загрузка…», а не транскрипт A
+    rerender(<SessionTranscript api={api} workspace={{ scope: "project", name: "alpha" }} sessionId="s-b" reloadKey={0} />);
+    await waitFor(() => expect(screen.getByTestId("session-transcript-loading")).toBeDefined());
+    expect(screen.queryByText("ответ A")).toBeNull();
+
+    await act(async () => {
+      pending.resolve(response([]));
+    });
   });
 });

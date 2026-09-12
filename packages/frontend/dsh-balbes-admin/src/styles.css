@@ -301,6 +301,7 @@ button.ws-tree-row:hover { background: var(--surface); }
 .ws-tab {
   background: none; border: none; border-bottom: 2px solid transparent;
   color: var(--text-dim); font: inherit; font-size: 13px; padding: 10px 12px; cursor: pointer;
+  max-width: 12rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .ws-tab:hover { color: var(--text); }
 .ws-tab.active { color: var(--text); border-bottom-color: var(--accent); }
@@ -441,7 +442,7 @@ button.ws-tree-row:hover { background: var(--surface); }
 .telegram-hint { color: var(--danger); }
 .telegram-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .telegram-test-ok { margin: 0; color: var(--ok); font-size: 13px; }
-.ws-tab-group { display: inline-flex; align-items: center; }
+.ws-tab-group { display: inline-flex; align-items: center; min-width: 0; }
 .ws-tab-close {
   border: 0; background: transparent; color: inherit; cursor: pointer;
   font-size: 1rem; line-height: 1; padding: 0 0.35rem;

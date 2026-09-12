@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildTranscript } from "../src/transcript.js";
-import { assistantText, assistantToolCall, emptyAssistant, pluginContext, systemMessage, toolResult, userMessage } from "./fixtures/events.js";
+import { assistantText, assistantToolCall, emptyAssistant, pluginContext, systemMessage, toolResult, toolResultWithError, userMessage } from "./fixtures/events.js";
 
 const session = { id: "session-1", createdAt: 1_700_000_000_000 } as never;
 
@@ -47,5 +47,15 @@ describe("buildTranscript", () => {
 
   it("skips a surface event that projects to no message", () => {
     expect(buildTranscript({ session, events: [emptyAssistant(0)] })).toEqual([]);
+  });
+
+  it("falls back to extractSessionEventText for a result with no text blocks", () => {
+    const entries = buildTranscript({ session, events: [toolResultWithError(0, "ToolFailure", "E_BOOM")] });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.kind).toBe("tool-result");
+    expect(entries[0]?.isError).toBe(true);
+    // block-join is empty (no text blocks), so detail must come from the
+    // extractor's failure identity, newline-joined by extractSessionEventText.
+    expect(entries[0]?.detail).toBe("ToolFailure\nE_BOOM");
   });
 });

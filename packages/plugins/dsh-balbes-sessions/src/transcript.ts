@@ -6,6 +6,7 @@ import {
 } from "@deepseek-ai/dsh-session";
 import type { ContentBlock, Message, ToolCallBlock, ToolResultBlock } from "@deepseek-ai/dsh-llm";
 import type { SessionEvent, SessionHeader } from "@deepseek-ai/dsh-session";
+import { extractSessionEventText } from "@deepseek-ai/dsh-session-query";
 
 export type TranscriptRole = "user" | "assistant" | "system";
 export type TranscriptKind = "message" | "tool-call" | "tool-result" | "context";
@@ -45,7 +46,7 @@ function entriesForEvent(event: SessionEvent, message: Message, inContext: boole
   const head = { seq: event.seq, time: new Date(event.time).toISOString(), role: message.role, inContext };
   if (message.source.kind === "tool") {
     const blocks = message.content.filter((block): block is ToolResultBlock => block.type === "tool-result");
-    const detail = joinTextBlocks(blocks.flatMap((block) => block.content));
+    const detail = joinTextBlocks(blocks.flatMap((block) => block.content)) || extractSessionEventText(event);
     const entry: TranscriptEntry = { ...head, kind: "tool-result", text: "", detail };
     return blocks.some((block) => block.isError === true) ? [{ ...entry, isError: true }] : [entry];
   }
