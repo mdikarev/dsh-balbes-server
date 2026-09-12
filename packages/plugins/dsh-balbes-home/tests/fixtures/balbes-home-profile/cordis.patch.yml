@@ -1,0 +1,7 @@
+# Test composition for the agent-home plugin: dsh-base + the balbes host bundle
+# (from package.json) + the plugin under test. The host bundle already carries
+# the system-prompt row and the /api/prompt route, so the marker in
+# $DSH_HOME/agent/self.md can be observed in the request the model receives.
+- insert:
+    - id: balbes-home
+      name: 'dsh-balbes-home'
