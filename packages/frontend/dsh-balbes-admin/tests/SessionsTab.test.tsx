@@ -37,6 +37,30 @@ describe("SessionsTab", () => {
     expect(screen.getByTestId("session-row-session-old").textContent).toContain("Без заголовка");
   });
 
+  it("opens a session from a row click", async () => {
+    const onOpenSession = vi.fn();
+    render(
+      <SessionsTab api={makeApi()} workspace={{ scope: "project", name: "alpha" }} reloadKey={0} onOpenSession={onOpenSession} />
+    );
+    await waitFor(() => expect(screen.getByTestId("session-row-session-new")).toBeDefined());
+    fireEvent.click(screen.getByTestId("session-row-session-new"));
+    expect(onOpenSession).toHaveBeenCalledWith(SESSIONS[0]);
+  });
+
+  it("marks the open session as active", async () => {
+    render(
+      <SessionsTab
+        api={makeApi()}
+        workspace={{ scope: "project", name: "alpha" }}
+        reloadKey={0}
+        activeSessionId="session-old"
+      />
+    );
+    await waitFor(() => expect(screen.getByTestId("session-row-session-old")).toBeDefined());
+    expect(screen.getByTestId("session-row-session-old").getAttribute("aria-current")).toBe("true");
+    expect(screen.getByTestId("session-row-session-new").getAttribute("aria-current")).toBeNull();
+  });
+
   it("falls back for an empty title and an empty time", async () => {
     const api = makeApi({
       listSessions: vi.fn(async () => ({

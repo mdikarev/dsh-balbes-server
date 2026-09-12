@@ -10,6 +10,10 @@ interface SessionsTabProps {
   workspace: WorkspaceRef | null;
   /** Счётчик внешних обновлений (кнопка «Обновить», клик по табу). */
   reloadKey: number;
+  /** Открыть сессию: правый хост добавляет таб с диалогом. */
+  onOpenSession?: (session: WorkspaceSessionInfo) => void;
+  /** id открытой сессии для подсветки строки. */
+  activeSessionId?: string | null;
 }
 
 /**
@@ -18,7 +22,7 @@ interface SessionsTabProps {
  * защищены от гонок тем же приёмом «поколение + счётчик запроса», что в
  * FileTree: ответ прошлого воркспейса не применяется.
  */
-export default function SessionsTab({ api, workspace, reloadKey }: SessionsTabProps) {
+export default function SessionsTab({ api, workspace, reloadKey, onOpenSession, activeSessionId }: SessionsTabProps) {
   const [sessions, setSessions] = useState<WorkspaceSessionInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const lastWorkspace = useRef<WorkspaceRef | null>(null);
@@ -77,15 +81,26 @@ export default function SessionsTab({ api, workspace, reloadKey }: SessionsTabPr
   }
   return (
     <ul className="ws-rows ws-session-rows" data-testid="sessions-list">
-      {sessions.map((session) => (
-        <li key={session.id} className="ws-session-row" data-testid={`session-row-${session.id}`}>
-          <span className="ws-session-title">{session.title?.trim() ? session.title : "Без заголовка"}</span>
-          <span className="ws-session-meta">
-            <span className="ws-session-channel">{session.channel}</span>
-            <span className="ws-session-time">{formatCreatedAt(session.createdAt)}</span>
-          </span>
-        </li>
-      ))}
+      {sessions.map((session) => {
+        const active = session.id === activeSessionId;
+        return (
+          <li key={session.id} className={active ? "ws-session-row active" : "ws-session-row"}>
+            <button
+              type="button"
+              className="ws-session-row-button"
+              data-testid={`session-row-${session.id}`}
+              aria-current={active ? "true" : undefined}
+              onClick={() => onOpenSession?.(session)}
+            >
+              <span className="ws-session-title">{session.title?.trim() ? session.title : "Без заголовка"}</span>
+              <span className="ws-session-meta">
+                <span className="ws-session-channel">{session.channel}</span>
+                <span className="ws-session-time">{formatCreatedAt(session.createdAt)}</span>
+              </span>
+            </button>
+          </li>
+        );
+      })}
     </ul>
   );
 }
