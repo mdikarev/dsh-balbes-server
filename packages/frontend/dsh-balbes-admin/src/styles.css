@@ -441,3 +441,23 @@ button.ws-tree-row:hover { background: var(--surface); }
 .telegram-hint { color: var(--danger); }
 .telegram-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .telegram-test-ok { margin: 0; color: var(--ok); font-size: 13px; }
+.ws-tab-group { display: inline-flex; align-items: center; }
+.ws-tab-close {
+  border: 0; background: transparent; color: inherit; cursor: pointer;
+  font-size: 1rem; line-height: 1; padding: 0 0.35rem;
+}
+.ws-tabstrip { overflow-x: auto; }
+.ws-session-row-button {
+  display: flex; justify-content: space-between; gap: 0.75rem;
+  width: 100%; border: 0; background: transparent; color: inherit; cursor: pointer;
+  text-align: left; padding: 0.4rem 0.5rem;
+}
+.ws-session-row.active .ws-session-row-button { background: rgba(255, 255, 255, 0.06); }
+.ws-transcript { overflow-y: auto; height: 100%; }
+.ws-transcript-entry { border-bottom: 1px solid rgba(255, 255, 255, 0.06); padding: 0.4rem 0.2rem; }
+.ws-transcript-head { display: flex; gap: 0.6rem; align-items: baseline; font-size: 0.8rem; opacity: 0.85; }
+.ws-transcript-time { opacity: 0.7; }
+.ws-transcript-shadowed { color: #d9a441; }
+.ws-transcript-text { white-space: pre-wrap; margin: 0.3rem 0 0; }
+.ws-transcript-pre { white-space: pre-wrap; margin: 0.3rem 0 0; }
+

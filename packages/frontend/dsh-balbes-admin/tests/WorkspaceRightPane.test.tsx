@@ -15,6 +15,7 @@ function makeApi(overrides: Partial<AdminApi> = {}): AdminApi {
     deleteWorkspace: vi.fn(),
     readWorkspaceDir: vi.fn(),
     listSessions: vi.fn(async () => ({ sessions: [] })),
+    readSession: vi.fn(async () => ({ session: { id: "s", title: null, channel: "telegram", createdAt: "" }, messages: [] })),
     listModels: vi.fn(),
     saveModel: vi.fn(),
     deleteModel: vi.fn(),
@@ -90,6 +91,46 @@ describe("WorkspaceRightPane", () => {
   it("offers a refresh control", () => {
     render(<WorkspaceRightPane api={makeApi()} workspace={{ scope: "home" }} />);
     expect(screen.getByTestId("ws-refresh")).toBeDefined();
+    cleanup();
+  });
+
+  it("opens a session tab from the list, focuses it and closes it", async () => {
+    const session = { id: "session-alpha", title: "задача", channel: "telegram", createdAt: "2026-09-11T01:40:00.000Z" };
+    const api = makeApi({
+      listSessions: vi.fn(async () => ({ sessions: [session] })),
+      readSession: vi.fn(async () => ({ session, messages: [] }))
+    });
+    render(<WorkspaceRightPane api={api} workspace={{ scope: "project", name: "alpha" }} />);
+    await waitFor(() => expect(screen.getByTestId("session-row-session-alpha")).toBeDefined());
+
+    fireEvent.click(screen.getByTestId("session-row-session-alpha"));
+    await waitFor(() => expect(screen.getByTestId("session-transcript-empty")).toBeDefined());
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Сессии", "задача"]);
+
+    // повторное открытие не дублирует таб: список скрыт, поэтому сначала возвращаемся на «Сессии»
+    fireEvent.click(screen.getByTestId("ws-tab-sessions"));
+    await waitFor(() => expect(screen.getByTestId("session-row-session-alpha")).toBeDefined());
+    fireEvent.click(screen.getByTestId("session-row-session-alpha"));
+    expect(screen.getAllByRole("tab")).toHaveLength(2);
+
+    fireEvent.click(screen.getByTestId("ws-tab-close-session:session-alpha"));
+    await waitFor(() => expect(screen.queryByRole("tab", { name: "задача" })).toBeNull());
+    cleanup();
+  });
+
+  it("resets session tabs on a workspace switch", async () => {
+    const session = { id: "session-alpha", title: "задача", channel: "telegram", createdAt: "2026-09-11T01:40:00.000Z" };
+    const api = makeApi({
+      listSessions: vi.fn(async () => ({ sessions: [session] })),
+      readSession: vi.fn(async () => ({ session, messages: [] }))
+    });
+    const { rerender } = render(<WorkspaceRightPane api={api} workspace={{ scope: "project", name: "alpha" }} />);
+    await waitFor(() => expect(screen.getByTestId("session-row-session-alpha")).toBeDefined());
+    fireEvent.click(screen.getByTestId("session-row-session-alpha"));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "задача" })).toBeDefined());
+
+    rerender(<WorkspaceRightPane api={api} workspace={{ scope: "project", name: "beta" }} />);
+    await waitFor(() => expect(screen.queryByRole("tab", { name: "задача" })).toBeNull());
     cleanup();
   });
 });
