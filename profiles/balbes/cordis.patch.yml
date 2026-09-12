@@ -13,5 +13,8 @@
     - id: balbes-sessions
       name: 'dsh-balbes-sessions'
 
+    - id: balbes-home
+      name: 'dsh-balbes-home'
+
     - id: balbes-telegram
       name: 'dsh-balbes-telegram'

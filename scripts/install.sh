@@ -606,6 +606,25 @@ copy_sessions_into_profile() {
     info "Sessions plugin copied into $dst"
 }
 
+# copy_home_into_profile — зеркало copy_sessions_into_profile: собранный
+# плагин глобального home-контекста копируется реальным каталогом в
+# node_modules профиля.
+copy_home_into_profile() {
+    local profile_dir="$DSH_HOME/profiles/$PROFILE_NAME"
+    local src="$REPO_DIR/packages/plugins/dsh-balbes-home"
+    local dst="$profile_dir/node_modules/dsh-balbes-home"
+    if [[ ! -d "$src/lib" ]]; then
+        die "home plugin not built at $src/lib — build step failed"
+    fi
+    mkdir -p "$profile_dir/node_modules"
+    rm -rf "$dst"
+    cp -R "$src" "$dst"
+    rm -f "$dst/tsconfig.json" "$dst/tsconfig.build.json"
+    rm -rf "$dst/tests" "$dst/src" "$dst/lib/types"
+    chmod -R u+rwX,go-w "$dst"
+    info "Home plugin copied into $dst"
+}
+
 # deploy_ui — собрать dist SPA в $DSH_HOME/balbes/ui (без старых файлов).
 deploy_ui() {
     local src="$REPO_DIR/packages/frontend/dsh-balbes-admin/dist"
@@ -783,6 +802,7 @@ main() {
     copy_models_into_profile
     copy_telegram_into_profile
     copy_sessions_into_profile
+    copy_home_into_profile
     deploy_ui
     configure_api_key
     verify_composition

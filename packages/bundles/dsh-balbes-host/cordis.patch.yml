@@ -19,6 +19,18 @@
   config:
     mode: !!js process.env.DSH_TOOLS_MODE
 
+# Global agent home context: the shared, cross-project agent home
+# ($DSH_HOME/agent) feeds both instruction discovery and the skills catalog.
+# Overrides replace a row's whole config, so agent-instructions restates maxBytes.
+- id: agent-instructions
+  config:
+    maxBytes: 65536
+    dshHome: !!js (process.env.DSH_HOME ?? (process.env.HOME + "/.dsh")) + "/agent"
+
+- id: skill-filesystem
+  config:
+    customSkillDirs: !!js "[(process.env.DSH_HOME ?? (process.env.HOME + \"/.dsh\")) + \"/agent/skills\"]"
+
 - insert:
     - id: code-runtime
       name: '@deepseek-ai/dsh-code-runtime-worker-thread'
