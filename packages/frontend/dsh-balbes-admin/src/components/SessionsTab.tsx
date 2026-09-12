@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { WorkspaceSessionInfo } from "dsh-balbes-contracts";
 import type { AdminApi } from "../api/client";
+import { formatCreatedAt } from "../format";
 import type { WorkspaceRef } from "../workspaceRef";
 import { isSameRef } from "../workspaceRef";
 
@@ -9,17 +10,6 @@ interface SessionsTabProps {
   workspace: WorkspaceRef | null;
   /** Счётчик внешних обновлений (кнопка «Обновить», клик по табу). */
   reloadKey: number;
-}
-
-/**
- * Время создания сессии: ru-RU, с ISO в качестве честного fallback. Пустая
- * (или пробельная) строка — отсутствие времени, и тогда показывается заглушка:
- * пустая ячейка читалась бы как сломанная вёрстка.
- */
-function formatCreatedAt(iso: string): string {
-  if (iso.trim() === "") return "—";
-  const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString("ru-RU");
 }
 
 /**
