@@ -1,7 +1,9 @@
 import z from "@deepseek-ai/schemastery";
+import { SessionQueryError } from "@deepseek-ai/dsh-session-query";
 import { join } from "node:path";
 import { WorkspaceSessionsRegistry, type WorkspaceRef } from "./registry.js";
 import { createSessionsService, type BalbesSessionsService } from "./service.js";
+import { buildTranscript, type TranscriptLog } from "./transcript.js";
 
 export const name = "balbes-sessions";
 export const inject = ["balbesHttp", "balbesWorkspaces", "sessionQuery"];
@@ -21,9 +23,11 @@ interface WorkspacesSlice {
   list(): Promise<{ home: { path: string }; projects: Array<{ name: string; path: string }> }>;
 }
 
-/** Структурный срез движка сессий: только точное чтение заголовков. */
+/** Структурный срез движка сессий: точное чтение заголовков и полного лога. */
 interface SessionQuerySlice {
   readTitleSnapshots(ids: readonly string[]): Promise<TitleObservation[]>;
+  readSession(sessionId: string): Promise<TranscriptLog>;
+  readTitle(sessionId: string): Promise<{ title: string } | undefined>;
 }
 
 type TitleObservation =
@@ -67,6 +71,19 @@ function parseListRequest(body: unknown): { ok: true; ref: WorkspaceRef } | { ok
     return { ok: true, ref: { scope: "project", name: b.name } };
   }
   return { ok: false, message: 'scope must be "home" or "project"' };
+}
+
+/** Разбор тела `sessions.read`: ref как у list плюс обязательный sessionId. */
+function parseReadRequest(
+  body: unknown
+): { ok: true; ref: WorkspaceRef; sessionId: string } | { ok: false; message: string } {
+  const parsed = parseListRequest(body);
+  if (!parsed.ok) return parsed;
+  const sessionId = (body as { sessionId?: unknown }).sessionId;
+  if (typeof sessionId !== "string" || sessionId === "") {
+    return { ok: false, message: "sessionId is required" };
+  }
+  return { ok: true, ref: parsed.ref, sessionId };
 }
 
 export function apply(ctx: {
@@ -120,6 +137,49 @@ export function apply(ctx: {
         .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
       send(res, 200, { sessions });
     } catch (error) {
+      send(res, 500, {
+        error: { code: "internal", message: error instanceof Error ? error.message : String(error) }
+      });
+    }
+  });
+
+  http.post("/api/sessions/read", "bearer", async (_req, res, body) => {
+    const parsed = parseReadRequest(body);
+    if (!parsed.ok) {
+      send(res, 400, { error: { code: "bad-request", message: parsed.message } });
+      return;
+    }
+    const { ref, sessionId } = parsed;
+    try {
+      const { projects } = await workspaces.list();
+      if (ref.scope === "project" && !projects.some((project) => project.name === ref.name)) {
+        send(res, 404, { error: { code: "not-found", message: `project not found: ${ref.name}` } });
+        return;
+      }
+      // Containment: читаем только сессию, зарегистрированную за этим воркспейсом.
+      const entries = await service.list(ref);
+      const entry = entries.find((candidate) => candidate.sessionId === sessionId);
+      if (entry === undefined) {
+        send(res, 404, { error: { code: "not-found", message: `session not found in workspace: ${sessionId}` } });
+        return;
+      }
+      const log = await query.readSession(sessionId);
+      const messages = buildTranscript(log);
+      const title = await query.readTitle(sessionId);
+      send(res, 200, {
+        session: {
+          id: log.session.id,
+          title: title?.title ?? null,
+          channel: entry.channel,
+          createdAt: new Date(log.session.createdAt).toISOString()
+        },
+        messages
+      });
+    } catch (error) {
+      if (error instanceof SessionQueryError && error.code === "SESSION_QUERY_SESSION_NOT_FOUND") {
+        send(res, 404, { error: { code: "not-found", message: `session not found: ${sessionId}` } });
+        return;
+      }
       send(res, 500, {
         error: { code: "internal", message: error instanceof Error ? error.message : String(error) }
       });

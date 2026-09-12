@@ -590,6 +590,25 @@ curl -sS -X POST http://127.0.0.1:8080/api/sessions/list \
 #    ожидается: HTTP 401
 ```
 
+Диалог сессии — ручка `POST /api/sessions/read` (bearer; ref как у list плюс
+обязательный `sessionId` из ответа `sessions.list`). Полный smoke — REAL-тест
+пакета `dsh-balbes-sessions`; чтение ограничено сессиями выбранного воркспейса
+(чужая сессия — 404), а несуществующая в движке — тоже 404:
+
+```bash
+# Диалог сессии (bearer; sessionId — из ответа sessions.list)
+curl -sS -X POST http://127.0.0.1:8080/api/sessions/read \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"scope":"project","name":"alpha","sessionId":"<session-id>"}'
+#    ожидается: {"session":{"id":"<session-id>","title":...,"channel":...,"createdAt":...},
+#                "messages":[{"seq":0,"time":...,"role":"user","kind":"message","text":...,"inContext":true}, ...]}
+# Несуществующая/чужая сессия:
+curl -sS -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8080/api/sessions/read \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"scope":"home","sessionId":"session-nope"}'
+#    ожидается: 404
+```
+
 Файл реестра на диске — права и форма (в стиле «Данные на диске» из чеклиста
 Telegram). Важно: **на свежей установке файла ещё нет** — `No such file or
 directory` здесь правильно, потому что реестр создаёт первая

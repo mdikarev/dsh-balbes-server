@@ -3,6 +3,8 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { apply, name, inject } from "../src/index.js";
+import { SessionQueryError } from "@deepseek-ai/dsh-session-query";
+import { userMessage } from "./fixtures/events.js";
 
 interface Seat {
   path: string;
@@ -37,6 +39,9 @@ interface HarnessOptions {
   projects?: unknown;
   observations?: unknown[];
   queryThrows?: boolean;
+  log?: unknown;
+  title?: unknown;
+  readThrows?: unknown;
 }
 
 let home: string;
@@ -76,7 +81,12 @@ function harness(options: HarnessOptions = {}): {
             if (options.queryThrows === true) throw new Error("persistence listing failed");
             const all = (options.observations ?? []) as Array<{ sessionId: string; status: string; value?: unknown }>;
             return all.filter((o) => ids.includes(o.sessionId));
-          }
+          },
+          readSession: async (_id: string) => {
+            if (options.readThrows !== undefined) throw options.readThrows;
+            return options.log;
+          },
+          readTitle: async (_id: string) => options.title
         };
       }
       return undefined;
@@ -108,7 +118,10 @@ describe("balbes-sessions plugin", () => {
 
   it("registers one bearer route and provides balbesSessions", () => {
     const h = harness();
-    expect(h.seats.map((s) => [s.path, s.auth])).toEqual([["/api/sessions/list", "bearer"]]);
+    expect(h.seats.map((s) => [s.path, s.auth])).toEqual([
+      ["/api/sessions/list", "bearer"],
+      ["/api/sessions/read", "bearer"]
+    ]);
     const service = h.provided.get("balbesSessions") as { register?: unknown; list?: unknown };
     expect(typeof service.register).toBe("function");
     expect(typeof service.list).toBe("function");
@@ -213,5 +226,56 @@ describe("balbes-sessions plugin", () => {
     });
     // Имя кейса обещает 600 — проверяем режим, а не только путь и содержимое.
     expect((await stat(file)).mode & 0o777).toBe(0o600);
+  });
+
+  it("serves a workspace session transcript and 404s an unregistered session", async () => {
+    const h = harness({
+      log: { session: { id: "s-1", createdAt: 1_700_000_000_000 }, events: [userMessage(0, "привет")] },
+      title: { title: "задача" }
+    });
+    const service = h.provided.get("balbesSessions") as {
+      register(ref: unknown, sessionId: string, channel: string): Promise<void>;
+    };
+    await service.register({ scope: "project", name: "alpha" }, "s-1", "telegram");
+
+    const res = await h.call("/api/sessions/read", { scope: "project", name: "alpha", sessionId: "s-1" });
+    expect(res.status, res.raw).toBe(200);
+    expect(res.json).toEqual({
+      session: { id: "s-1", title: "задача", channel: "telegram", createdAt: new Date(1_700_000_000_000).toISOString() },
+      messages: [
+        { seq: 0, time: new Date(1_700_000_000_000).toISOString(), role: "user", kind: "message", text: "привет", inContext: true }
+      ]
+    });
+
+    const foreign = await h.call("/api/sessions/read", { scope: "project", name: "alpha", sessionId: "s-2" });
+    expect(foreign.status).toBe(404);
+    expect((foreign.json as { error?: { code?: string } }).error?.code).toBe("not-found");
+  });
+
+  it("rejects a read without a sessionId and an unknown project", async () => {
+    const h = harness();
+    expect((await h.call("/api/sessions/read", { scope: "project", name: "alpha" })).status).toBe(400);
+    expect((await h.call("/api/sessions/read", { scope: "project", name: "nope", sessionId: "s-1" })).status).toBe(404);
+  });
+
+  it("maps an unknown engine session to 404 and another engine failure to 500", async () => {
+    const missing = harness({
+      readThrows: new SessionQueryError("no such session", "SESSION_QUERY_SESSION_NOT_FOUND")
+    });
+    const missingService = missing.provided.get("balbesSessions") as {
+      register(ref: unknown, sessionId: string, channel: string): Promise<void>;
+    };
+    await missingService.register({ scope: "project", name: "alpha" }, "s-1", "telegram");
+    const notFound = await missing.call("/api/sessions/read", { scope: "project", name: "alpha", sessionId: "s-1" });
+    expect(notFound.status).toBe(404);
+
+    const broken = harness({ readThrows: new Error("replay failed") });
+    const brokenService = broken.provided.get("balbesSessions") as {
+      register(ref: unknown, sessionId: string, channel: string): Promise<void>;
+    };
+    await brokenService.register({ scope: "project", name: "alpha" }, "s-1", "telegram");
+    const res = await broken.call("/api/sessions/read", { scope: "project", name: "alpha", sessionId: "s-1" });
+    expect(res.status).toBe(500);
+    expect((res.json as { error?: { code?: string } }).error?.code).toBe("internal");
   });
 });
