@@ -96,6 +96,18 @@ describe("balbes-home plugin", () => {
     expect(textOf(h.sections[0]!)).toBe(`${LABEL}\n\nUse { {cwd}} carefully.`);
   });
 
+  it("escapes nested braces to a fixed point so no strict {{ survives", async () => {
+    await writeFile(join(home, "agent", "self.md"), "{{{unknown}}}", "utf8");
+    const triple = textOf(harness().sections[0]!);
+    expect(triple).not.toContain("{{");
+    expect(triple).toContain("unknown");
+
+    await writeFile(join(home, "agent", "self.md"), "{{{{x}}}}", "utf8");
+    const quad = textOf(harness().sections[0]!);
+    expect(quad).not.toContain("{{");
+    expect(quad).toContain("x");
+  });
+
   it("warns and registers nothing when systemPrompt is absent", () => {
     const h = harness({ withSystemPrompt: false });
     expect(h.sections).toEqual([]);

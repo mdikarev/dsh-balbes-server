@@ -49,15 +49,16 @@ export function registryFile(dshHome: string): string {
 /**
  * Starter files provisioned into a fresh agent home. Provisioning is strictly
  * additive: files that already exist (owner edits included) are never touched.
- * Contents are English starter templates for the owner to extend; wiring home
- * files into the agent context is a later stage.
+ * Contents are English starter templates for the owner to extend; the home
+ * files are global context, active for every session.
  */
 const AGENTS_STARTER = [
   "# Agent home rules",
   "",
   "Auto-created by the server on first start. This file belongs to the owner:",
-  "edit it by hand; the server never overwrites it. Wiring home files into the",
-  "agent context is a later stage.",
+  "edit it by hand; the server never overwrites it. AGENTS.md, self.md, and the",
+  "skills/ files are the agent home's global context, active for every session",
+  "and every project.",
   "",
   "Baseline rules:",
   "- Never read or expose secrets: `$DSH_HOME/.credentials.yaml`, `$DSH_HOME/admin-auth.json`,",
@@ -75,8 +76,10 @@ const AGENTS_STARTER = [
 const SELF_STARTER = [
   "# About",
   "",
-  "Auto-created by the server on first start; the owner fills it in.",
-  "A short self-description of the agent, for the owner and future sessions.",
+  "Draft: auto-created by the server on first start; the owner fills it in and",
+  "the server never overwrites it. The agent home injects this file into the",
+  "system prompt for every session, so write it as the agent's short",
+  "self-description.",
   "",
   "Draft fields:",
   '- Name: (e.g. "balbes")',
@@ -142,7 +145,10 @@ async function removeLegacySkillsReadme(skillsDir: string): Promise<void> {
     if ((await readFile(legacy, "utf8")) !== OLD_SKILLS_README_STARTER) return;
     await unlink(legacy);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    const code = (error as NodeJS.ErrnoException).code;
+    // A missing legacy file is fine; a README.md that is a directory is an
+    // owner choice too — leave it in place instead of failing the whole home.
+    if (code !== "ENOENT" && code !== "EISDIR") throw error;
   }
 }
 

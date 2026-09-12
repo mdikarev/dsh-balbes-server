@@ -20,7 +20,11 @@ interface CtxLike {
 
 /** Escape strict {{variable}} interpolation so owner text can never throw assembly. */
 function escapeInterpolation(text: string): string {
-  return text.replace(/\{\{/g, "{ {");
+  // Fixed point: one pass can leave a strict {{ behind (e.g. "{{{x}}}" ->
+  // "{ {{x}}}"), so keep replacing until no "{{" remains.
+  let out = text;
+  while (out.includes("{{")) out = out.replace(/\{\{/g, "{ {");
+  return out;
 }
 
 export function apply(ctx: CtxLike, config: { dshHome?: string }): void {

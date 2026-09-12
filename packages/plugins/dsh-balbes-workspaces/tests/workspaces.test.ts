@@ -60,8 +60,14 @@ describe("ensureHome", () => {
     await ensureHome(home);
     const agents = await readFile(join(homeDir(home), "AGENTS.md"), "utf8");
     expect(agents).toContain("# Agent home rules");
+    // the home starter states the global-context fact, not a "later stage" promise
+    expect(agents).toContain("global context");
+    expect(agents).not.toContain("later stage");
     const self = await readFile(join(homeDir(home), "self.md"), "utf8");
     expect(self).toContain("# About");
+    // self.md is a draft the owner fills in and is injected into the system prompt
+    expect(self).toContain("Draft");
+    expect(self).toContain("system prompt");
     const skillsReadme = await readFile(join(homeDir(home), "skills", "README"), "utf8");
     expect(skillsReadme).toContain("# skills/");
     // the starter documents the skill shapes, frontmatter, and layers
@@ -99,6 +105,19 @@ describe("skills README migration", () => {
     await expect(stat(join(skillsDir, "README.md"))).rejects.toThrow();
     const current = await readFile(join(skillsDir, "README"), "utf8");
     expect(current).toContain("<name>/SKILL.md");
+  });
+
+  it("leaves a README.md directory alone and keeps ensureHome working", async () => {
+    const skillsDir = join(homeDir(home), "skills");
+    await mkdir(join(skillsDir, "README.md"), { recursive: true });
+
+    await expect(ensureHome(home)).resolves.toBe(homeDir(home));
+    const s = await stat(join(skillsDir, "README.md"));
+    expect(s.isDirectory()).toBe(true);
+    // the canonical no-extension README is still provisioned alongside it
+    await expect(stat(join(skillsDir, "README"))).resolves.toBeTruthy();
+    // listing the home must not fail either
+    await expect(listWorkspaces(home)).resolves.toMatchObject({ home: { path: homeDir(home) } });
   });
 
   it("leaves an owner-edited skills/README.md untouched", async () => {

@@ -25,11 +25,11 @@
 - id: agent-instructions
   config:
     maxBytes: 65536
-    dshHome: !!js (process.env.DSH_HOME ?? (process.env.HOME + "/.dsh")) + "/agent"
+    dshHome: !!js (process.env.DSH_HOME ?? ((process.env.HOME ?? ".") + "/.dsh")) + "/agent"
 
 - id: skill-filesystem
   config:
-    customSkillDirs: !!js "[(process.env.DSH_HOME ?? (process.env.HOME + \"/.dsh\")) + \"/agent/skills\"]"
+    customSkillDirs: !!js "[(process.env.DSH_HOME ?? ((process.env.HOME ?? \".\") + \"/.dsh\")) + \"/agent/skills\"]"
 
 - insert:
     - id: code-runtime
