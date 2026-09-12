@@ -1,6 +1,6 @@
 # Просмотр сессий в админке
 
-- Status: implementing
+- Status: absorbed
 
 ## Intent
 

@@ -39,6 +39,24 @@ canon. Запись заводится при обнаружении расхо�
   `dsh-balbes-contracts` компиляторным SoT форм и требует правки реестра в том же изменении — поэтому stale-сторона здесь canon (`docs_stale`), вопрос владельцу не требовался.
 - **finding_ids:** F-002
 
+### D-003: Canon omitted that in-context replacement copies enter the session transcript
+- **status:** resolved
+- **decision:** docs_stale
+- **canon_paths:** docs/canon/API_CONTRACTS.md, docs/canon/ARCHITECTURE.md, docs/canon/GLOSSARY.md
+- **code_paths:** packages/plugins/dsh-balbes-sessions/src/transcript.ts, packages/plugins/dsh-balbes-sessions/tests/transcript.test.ts
+- **evidence:** Canon described session replies as durable append-origin only and stated
+  «реплики из неё не берутся» for the model surface, but shipped `buildTranscript`
+  keeps a non-service surface event when `isAppendSurfaceEvent(event) || inContext`
+  (transcript.ts L76-79). The binding design
+  (docs/superpowers/specs/2026-09-12-session-view-design.md L80-85) and the covering
+  unit test («drops a replaced context snapshot but keeps the durable conversation»,
+  transcript.test.ts L35-46) deliberately keep in-context replacement copies; real
+  compaction appends a `user/message` checkpoint with `surfaceOp: {op:"replace"}` and
+  source `{kind:"plugin", plugin:"compact"}` (dsh-compaction-basic). Canon was the
+  stale side (endpoint shape, containment and header sources all matched); the three
+  living sections were corrected in this session and re-validated.
+- **finding_ids:** F-003
+
 ## Template for new entries
 
 <!--
