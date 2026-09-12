@@ -53,7 +53,7 @@ export default function WorkspaceRightPane({ api, workspace }: WorkspaceRightPan
       const index = sessionTabs.findIndex((tab) => tab.id === id);
       const next = sessionTabs.filter((tab) => tab.id !== id);
       setSessionTabs(next);
-      if (active === id) setActive(next[Math.max(0, index - 1)]?.id ?? "sessions");
+      if (active === id) setActive(index === 0 ? "sessions" : (next[index - 1]?.id ?? "sessions"));
     },
     [sessionTabs, active]
   );

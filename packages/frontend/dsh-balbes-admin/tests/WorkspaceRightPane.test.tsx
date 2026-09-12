@@ -133,4 +133,49 @@ describe("WorkspaceRightPane", () => {
     await waitFor(() => expect(screen.queryByRole("tab", { name: "задача" })).toBeNull());
     cleanup();
   });
+
+  it("focuses the left neighbor when closing an active session tab and the static tab before the first", async () => {
+    const first = { id: "session-alpha", title: "первая", channel: "telegram", createdAt: "2026-09-11T01:40:00.000Z" };
+    const second = { id: "session-beta", title: "вторая", channel: "telegram", createdAt: "2026-09-11T01:41:00.000Z" };
+    const api = makeApi({
+      listSessions: vi.fn(async () => ({ sessions: [first, second] })),
+      readSession: vi.fn(async () => ({ session: first, messages: [] }))
+    });
+    render(<WorkspaceRightPane api={api} workspace={{ scope: "project", name: "alpha" }} />);
+    await waitFor(() => expect(screen.getByTestId("session-row-session-alpha")).toBeDefined());
+
+    // открываем обе сессии: [Сессии, первая, вторая], активна вторая
+    fireEvent.click(screen.getByTestId("session-row-session-alpha"));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "первая" })).toBeDefined());
+    fireEvent.click(screen.getByTestId("ws-tab-sessions"));
+    await waitFor(() => expect(screen.getByTestId("session-row-session-beta")).toBeDefined());
+    fireEvent.click(screen.getByTestId("session-row-session-beta"));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "вторая" }).getAttribute("aria-selected")).toBe("true"));
+
+    // закрываем правую — активной становится её левый сосед, первая сессия
+    fireEvent.click(screen.getByTestId("ws-tab-close-session:session-beta"));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "первая" }).getAttribute("aria-selected")).toBe("true"));
+    expect(screen.getByRole("tab", { name: "Сессии" }).getAttribute("aria-selected")).toBe("false");
+    expect(screen.queryByRole("tab", { name: "вторая" })).toBeNull();
+
+    // снова открываем вторую и активируем левую, чтобы закрыть index 0 при живой правой
+    fireEvent.click(screen.getByTestId("ws-tab-sessions"));
+    await waitFor(() => expect(screen.getByTestId("session-row-session-beta")).toBeDefined());
+    fireEvent.click(screen.getByTestId("session-row-session-beta"));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "вторая" }).getAttribute("aria-selected")).toBe("true"));
+    fireEvent.click(screen.getByRole("tab", { name: "первая" }));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "первая" }).getAttribute("aria-selected")).toBe("true"));
+
+    // слева от левой сессии стоит статический таб «Сессии», а не правая сессия
+    fireEvent.click(screen.getByTestId("ws-tab-close-session:session-alpha"));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Сессии" }).getAttribute("aria-selected")).toBe("true"));
+    expect(screen.getByRole("tab", { name: "вторая" }).getAttribute("aria-selected")).toBe("false");
+    expect(screen.queryByRole("tab", { name: "первая" })).toBeNull();
+
+    // закрываем последний сессионный таб — остаётся только статический «Сессии»
+    fireEvent.click(screen.getByTestId("ws-tab-close-session:session-beta"));
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Сессии"]);
+    expect(screen.getByRole("tab", { name: "Сессии" }).getAttribute("aria-selected")).toBe("true");
+    cleanup();
+  });
 });
