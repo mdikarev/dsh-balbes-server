@@ -87,10 +87,38 @@ const SELF_STARTER = [
   ""
 ].join("\n");
 
-const SKILLS_README_STARTER = [
+/**
+ * Starter text written by older releases to `skills/README.md`. Captured here
+ * byte-for-byte so the one-time migration can recognise an untouched starter
+ * file; anything else is an owner edit and must never be touched.
+ */
+const OLD_SKILLS_README_STARTER = [
   "# skills/",
   "",
   "Directory for agent skills (later stages). Format and wiring to be defined.",
+  ""
+].join("\n");
+
+/**
+ * Starter README for a skills directory (home and project alike). Written
+ * WITHOUT a `.md` extension so the skill provider never tries to parse it as a
+ * skill (no frontmatter -> warning on every scan).
+ */
+const SKILLS_README_STARTER = [
+  "# skills/",
+  "",
+  "Agent skills live here. A skill is a directory `<name>/SKILL.md` or a flat",
+  "file `<name>.md`; both begin with YAML frontmatter carrying `name` and",
+  "`description`:",
+  "",
+  "---",
+  "name: my-skill",
+  "description: What the skill does and when to use it.",
+  "---",
+  "",
+  "Home skills in `$DSH_HOME/agent/skills/` are global: every project sees them.",
+  "Project skills in `<project>/.dsh/skills/` are local to that project; a skill",
+  "with the same name shadows the home one.",
   ""
 ].join("\n");
 
@@ -104,6 +132,20 @@ async function provisionFile(file: string, content: string): Promise<void> {
   }
 }
 
+/**
+ * One-time migration: drop `skills/README.md` only when it is still exactly the
+ * old starter. Missing file is fine; an owner-edited file is left in place.
+ */
+async function removeLegacySkillsReadme(skillsDir: string): Promise<void> {
+  const legacy = join(skillsDir, "README.md");
+  try {
+    if ((await readFile(legacy, "utf8")) !== OLD_SKILLS_README_STARTER) return;
+    await unlink(legacy);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
 /** The home always exists: mkdir -p, then provision missing starter files, idempotent. */
 export async function ensureHome(dshHome: string): Promise<string> {
   const dir = homeDir(dshHome);
@@ -112,7 +154,8 @@ export async function ensureHome(dshHome: string): Promise<string> {
   await mkdir(skillsDir, { recursive: true });
   await provisionFile(join(dir, "AGENTS.md"), AGENTS_STARTER);
   await provisionFile(join(dir, "self.md"), SELF_STARTER);
-  await provisionFile(join(skillsDir, "README.md"), SKILLS_README_STARTER);
+  await provisionFile(join(skillsDir, "README"), SKILLS_README_STARTER);
+  await removeLegacySkillsReadme(skillsDir);
   return dir;
 }
 
@@ -255,6 +298,9 @@ export async function createProject(dshHome: string, name: string): Promise<Work
     }
     throw error;
   }
+  const skillsDir = join(target, ".dsh", "skills");
+  await mkdir(skillsDir, { recursive: true });
+  await provisionFile(join(skillsDir, "README"), SKILLS_README_STARTER);
   const createdAt = new Date().toISOString();
   reconciled.projects[name] = { createdAt };
   await writeRegistry(dshHome, reconciled);

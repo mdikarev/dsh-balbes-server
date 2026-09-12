@@ -19,6 +19,15 @@ import {
 
 let home: string;
 
+// Exact text the pre-Task-2 ensureHome wrote to `skills/README.md`. The
+// migration must recognise this byte-for-byte; anything else is an owner edit.
+const OLD_SKILLS_README_CONTENT = [
+  "# skills/",
+  "",
+  "Directory for agent skills (later stages). Format and wiring to be defined.",
+  ""
+].join("\n");
+
 beforeEach(async () => {
   home = await mkdtemp(join(tmpdir(), "ws-home-"));
 });
@@ -53,8 +62,16 @@ describe("ensureHome", () => {
     expect(agents).toContain("# Agent home rules");
     const self = await readFile(join(homeDir(home), "self.md"), "utf8");
     expect(self).toContain("# About");
-    const skillsReadme = await readFile(join(homeDir(home), "skills", "README.md"), "utf8");
+    const skillsReadme = await readFile(join(homeDir(home), "skills", "README"), "utf8");
     expect(skillsReadme).toContain("# skills/");
+    // the starter documents the skill shapes, frontmatter, and layers
+    expect(skillsReadme).toContain("<name>/SKILL.md");
+    expect(skillsReadme).toContain("<name>.md");
+    expect(skillsReadme).toContain("frontmatter");
+    expect(skillsReadme).toContain("$DSH_HOME/agent/skills");
+    expect(skillsReadme).toContain("<project>/.dsh/skills");
+    // no .md file: the skill provider must not parse the starter as a skill
+    await expect(stat(join(homeDir(home), "skills", "README.md"))).rejects.toThrow();
     const entries = await readdir(homeDir(home));
     expect(entries).toEqual(expect.arrayContaining(["AGENTS.md", "self.md", "skills"]));
   });
@@ -67,6 +84,34 @@ describe("ensureHome", () => {
     await ensureHome(home);
     await ensureHome(home);
     expect(await readFile(agents, "utf8")).toBe("# custom rules by the owner\n");
+  });
+});
+
+describe("skills README migration", () => {
+  it("removes skills/README.md only when it is byte-equal to the old starter", async () => {
+    const skillsDir = join(homeDir(home), "skills");
+    await mkdir(skillsDir, { recursive: true });
+    await writeFile(join(skillsDir, "README.md"), OLD_SKILLS_README_CONTENT, "utf8");
+
+    await ensureHome(home);
+    await ensureHome(home);
+
+    await expect(stat(join(skillsDir, "README.md"))).rejects.toThrow();
+    const current = await readFile(join(skillsDir, "README"), "utf8");
+    expect(current).toContain("<name>/SKILL.md");
+  });
+
+  it("leaves an owner-edited skills/README.md untouched", async () => {
+    const skillsDir = join(homeDir(home), "skills");
+    await mkdir(skillsDir, { recursive: true });
+    const edited = "# my own skills notes\n";
+    await writeFile(join(skillsDir, "README.md"), edited, "utf8");
+
+    await ensureHome(home);
+
+    expect(await readFile(join(skillsDir, "README.md"), "utf8")).toBe(edited);
+    // the canonical README (without .md) is still provisioned alongside
+    await expect(stat(join(skillsDir, "README"))).resolves.toBeTruthy();
   });
 });
 
@@ -165,6 +210,19 @@ describe("createProject", () => {
     expect(created.createdAt).toBeTruthy();
     const s = await stat(created.path);
     expect(s.isDirectory()).toBe(true);
+  });
+
+  it("provisions the project skills dir with the shared starter", async () => {
+    const created = await createProject(home, "alpha");
+    const readme = await readFile(join(created.path, ".dsh", "skills", "README"), "utf8");
+    expect(readme).toContain("# skills/");
+    expect(readme).toContain("<name>/SKILL.md");
+    expect(readme).toContain("<name>.md");
+    expect(readme).toContain("frontmatter");
+    expect(readme).toContain("$DSH_HOME/agent/skills");
+    expect(readme).toContain("<project>/.dsh/skills");
+    // the starter must not be a parseable skill file
+    await expect(stat(join(created.path, ".dsh", "skills", "README.md"))).rejects.toThrow();
   });
 
   it("rejects invalid names with invalid-name", async () => {
