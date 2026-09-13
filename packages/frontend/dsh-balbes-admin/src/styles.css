@@ -79,12 +79,12 @@ button { font: inherit; }
 .form-error { color: var(--danger); font-size: 13px; margin: 0; }
 
 /* ── shell ────────────────────────────────────────────────── */
-.app-shell { display: flex; min-height: 100vh; }
+.app-shell { display: flex; height: 100vh; min-height: 0; overflow: hidden; }
 
 .sidebar {
   width: 224px; flex: none; border-right: 1px solid var(--border);
   background: var(--surface); display: flex; flex-direction: column;
-  padding: 18px 12px 14px; gap: 16px;
+  padding: 18px 12px 14px; gap: 16px; min-height: 0; overflow-y: auto;
 }
 .sidebar .brand { padding: 0 8px; flex-direction: column; align-items: flex-start; gap: 2px; }
 .sidebar nav { display: flex; flex-direction: column; gap: 2px; flex: 1; }
@@ -108,7 +108,7 @@ button { font: inherit; }
 }
 
 /* ── content column ───────────────────────────────────────── */
-.content { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.content { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
 .topbar {
   display: flex; align-items: center; gap: 14px; padding: 10px 22px;
@@ -149,7 +149,7 @@ button { font: inherit; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ── page content ─────────────────────────────────────────── */
-.page { padding: 30px 40px; max-width: 860px; width: 100%; }
+.page { padding: 30px 40px; max-width: 860px; width: 100%; min-height: 0; overflow-y: auto; }
 .page h1 { margin: 0 0 4px; font-size: 22px; font-weight: 650; }
 .page .lead { margin: 0 0 22px; color: var(--text-dim); }
 .page .prompt-note { color: var(--text-dim); font-size: 13px; margin: 0 0 16px; }
@@ -234,7 +234,7 @@ button.nav-item:focus-visible { outline: 1px solid var(--accent); outline-offset
 .ws-list-pane { width: 260px; flex: none; border-right: 1px solid var(--border); background: var(--surface); }
 .ws-pane-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--border); }
 .ws-pane-header h2 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); }
-.ws-rows { list-style: none; margin: 0; padding: 8px; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
+.ws-rows { list-style: none; margin: 0; padding: 8px; display: flex; flex-direction: column; gap: 2px; flex: 1; min-height: 0; overflow-y: auto; }
 .ws-row-wrap { position: relative; display: flex; align-items: center; gap: 6px; border-radius: 6px; }
 .ws-row-wrap:hover { background: var(--surface-2); }
 .ws-row { flex: 1; min-width: 0; text-align: left; background: none; border: none; color: var(--text); cursor: pointer; padding: 7px 9px; border-radius: 6px; border-left: 3px solid transparent; }
@@ -269,7 +269,7 @@ button.nav-item:focus-visible { outline: 1px solid var(--accent); outline-offset
 
 /* ── file tree pane ─────────────────────────────────────── */
 .ws-tree-pane { flex: 1; min-width: 0; border-right: 1px solid var(--border); }
-.ws-tree { overflow: auto; padding: 8px 6px; }
+.ws-tree { flex: 1; min-height: 0; overflow: auto; padding: 8px 6px; }
 .ws-tree-row {
   display: flex; align-items: center; gap: 6px; width: 100%; text-align: left;
   background: none; border: none; color: var(--text); padding: 3px 8px;
@@ -287,7 +287,7 @@ button.ws-tree-row:hover { background: var(--surface); }
 
 /* ── workbench: tree shell width wrapper + splitter + right pane ── */
 .ws-tree-shell {
-  flex: 0 0 var(--tree-w, 33%); min-width: 220px; min-height: 0;
+  flex: 0 0 var(--tree-w, 33%); min-width: 220px; min-height: 0; overflow: hidden;
   display: flex; border-right: 1px solid var(--border);
 }
 .ws-tree-shell .ws-tree-pane { flex: 1; border-right: none; width: auto; }
@@ -306,7 +306,7 @@ button.ws-tree-row:hover { background: var(--surface); }
 .ws-tab:hover { color: var(--text); }
 .ws-tab.active { color: var(--text); border-bottom-color: var(--accent); }
 .ws-tabstrip-refresh { margin-left: auto; font-size: 12px; }
-.ws-tabpanel { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
+.ws-tabpanel { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .ws-tab-error { margin: 0; padding: 12px 14px; }
 .ws-session-rows { padding: 10px 12px; gap: 6px; }
 .ws-session-row {
@@ -328,7 +328,7 @@ button.ws-tree-row:hover { background: var(--surface); }
 
 /* ── models page (Модели) ───────────────────────────────── */
 .models-page {
-  flex: 1; min-width: 0; overflow-y: auto; background: var(--bg);
+  flex: 1; min-height: 0; min-width: 0; overflow-y: auto; background: var(--bg);
   padding: 20px 24px 28px;
 }
 .models-banner { margin: 0 0 14px; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
@@ -418,7 +418,7 @@ button.ws-tree-row:hover { background: var(--surface); }
 
 /* ── telegram page (Telegram) ────────────────────────────── */
 .telegram-page {
-  flex: 1; min-width: 0; overflow-y: auto; background: var(--bg);
+  flex: 1; min-height: 0; min-width: 0; overflow-y: auto; background: var(--bg);
   padding: 20px 24px 28px; display: flex; flex-direction: column; gap: 14px;
 }
 .telegram-banner { margin: 0; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
@@ -454,7 +454,7 @@ button.ws-tree-row:hover { background: var(--surface); }
   text-align: left; padding: 0.4rem 0.5rem;
 }
 .ws-session-row.active .ws-session-row-button { background: rgba(255, 255, 255, 0.06); }
-.ws-transcript { overflow-y: auto; height: 100%; }
+.ws-transcript { flex: 1; min-height: 0; overflow-y: auto; }
 .ws-transcript-entry { border-bottom: 1px solid rgba(255, 255, 255, 0.06); padding: 0.4rem 0.2rem; }
 .ws-transcript-head { display: flex; gap: 0.6rem; align-items: baseline; font-size: 0.8rem; opacity: 0.85; }
 .ws-transcript-time { opacity: 0.7; }
