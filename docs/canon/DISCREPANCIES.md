@@ -57,6 +57,17 @@ canon. Запись заводится при обнаружении расхо�
   living sections were corrected in this session and re-validated.
 - **finding_ids:** F-003
 
+### D-004: OVERVIEW.md не отражал просмотр диалога сессии и динамические файловые табы
+- **status:** resolved
+- **decision:** docs_stale
+- **canon_paths:** docs/canon/OVERVIEW.md
+- **code_paths:** packages/frontend/dsh-balbes-admin/src/api/client.ts, packages/frontend/dsh-balbes-admin/src/components/SessionsTab.tsx, packages/frontend/dsh-balbes-admin/src/components/WorkspaceRightPane.tsx, packages/frontend/dsh-balbes-admin/src/components/SessionTranscript.tsx
+- **evidence:** OVERVIEW.md утверждала «Список — только чтение: диалог не открывается» (L81–83), «правая зона — контейнер табов (сейчас таб «Сессии»)» (L68) и относила «просмотр диалога» к out of scope (L127), тогда как
+  ARCHITECTURE.md L266–276 описывает открытие диалога через `POST /api/sessions/read`, ADMIN_UI.md L49–69 — кликабельные строки сессий и динамические табы сессий и файлов,
+  API_CONTRACTS.md L334–356 — ручку `sessions.read` и форму `TranscriptEntry`, а код (`api/client.ts:196`, `SessionsTab.tsx:93`, `WorkspaceRightPane.tsx:202`, `SessionTranscript.tsx`) это реализует.
+  Canon был stale-стороной; OVERVIEW.md приведён к ARCHITECTURE/ADMIN_UI/API_CONTRACTS в этой сессии и пере-валидирован (`doc-canon validate`: ok).
+- **finding_ids:** F-004
+
 ## Template for new entries
 
 <!--
