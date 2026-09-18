@@ -333,4 +333,19 @@ describe("api client", () => {
     expect(init.method).toBe("POST");
     expect(JSON.parse(String(init.body))).toEqual({ scope: "project", name: "alpha", sessionId: "s-1" });
   });
+
+  it("readWorkspaceFile posts the file request", async () => {
+    const seen: Array<{ path: string; body: unknown }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      seen.push({ path: String(_url), body: JSON.parse(String(init?.body)) });
+      return { ok: true, status: 200, json: async () => ({ file: { kind: "text", content: "hi", truncated: false } }) };
+    }));
+    localStorage.setItem("balbes.authToken", "t");
+    const api = createApiClient();
+    const res = await api.readWorkspaceFile("project", "alpha", "notes.txt");
+    expect(res.file).toEqual({ kind: "text", content: "hi", truncated: false });
+    expect(seen[0]?.path).toBe("/api/workspaces/file");
+    expect(seen[0]?.body).toEqual({ scope: "project", name: "alpha", path: "notes.txt" });
+    vi.unstubAllGlobals();
+  });
 });

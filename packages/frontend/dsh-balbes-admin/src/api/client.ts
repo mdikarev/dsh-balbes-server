@@ -15,6 +15,8 @@ import type {
   WorkspaceScope,
   WorkspaceTreeRequest,
   WorkspaceTreeResponse,
+  WorkspaceFileRequest,
+  WorkspaceFileResponse,
   ModelsListResponse,
   ModelsSaveRequest,
   ModelsSaveResponse,
@@ -67,6 +69,7 @@ export interface AdminApi {
   createWorkspace(name: string): Promise<WorkspaceCreateResponse>;
   deleteWorkspace(name: string): Promise<WorkspaceDeleteResponse>;
   readWorkspaceDir(scope: WorkspaceScope, name: string | undefined, path: string): Promise<WorkspaceTreeResponse>;
+  readWorkspaceFile(scope: WorkspaceScope, name: string | undefined, path: string): Promise<WorkspaceFileResponse>;
   listSessions(scope: WorkspaceScope, name?: string): Promise<SessionsListResponse>;
   readSession(scope: WorkspaceScope, name: string | undefined, sessionId: string): Promise<SessionsReadResponse>;
   listModels(): Promise<ModelsListResponse>;
@@ -179,6 +182,10 @@ export function createApiClient(): AdminApi {
     readWorkspaceDir: (scope, name, path) => {
       const body: WorkspaceTreeRequest = name === undefined ? { scope, path } : { scope, name, path };
       return guard(request<WorkspaceTreeResponse>("/api/workspaces/tree", body));
+    },
+    readWorkspaceFile: (scope, name, path) => {
+      const body: WorkspaceFileRequest = name === undefined ? { scope, path } : { scope, name, path };
+      return guard(request<WorkspaceFileResponse>("/api/workspaces/file", body));
     },
     listSessions: (scope, name) => {
       const body: SessionsListRequest = name === undefined ? { scope } : { scope, name };
