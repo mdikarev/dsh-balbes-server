@@ -232,9 +232,10 @@ describe.skipIf(!realEnabled)("REAL composition (workspaces API)", () => {
     try {
       const token = await bootServer();
 
-      // anon gets 401 on both new routes
+      // anon gets 401 on all new routes
       expect((await postJson(`${base}/api/workspaces/tree`, { scope: "home", path: "" })).status).toBe(401);
       expect((await postJson(`${base}/api/workspaces/events`, {})).status).toBe(401);
+      expect((await postJson(`${base}/api/workspaces/file`, { scope: "home", path: "" })).status).toBe(401);
 
       const created = await postJson(`${base}/api/workspaces/create`, { name: "alpha" }, token);
       expect(created.status, JSON.stringify(created.json)).toBe(200);
@@ -264,6 +265,27 @@ describe.skipIf(!realEnabled)("REAL composition (workspaces API)", () => {
       expect((bad.json as { error?: { code?: string } }).error?.code).toBe("invalid-path");
       const gone = await postJson(`${base}/api/workspaces/tree`, { scope: "project", name: "alpha", path: "nope" }, token);
       expect(gone.status).toBe(404);
+
+      // file: text content, binary sniff, symlink, traversal and not-found
+      await write(join(proot, "notes.txt"), "hello");
+      await write(join(proot, "bin.dat"), Buffer.from([0, 1]));
+      await (await import("node:fs/promises")).symlink("/etc/hostname", join(proot, "evil.txt"));
+
+      const fileText = await postJson(`${base}/api/workspaces/file`, { scope: "project", name: "alpha", path: "notes.txt" }, token);
+      expect(fileText.status, JSON.stringify(fileText.json)).toBe(200);
+      expect((fileText.json as { file?: unknown }).file).toEqual({ kind: "text", content: "hello", truncated: false });
+
+      const fileBin = await postJson(`${base}/api/workspaces/file`, { scope: "project", name: "alpha", path: "bin.dat" }, token);
+      expect((fileBin.json as { file?: unknown }).file).toEqual({ kind: "binary", size: 2 });
+
+      const fileLink = await postJson(`${base}/api/workspaces/file`, { scope: "project", name: "alpha", path: "evil.txt" }, token);
+      expect((fileLink.json as { file?: unknown }).file).toEqual({ kind: "link" });
+
+      const fileBad = await postJson(`${base}/api/workspaces/file`, { scope: "project", name: "alpha", path: "../.." }, token);
+      expect(fileBad.status).toBe(400);
+
+      const fileGone = await postJson(`${base}/api/workspaces/file`, { scope: "project", name: "alpha", path: "nope.txt" }, token);
+      expect(fileGone.status).toBe(404);
 
       // events: open the stream, mutate the tree, expect a fs event for the project
       const ac = new AbortController();
