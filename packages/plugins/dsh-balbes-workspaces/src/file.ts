@@ -46,6 +46,9 @@ export async function readWorkspaceFile(
     throw error;
   }
   if (st.isSymbolicLink()) return { kind: "link" };
+  // A directory (including relPath === "", the workspace root) is not a file;
+  // opening it for reading would fail with EISDIR and surface as a 500.
+  if (st.isDirectory()) throw workspaceError("not-found", "not a file: " + relPath);
   // realpath containment: an intermediate symlink must not pull the read outside
   let realOk = false;
   try {

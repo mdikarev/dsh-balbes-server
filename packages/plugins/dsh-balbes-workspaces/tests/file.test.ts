@@ -47,6 +47,16 @@ describe("readWorkspaceFile", () => {
     });
   });
 
+  it("rejects a directory and an empty path with not-found", async () => {
+    await mkdir(join(p1, "sub"), { recursive: true });
+    await expect(readWorkspaceFile(home, "project", "p1", "sub")).rejects.toMatchObject({
+      code: "not-found"
+    });
+    await expect(readWorkspaceFile(home, "project", "p1", "")).rejects.toMatchObject({
+      code: "not-found"
+    });
+  });
+
   it("rejects traversal, absolute and backslash paths with invalid-path", async () => {
     for (const bad of ["../x.txt", "/etc/hostname", "..\\x", "a/../b"]) {
       await expect(readWorkspaceFile(home, "project", "p1", bad), `relPath=${bad}`).rejects.toMatchObject({
