@@ -1,6 +1,6 @@
 # Просмотр файлов в админке
 
-- Status: implementing
+- Status: absorbed
 
 ## Intent
 
