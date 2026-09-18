@@ -12,8 +12,9 @@
 - Покрывает: HTTP-контракты `/api/*` (method/path/auth/request/response/
   errors/notes) — сейчас `health`, `auth.login`, `auth.me`, `prompt`,
   `workspaces.list`, `workspaces.create`, `workspaces.delete`,
-  `workspaces.tree`, `workspaces.events`, `models.list`, `models.catalog`,
-  `models.save`, `models.delete`, `models.default`, `telegram.status`,
+  `workspaces.tree`, `workspaces.file`, `workspaces.events`, `models.list`,
+  `models.catalog`, `models.save`, `models.delete`, `models.default`,
+  `telegram.status`,
   `telegram.save`, `telegram.test`, `telegram.disable`, `telegram.clear-token`,
   `sessions.list`, `sessions.read`.
 - Вне scope: статика SPA (не API), внутренние сервисные интерфейсы Cordis
@@ -118,6 +119,26 @@
   разыменовываются; dot-записи включены; сначала каталоги (dirs first).
   Контеймент скоупа — лексический и по realpath: ручка никогда не выходит за
   корень воркспейса. Дерево дома — `$DSH_HOME/agent/`.
+
+### workspaces.file — чтение файла воркспейса
+- method: POST
+- path: /api/workspaces/file
+- auth: bearer
+- request: `{scope: "home"|"project", name?: string, path: string}` (`name` —
+  только при `scope: "project"`; `path` — относительный путь файла внутри корня
+  воркспейса, непустой)
+- response: `{file: {kind: "text", content: string, truncated: boolean} |
+  {kind: "binary", size: number} | {kind: "link"}}`
+- errors: 400 `invalid-name` (нет/битый `name` у project), 400 `invalid-path`
+  (неверный путь, в т.ч. traversal за корень), 404 `not-found` (файла нет, путь
+  ведёт на каталог, промежуточный симлинк выводит за воркспейс), 401, 500
+- notes: ленивое read-only чтение одного файла поверх `readWorkspaceFile`; тот же
+  контеймент, что у `workspaces.tree` (лексический и по realpath). Финальный
+  симлинк не разыменовывается — `kind: "link"`; бинарность — NUL в первых 8 КиБ
+  (`BINARY_SNIFF_BYTES`), не по расширению; лимит текста 256 КиБ
+  (`DEFAULT_MAX_FILE_BYTES`) с флагом `truncated`; кодировка UTF-8. `kind` —
+  данные (HTTP 200), а не ошибка: UI различает «файл есть, но не показывается»
+  и «файла нет». Ничего не пишется.
 
 ### workspaces.events — события изменений воркспейсов (SSE-канал)
 - method: POST
