@@ -83,6 +83,22 @@ export interface WorkspaceTreeResponse {
   entries: WorkspaceTreeEntry[];
 }
 
+export type WorkspaceFileKind = "text" | "binary" | "link";
+export type WorkspaceFileResult =
+  | { kind: "text"; content: string; truncated: boolean }
+  | { kind: "binary"; size: number }
+  | { kind: "link" };
+export interface WorkspaceFileRequest {
+  scope: WorkspaceScope;
+  /** Проект-слаг; обязателен при scope === "project", отсутствует для "home". */
+  name?: string;
+  /** Относительный путь файла внутри корня воркспейса; "" недопустим. */
+  path: string;
+}
+export interface WorkspaceFileResponse {
+  file: WorkspaceFileResult;
+}
+
 export interface WorkspaceEventsRequest {}
 
 /** Directory whose listing changed ("" = workspace root). */
