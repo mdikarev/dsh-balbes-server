@@ -8,7 +8,7 @@ interface FileTreeProps {
   api: AdminApi;
   workspace: WorkspaceRef | null;
   refreshKey: number;
-  onOpenFile?: (relPath: string) => void;
+  onOpenFile: (relPath: string) => void;
 }
 
 const ROOT = "";
@@ -33,7 +33,7 @@ function fileIdOf(relPath: string): string {
  * root loads when a workspace is selected; each dir's children load on first
  * expand. `refreshKey` bumps re-read every expanded dir (used after fs events).
  */
-export default function FileTree({ api, workspace, refreshKey, onOpenFile = () => {} }: FileTreeProps) {
+export default function FileTree({ api, workspace, refreshKey, onOpenFile }: FileTreeProps) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [cache, setCache] = useState<Map<string, WorkspaceTreeEntry[]>>(new Map());
   const [errors, setErrors] = useState<Map<string, string>>(new Map());

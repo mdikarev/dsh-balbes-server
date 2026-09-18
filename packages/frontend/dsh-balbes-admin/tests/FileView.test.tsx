@@ -68,6 +68,19 @@ describe("FileView", () => {
     await waitFor(() => expect(screen.getByTestId("file-content").textContent).toBe("new"));
   });
 
+  it("shows loading again when the path changes", async () => {
+    const readWorkspaceFile = vi
+      .fn()
+      .mockResolvedValueOnce({ file: { kind: "text", content: "a", truncated: false } })
+      .mockImplementationOnce(() => new Promise(() => {}));
+    const api = makeApi({ readWorkspaceFile });
+    const { rerender } = render(<FileView api={api} workspace={{ scope: "home" }} path="a.txt" reloadKey={0} />);
+    await waitFor(() => expect(screen.getByTestId("file-content")).toBeDefined());
+    rerender(<FileView api={api} workspace={{ scope: "home" }} path="b.txt" reloadKey={0} />);
+    await waitFor(() => expect(screen.getByTestId("file-loading")).toBeDefined());
+    expect(screen.queryByTestId("file-content")).toBeNull();
+  });
+
   it("makes no request without a workspace", () => {
     const api = makeApi();
     render(<FileView api={api} workspace={null} path="x.txt" reloadKey={0} />);

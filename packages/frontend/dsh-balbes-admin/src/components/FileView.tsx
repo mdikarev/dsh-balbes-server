@@ -23,6 +23,7 @@ export default function FileView({ api, workspace, path, reloadKey }: FileViewPr
     const myGen = generation.current;
     const mySeq = ++loadSeq.current;
     const stale = (): boolean => generation.current !== myGen || loadSeq.current !== mySeq;
+    setData(null);
     setError(null);
     try {
       const res = await api.readWorkspaceFile(workspace.scope, workspace.name, path);
