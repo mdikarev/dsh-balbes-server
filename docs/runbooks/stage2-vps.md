@@ -15,9 +15,10 @@ Telegram-интеграцией. Вход — по логину/паролю,
 Профиль `balbes` на Этапе 2 собирается из бандлов `@deepseek-ai/dsh-base` и
 `dsh-balbes-host` (наш host: сервер + статика + auth + api + startup);
 поверх них в профиль подключён плагин воркспейсов `dsh-balbes-workspaces`
-(API `/api/workspaces/list|create|delete|tree|events`, bearer): список,
+(API `/api/workspaces/list|create|delete|tree|file|events`, bearer): список,
 создание и удаление воркспейсов-проектов, чтение дерева каталогов
-(`tree`) и push-канал их изменений (`events`), на котором админка
+(`tree`), чтение одного файла воркспейса (`file`) и push-канал их изменений
+(`events`), на котором админка
 обновляет дерево без перезагрузки страницы. Также подключается плагин
 `dsh-balbes-telegram`: long polling Bot API, настройки через админку,
 workspace-aware задачи штатного dsh agent loop и чтение ограниченных
@@ -514,10 +515,33 @@ curl -sS -X POST http://127.0.0.1:8080/api/workspaces/tree \
   -d '{"scope":"project","name":"alpha","path":"no-such-dir"}' -w '\nHTTP %{http_code}\n'
 #    ожидается: HTTP 404 {"error":{"code":"not-found",...}}
 
-# без токена: tree и events обязаны отвечать 401
+# содержимое файла воркспейса (создайте файл в каталоге проекта)
+echo "hello" > $DSH_HOME/projects/alpha/hello.txt
+curl -sS -X POST http://127.0.0.1:8080/api/workspaces/file \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"scope":"project","name":"alpha","path":"hello.txt"}' -w '\nHTTP %{http_code}\n'
+#    ожидается: {"file":{"kind":"text","content":"hello\n","truncated":false}} и HTTP 200
+
+# traversal к файлу
+curl -sS -X POST http://127.0.0.1:8080/api/workspaces/file \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"scope":"project","name":"alpha","path":"../.."}' -w '\nHTTP %{http_code}\n'
+#    ожидается: HTTP 400 {"error":{"code":"invalid-path",...}}
+
+# несуществующий файл
+curl -sS -X POST http://127.0.0.1:8080/api/workspaces/file \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"scope":"project","name":"alpha","path":"no-such.txt"}' -w '\nHTTP %{http_code}\n'
+#    ожидается: HTTP 404 {"error":{"code":"not-found",...}}
+
+# без токена: tree, file и events обязаны отвечать 401
 curl -sS -X POST http://127.0.0.1:8080/api/workspaces/tree \
   -H 'content-type: application/json' \
   -d '{"scope":"project","name":"alpha","path":""}' -w '\nHTTP %{http_code}\n'
+#    ожидается: HTTP 401
+curl -sS -X POST http://127.0.0.1:8080/api/workspaces/file \
+  -H 'content-type: application/json' \
+  -d '{"scope":"project","name":"alpha","path":"hello.txt"}' -w '\nHTTP %{http_code}\n'
 #    ожидается: HTTP 401
 curl -sS -X POST http://127.0.0.1:8080/api/workspaces/events \
   -H 'content-type: application/json' -d '{}' -w '\nHTTP %{http_code}\n'
