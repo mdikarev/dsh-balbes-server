@@ -8,6 +8,7 @@ interface FileTreeProps {
   api: AdminApi;
   workspace: WorkspaceRef | null;
   refreshKey: number;
+  onOpenFile?: (relPath: string) => void;
 }
 
 const ROOT = "";
@@ -23,12 +24,16 @@ function dirIdOf(dir: string): string {
   return dir === ROOT ? "root" : dir.replace(/_/g, "__").replace(/\//g, "_");
 }
 
+function fileIdOf(relPath: string): string {
+  return relPath.replace(/_/g, "__").replace(/\//g, "_");
+}
+
 /**
  * Lazy directory tree keyed by relative dir path ("" = workspace root): the
  * root loads when a workspace is selected; each dir's children load on first
  * expand. `refreshKey` bumps re-read every expanded dir (used after fs events).
  */
-export default function FileTree({ api, workspace, refreshKey }: FileTreeProps) {
+export default function FileTree({ api, workspace, refreshKey, onOpenFile = () => {} }: FileTreeProps) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [cache, setCache] = useState<Map<string, WorkspaceTreeEntry[]>>(new Map());
   const [errors, setErrors] = useState<Map<string, string>>(new Map());
@@ -163,12 +168,13 @@ export default function FileTree({ api, workspace, refreshKey }: FileTreeProps) 
                 loading={loading}
                 onToggle={toggle}
                 onRetry={loadDir}
+                onOpenFile={onOpenFile}
               />
             ))}
         {rootEntries !== undefined &&
           rootEntries
             .filter((e) => e.kind !== "dir")
-            .map((e) => <LeafRow key={e.name} entry={e} depth={0} />)}
+            .map((e) => <LeafRow key={e.name} entry={e} dir={ROOT} depth={0} onOpenFile={onOpenFile} />)}
       </div>
     </div>
   );
@@ -183,9 +189,10 @@ interface DirRowProps {
   loading: Set<string>;
   onToggle(dir: string): void;
   onRetry(dir: string): void;
+  onOpenFile(dir: string): void;
 }
 
-function DirRow({ dir, depth, expanded, cache, errors, loading, onToggle, onRetry }: DirRowProps) {
+function DirRow({ dir, depth, expanded, cache, errors, loading, onToggle, onRetry, onOpenFile }: DirRowProps) {
   const name = dir.split("/").pop() ?? dir;
   const open = expanded.has(dir);
   const children = cache.get(dir);
@@ -211,11 +218,11 @@ function DirRow({ dir, depth, expanded, cache, errors, loading, onToggle, onRetr
       {open && hasChildren &&
         children
           .filter((c) => c.kind === "dir")
-          .map((c) => <DirRow key={c.name} dir={joinRel(dir, c.name)} depth={depth + 1} expanded={expanded} cache={cache} errors={errors} loading={loading} onToggle={onToggle} onRetry={onRetry} />)}
+          .map((c) => <DirRow key={c.name} dir={joinRel(dir, c.name)} depth={depth + 1} expanded={expanded} cache={cache} errors={errors} loading={loading} onToggle={onToggle} onRetry={onRetry} onOpenFile={onOpenFile} />)}
       {open && hasChildren &&
         children
           .filter((c) => c.kind !== "dir")
-          .map((c) => <LeafRow key={c.name} entry={c} depth={depth + 1} />)}
+          .map((c) => <LeafRow key={c.name} entry={c} dir={dir} depth={depth + 1} onOpenFile={onOpenFile} />)}
       {open && errors.has(dir) && (
         <p className="form-error">
           {errors.get(dir)}{" "}
@@ -228,13 +235,30 @@ function DirRow({ dir, depth, expanded, cache, errors, loading, onToggle, onRetr
   );
 }
 
-function LeafRow({ entry, depth }: { entry: WorkspaceTreeEntry; depth: number }) {
+function LeafRow({
+  entry,
+  dir,
+  depth,
+  onOpenFile
+}: {
+  entry: WorkspaceTreeEntry;
+  dir: string;
+  depth: number;
+  onOpenFile(relPath: string): void;
+}) {
+  const relPath = joinRel(dir, entry.name);
   return (
-    <span className="ws-leaf" style={{ paddingLeft: 10 + depth * 14 }}>
+    <button
+      type="button"
+      className="ws-tree-row ws-tree-leaf"
+      data-testid={`tree-file-${fileIdOf(relPath)}`}
+      onClick={() => onOpenFile(relPath)}
+      style={{ paddingLeft: 10 + depth * 14 }}
+    >
       <span className="ws-file">
         {entry.name}
         {entry.kind === "link" ? " →" : ""}
       </span>
-    </span>
+    </button>
   );
 }

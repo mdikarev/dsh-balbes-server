@@ -20,13 +20,13 @@ afterEach(() => cleanup());
 
 describe("FileTree", () => {
   it("prompts to select a workspace when none is selected", () => {
-    render(<FileTree api={makeApi({})} workspace={null} refreshKey={0} />);
+    render(<FileTree api={makeApi({})} workspace={null} refreshKey={0} onOpenFile={vi.fn()} />);
     expect(screen.getByText("Выберите воркспейс")).toBeTruthy();
   });
 
   it("loads the root lazily and expands directories on demand", async () => {
     const api = makeApi({ "": rootBody, src: srcBody });
-    render(<FileTree api={api} workspace={alpha} refreshKey={0} />);
+    render(<FileTree api={api} workspace={alpha} refreshKey={0} onOpenFile={vi.fn()} />);
     expect(await screen.findByText("src")).toBeTruthy();
     expect(screen.getByText("readme.md")).toBeTruthy();
     expect(screen.queryByText("main.ts")).toBeNull();
@@ -37,7 +37,7 @@ describe("FileTree", () => {
 
   it("shows an empty hint for an empty directory", async () => {
     const api = makeApi({ "": { entries: [] } });
-    render(<FileTree api={api} workspace={alpha} refreshKey={0} />);
+    render(<FileTree api={api} workspace={alpha} refreshKey={0} onOpenFile={vi.fn()} />);
     expect(await screen.findByText("Каталог пуст")).toBeTruthy();
   });
 
@@ -47,9 +47,9 @@ describe("FileTree", () => {
       .mockResolvedValueOnce({ entries: [{ name: "src", kind: "dir" }, { name: "old.md", kind: "file" }] })
       .mockResolvedValueOnce({ entries: [{ name: "src", kind: "dir" }, { name: "new.md", kind: "file" }] });
     const api = { readWorkspaceDir: read } as unknown as AdminApi;
-    const { rerender } = render(<FileTree api={api} workspace={alpha} refreshKey={0} />);
+    const { rerender } = render(<FileTree api={api} workspace={alpha} refreshKey={0} onOpenFile={vi.fn()} />);
     expect(await screen.findByText("old.md")).toBeTruthy();
-    rerender(<FileTree api={api} workspace={alpha} refreshKey={1} />);
+    rerender(<FileTree api={api} workspace={alpha} refreshKey={1} onOpenFile={vi.fn()} />);
     expect(await screen.findByText("new.md")).toBeTruthy();
     await waitFor(() => expect(screen.queryByText("old.md")).toBeNull());
     expect(read).toHaveBeenCalledTimes(2);
@@ -67,12 +67,12 @@ describe("FileTree", () => {
       return srcBody; // path === "src"
     });
     const api = { readWorkspaceDir: read } as unknown as AdminApi;
-    const { rerender } = render(<FileTree api={api} workspace={alpha} refreshKey={0} />);
+    const { rerender } = render(<FileTree api={api} workspace={alpha} refreshKey={0} onOpenFile={vi.fn()} />);
     fireEvent.click(await screen.findByTestId("tree-dir-src"));
     expect(await screen.findByText("main.ts")).toBeTruthy();
     expect(read).toHaveBeenCalledTimes(2);
 
-    rerender(<FileTree api={api} workspace={alpha} refreshKey={1} />);
+    rerender(<FileTree api={api} workspace={alpha} refreshKey={1} onOpenFile={vi.fn()} />);
     // root and src are both re-read in the same burst; every fresh response is applied
     expect(await screen.findByText("new.md")).toBeTruthy();
     await waitFor(() => expect(screen.queryByText("old.md")).toBeNull());
@@ -93,7 +93,7 @@ describe("FileTree", () => {
       return rootBody;
     });
     const api = { readWorkspaceDir: read } as unknown as AdminApi;
-    render(<FileTree api={api} workspace={alpha} refreshKey={0} />);
+    render(<FileTree api={api} workspace={alpha} refreshKey={0} onOpenFile={vi.fn()} />);
     fireEvent.click(await screen.findByTestId("tree-dir-src"));
     expect(await screen.findByText("boom")).toBeTruthy();
     expect(screen.getByTestId("tree-dir-src").getAttribute("aria-expanded")).toBe("true");
@@ -113,12 +113,24 @@ describe("FileTree", () => {
       return { entries: [] };
     });
     const api = { readWorkspaceDir: read } as unknown as AdminApi;
-    const { rerender } = render(<FileTree api={api} workspace={alpha} refreshKey={0} />);
+    const { rerender } = render(<FileTree api={api} workspace={alpha} refreshKey={0} onOpenFile={vi.fn()} />);
     expect(await screen.findByText("src")).toBeTruthy();
-    rerender(<FileTree api={api} workspace={{ scope: "project", name: "beta" }} refreshKey={0} />);
+    rerender(<FileTree api={api} workspace={{ scope: "project", name: "beta" }} refreshKey={0} onOpenFile={vi.fn()} />);
     expect(await screen.findByText("beta-only.ts")).toBeTruthy();
     expect(screen.queryByText("src")).toBeNull();
     expect(screen.queryByText("readme.md")).toBeNull();
     expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it("opens a file on leaf click and leaves directories to expand", async () => {
+    const onOpenFile = vi.fn();
+    const api = makeApi({ "": rootBody, src: srcBody });
+    render(<FileTree api={api} workspace={alpha} refreshKey={0} onOpenFile={onOpenFile} />);
+    fireEvent.click(await screen.findByTestId("tree-file-readme.md"));
+    expect(onOpenFile).toHaveBeenCalledWith("readme.md");
+    fireEvent.click(screen.getByTestId("tree-dir-src"));
+    expect(onOpenFile).toHaveBeenCalledTimes(1); // expanding a dir must not open a file
+    fireEvent.click(await screen.findByTestId("tree-file-src_main.ts"));
+    expect(onOpenFile).toHaveBeenLastCalledWith("src/main.ts");
   });
 });
