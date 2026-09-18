@@ -6,43 +6,57 @@ import { isSameRef, refKey } from "../workspaceRef";
 import { formatCreatedAt } from "../format";
 import SessionsTab from "./SessionsTab";
 import SessionTranscript from "./SessionTranscript";
+import FileView from "./FileView";
 
 interface SessionTab {
+  kind: "session";
   id: string;
   sessionId: string;
   title: string | null;
   channel: string;
   createdAt: string;
-  /** refKey воркспейса, в котором таб открыт: защита от чтения сессии за чужой воркспейс. */
+  /** refKey воркспейса, в котором таб открыт. */
   refKey: string;
+}
+interface FileTab {
+  kind: "file";
+  id: string;
+  path: string;
+  refKey: string;
+}
+type Tab = SessionTab | FileTab;
+
+/** Одноразовый запрос «открой файл» из страницы: дерево живёт в соседней колонке. */
+export interface FileOpenRequest {
+  id: number;
+  refKey: string;
+  path: string;
 }
 
 interface WorkspaceRightPaneProps {
   api: AdminApi;
   workspace: WorkspaceRef | null;
+  fileOpen?: FileOpenRequest | null;
 }
 
 function sessionLabel(title: string | null): string {
   return title?.trim() ? title : "Без заголовка";
 }
 
-/**
- * Правая зона страницы «Проекты»: таб «Сессии» и динамические табы открытых
- * сессий. Клик по строке сессии открывает (или фокусирует) её таб, «×» закрывает
- * таб и переводит фокус на соседний. Смена воркспейса сбрасывает набор сессионных
- * табов и возвращает активным таб «Сессии». Кнопка «Обновить» поднимает reloadKey,
- * на который реагирует активный таб.
- */
-export default function WorkspaceRightPane({ api, workspace }: WorkspaceRightPaneProps) {
+function fileLabel(path: string): string {
+  return path.split("/").pop() ?? path;
+}
+
+export default function WorkspaceRightPane({ api, workspace, fileOpen = null }: WorkspaceRightPaneProps) {
   const [active, setActive] = useState("sessions");
   const [reloadKey, setReloadKey] = useState(0);
-  const [sessionTabs, setSessionTabs] = useState<SessionTab[]>([]);
+  const [tabs, setTabs] = useState<Tab[]>([]);
   const lastWorkspace = useRef<WorkspaceRef | null>(null);
 
   useEffect(() => {
     if (!isSameRef(lastWorkspace.current, workspace)) {
       lastWorkspace.current = workspace;
-      setSessionTabs([]);
+      setTabs([]);
       setActive("sessions");
     }
   }, [workspace]);
@@ -52,31 +66,59 @@ export default function WorkspaceRightPane({ api, workspace }: WorkspaceRightPan
       if (workspace === null) return;
       const id = `session:${session.id}`;
       const key = refKey(workspace);
-      setSessionTabs((tabs) =>
+      setTabs((tabs) =>
         tabs.some((tab) => tab.id === id)
           ? tabs
-          : [...tabs, { id, sessionId: session.id, title: session.title, channel: session.channel, createdAt: session.createdAt, refKey: key }]
+          : [
+              ...tabs,
+              {
+                kind: "session",
+                id,
+                sessionId: session.id,
+                title: session.title,
+                channel: session.channel,
+                createdAt: session.createdAt,
+                refKey: key
+              }
+            ]
       );
       setActive(id);
     },
     [workspace]
   );
 
-  const closeSession = useCallback(
-    (id: string): void => {
-      const index = sessionTabs.findIndex((tab) => tab.id === id);
-      const next = sessionTabs.filter((tab) => tab.id !== id);
-      setSessionTabs(next);
-      if (active === id) setActive(index === 0 ? "sessions" : (next[index - 1]?.id ?? "sessions"));
+  const openFile = useCallback(
+    (path: string): void => {
+      if (workspace === null) return;
+      const key = refKey(workspace);
+      const id = `file:${key}:${path}`;
+      setTabs((tabs) => (tabs.some((tab) => tab.id === id) ? tabs : [...tabs, { kind: "file", id, path, refKey: key }]));
+      setActive(id);
     },
-    [sessionTabs, active]
+    [workspace]
   );
 
-  // Смена воркспейса рендерится раньше пассивного эффекта очистки: фильтруем
-  // табы по refKey текущего воркспейса прямо в рендере, чтобы дочерний
-  // SessionTranscript не успел прочитать сессию прошлого воркспейса.
+  // Запрос приходит от страницы, пока дерево в соседней колонке: новый id
+  // открывает/фокусирует таб, чужой refKey игнорируется.
+  useEffect(() => {
+    if (fileOpen === null || workspace === null) return;
+    if (fileOpen.refKey !== refKey(workspace)) return;
+    openFile(fileOpen.path);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fileOpen]);
+
+  const closeTab = useCallback(
+    (id: string): void => {
+      const index = tabs.findIndex((tab) => tab.id === id);
+      const next = tabs.filter((tab) => tab.id !== id);
+      setTabs(next);
+      if (active === id) setActive(index === 0 ? "sessions" : (next[index - 1]?.id ?? "sessions"));
+    },
+    [tabs, active]
+  );
+
   const currentRefKey = workspace === null ? null : refKey(workspace);
-  const visibleTabs = currentRefKey === null ? [] : sessionTabs.filter((tab) => tab.refKey === currentRefKey);
+  const visibleTabs = currentRefKey === null ? [] : tabs.filter((tab) => tab.refKey === currentRefKey);
   const openTab = visibleTabs.find((tab) => tab.id === active);
   const panelId = `ws-tabpanel-${active}`;
 
@@ -100,7 +142,9 @@ export default function WorkspaceRightPane({ api, workspace }: WorkspaceRightPan
         </button>
         {visibleTabs.map((tab) => {
           const selected = tab.id === active;
-          const label = sessionLabel(tab.title);
+          const label = tab.kind === "file" ? fileLabel(tab.path) : sessionLabel(tab.title);
+          const title =
+            tab.kind === "file" ? tab.path : `${label} · ${tab.channel} · ${formatCreatedAt(tab.createdAt)}`;
           return (
             <span className={selected ? "ws-tab-group active" : "ws-tab-group"} key={tab.id}>
               <button
@@ -111,7 +155,7 @@ export default function WorkspaceRightPane({ api, workspace }: WorkspaceRightPan
                 aria-controls={`ws-tabpanel-${tab.id}`}
                 className={selected ? "ws-tab active" : "ws-tab"}
                 data-testid={`ws-tab-${tab.id}`}
-                title={`${label} · ${tab.channel} · ${formatCreatedAt(tab.createdAt)}`}
+                title={title}
                 onClick={() => {
                   setActive(tab.id);
                   setReloadKey((key) => key + 1);
@@ -124,7 +168,7 @@ export default function WorkspaceRightPane({ api, workspace }: WorkspaceRightPan
                 className="ws-tab-close"
                 aria-label={`Закрыть ${label}`}
                 data-testid={`ws-tab-close-${tab.id}`}
-                onClick={() => closeSession(tab.id)}
+                onClick={() => closeTab(tab.id)}
               >
                 ×
               </button>
@@ -152,7 +196,11 @@ export default function WorkspaceRightPane({ api, workspace }: WorkspaceRightPan
             Выберите воркспейс
           </p>
         ) : openTab !== undefined ? (
-          <SessionTranscript api={api} workspace={workspace} sessionId={openTab.sessionId} reloadKey={reloadKey} />
+          openTab.kind === "file" ? (
+            <FileView api={api} workspace={workspace} path={openTab.path} reloadKey={reloadKey} />
+          ) : (
+            <SessionTranscript api={api} workspace={workspace} sessionId={openTab.sessionId} reloadKey={reloadKey} />
+          )
         ) : (
           <SessionsTab
             api={api}

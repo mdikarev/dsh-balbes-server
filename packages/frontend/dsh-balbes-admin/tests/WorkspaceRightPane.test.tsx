@@ -203,4 +203,71 @@ describe("WorkspaceRightPane", () => {
     expect(screen.getByRole("tab", { name: "Сессии" }).getAttribute("aria-selected")).toBe("true");
     cleanup();
   });
+
+  it("opens a file tab from a one-shot request and closes it", async () => {
+    const api = makeApi({
+      readWorkspaceFile: vi.fn(async () => ({ file: { kind: "text" as const, content: "hello", truncated: false } }))
+    });
+    const { rerender } = render(
+      <WorkspaceRightPane api={api} workspace={{ scope: "project", name: "alpha" }} fileOpen={null} />
+    );
+    await waitFor(() => expect(screen.getByTestId("sessions-empty")).toBeDefined());
+    rerender(
+      <WorkspaceRightPane
+        api={api}
+        workspace={{ scope: "project", name: "alpha" }}
+        fileOpen={{ id: 1, refKey: "project:alpha", path: "notes.txt" }}
+      />
+    );
+    await waitFor(() => expect(screen.getByTestId("file-content")).toBeDefined());
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Сессии", "notes.txt"]);
+    expect(api.readWorkspaceFile).toHaveBeenCalledWith("project", "alpha", "notes.txt");
+
+    // повторный запрос (новый id) фокусирует уже открытый таб, не дублируя его
+    rerender(
+      <WorkspaceRightPane
+        api={api}
+        workspace={{ scope: "project", name: "alpha" }}
+        fileOpen={{ id: 2, refKey: "project:alpha", path: "notes.txt" }}
+      />
+    );
+    expect(screen.getAllByRole("tab")).toHaveLength(2);
+
+    fireEvent.click(screen.getByTestId("ws-tab-close-file:project:alpha:notes.txt"));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Сессии" }).getAttribute("aria-selected")).toBe("true"));
+  });
+
+  it("ignores a foreign refKey and resets file tabs on a workspace switch", async () => {
+    const api = makeApi({
+      readWorkspaceFile: vi.fn(async () => ({ file: { kind: "text" as const, content: "hello", truncated: false } }))
+    });
+    const { rerender } = render(
+      <WorkspaceRightPane
+        api={api}
+        workspace={{ scope: "project", name: "alpha" }}
+        fileOpen={{ id: 1, refKey: "project:alpha", path: "notes.txt" }}
+      />
+    );
+    await waitFor(() => expect(screen.getByRole("tab", { name: "notes.txt" })).toBeDefined());
+
+    // чужой refKey: запрос игнорируется
+    rerender(
+      <WorkspaceRightPane
+        api={api}
+        workspace={{ scope: "project", name: "alpha" }}
+        fileOpen={{ id: 2, refKey: "project:beta", path: "secret.txt" }}
+      />
+    );
+    expect(screen.queryByRole("tab", { name: "secret.txt" })).toBeNull();
+
+    // смена воркспейса сбрасывает файловые табы
+    rerender(
+      <WorkspaceRightPane
+        api={api}
+        workspace={{ scope: "project", name: "beta" }}
+        fileOpen={{ id: 3, refKey: "project:alpha", path: "notes.txt" }}
+      />
+    );
+    await waitFor(() => expect(screen.queryByRole("tab", { name: "notes.txt" })).toBeNull());
+  });
 });

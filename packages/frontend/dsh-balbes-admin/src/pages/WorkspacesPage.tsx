@@ -5,7 +5,7 @@ import WorkspaceList from "../components/WorkspaceList";
 import FileTree from "../components/FileTree";
 import Modal from "../components/Modal";
 import WorkspaceRightPane from "../components/WorkspaceRightPane";
-import type { WorkspaceRef } from "../workspaceRef";
+import { refKey, type WorkspaceRef } from "../workspaceRef";
 
 const SELECTED_KEY = "balbes.selectedWorkspace";
 const TREE_WIDTH_KEY = "balbes.treePaneWidth";
@@ -34,6 +34,8 @@ export default function WorkspacesPage({ api }: WorkspacesPageProps) {
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState<WorkspaceRef | null>(readSelected);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [fileOpen, setFileOpen] = useState<{ id: number; refKey: string; path: string } | null>(null);
+  const fileOpenSeq = useRef(0);
   const [modal, setModal] = useState<null | { type: "create" } | { type: "delete"; project: WorkspaceProject }>(null);
   const [name, setName] = useState("");
   const pageRef = useRef<HTMLDivElement>(null);
@@ -212,10 +214,19 @@ export default function WorkspacesPage({ api }: WorkspacesPageProps) {
           className="ws-tree-shell"
           style={treeWidth === null ? undefined : ({ "--tree-w": `${treeWidth}px` } as React.CSSProperties)}
         >
-          <FileTree api={api} workspace={selected} refreshKey={refreshKey} />
+          <FileTree
+            api={api}
+            workspace={selected}
+            refreshKey={refreshKey}
+            onOpenFile={(path) => {
+              if (selected === null) return;
+              fileOpenSeq.current += 1;
+              setFileOpen({ id: fileOpenSeq.current, refKey: refKey(selected), path });
+            }}
+          />
         </div>
         <div className="ws-splitter" data-testid="ws-splitter" onPointerDown={startResize} />
-        <WorkspaceRightPane api={api} workspace={selected} />
+        <WorkspaceRightPane api={api} workspace={selected} fileOpen={fileOpen} />
       </div>
       {modal !== null && modal.type === "create" && (
         <Modal title="Создать проект" onClose={() => setModal(null)}>

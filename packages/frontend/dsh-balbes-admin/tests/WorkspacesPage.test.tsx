@@ -40,6 +40,7 @@ function makeApi(overrides: Partial<AdminApi> = {}): AdminApi {
     readWorkspaceDir: vi.fn(async (scope: WorkspaceScope, name: string | undefined) => ({
       entries: scope === "project" && name === "alpha" ? [{ name: "src", kind: "dir" as const }] : []
     })),
+    readWorkspaceFile: vi.fn(async () => ({ file: { kind: "text" as const, content: "", truncated: false } })),
     listSessions: vi.fn(async () => ({ sessions: [] })),
     readSession: vi.fn(async () => ({ session: { id: "s", title: null, channel: "telegram", createdAt: "" }, messages: [] })),
     subscribeWorkspaceEvents: vi.fn(() => () => {}),
@@ -114,6 +115,20 @@ describe("WorkspacesPage layout", () => {
     fireEvent.click(screen.getByTestId("workspace-load-retry"));
     expect(await screen.findByText("alpha")).toBeTruthy();
     expect(api.listWorkspaces).toHaveBeenCalledTimes(2);
+  });
+
+  it("opens a file from the tree in a right-pane tab", async () => {
+    const api = makeApi({
+      readWorkspaceDir: vi.fn(async (scope, name) => ({
+        entries: scope === "project" && name === "alpha" ? [{ name: "notes.txt", kind: "file" as const }] : []
+      })),
+      readWorkspaceFile: vi.fn(async () => ({ file: { kind: "text" as const, content: "hi", truncated: false } }))
+    });
+    render(<WorkspacesPage api={api} />);
+    fireEvent.click(await screen.findByTestId("ws-row-project:alpha"));
+    fireEvent.click(await screen.findByTestId("tree-file-notes.txt"));
+    await waitFor(() => expect(screen.getByTestId("file-content")).toBeDefined());
+    expect(api.readWorkspaceFile).toHaveBeenCalledWith("project", "alpha", "notes.txt");
   });
 });
 
