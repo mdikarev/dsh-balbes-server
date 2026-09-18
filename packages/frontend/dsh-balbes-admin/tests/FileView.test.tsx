@@ -63,8 +63,8 @@ describe("FileView", () => {
     const api = makeApi({ readWorkspaceFile });
     const { rerender } = render(<FileView api={api} workspace={{ scope: "home" }} path="a.txt" reloadKey={0} />);
     rerender(<FileView api={api} workspace={{ scope: "home" }} path="b.txt" reloadKey={0} />);
-    deferred[0]?.({ file: { kind: "text", content: "old", truncated: false } });
     deferred[1]?.({ file: { kind: "text", content: "new", truncated: false } });
+    deferred[0]?.({ file: { kind: "text", content: "old", truncated: false } });
     await waitFor(() => expect(screen.getByTestId("file-content").textContent).toBe("new"));
   });
 
