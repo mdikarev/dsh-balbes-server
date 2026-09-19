@@ -59,7 +59,7 @@ describe("pluralRu", () => {
 
 describe("HELP_TEXT", () => {
   it("names every command and states what happens to other text accurately", () => {
-    for (const command of ["/menu", "/status", "/ws", "/model", "/reset", "/stop", "/help"]) {
+    for (const command of ["/menu", "/status", "/ws", "/model", "/reset", "/sessions", "/stop", "/help"]) {
       expect(HELP_TEXT).toContain(command);
     }
     // The old line promised that ANY other text reaches the agent as a task,
@@ -69,6 +69,11 @@ describe("HELP_TEXT", () => {
       "Прочий текст — задача агенту (нужен воркспейс; «Воркспейсы» — список)."
     );
     expect(HELP_TEXT).not.toContain("Любой другой текст уходит агенту как задача.");
+  });
+
+  it("advertises /sessions and the non-destructive /reset", () => {
+    expect(HELP_TEXT).toContain("/sessions — сессии воркспейса");
+    expect(HELP_TEXT).toContain("прежние остаются");
   });
 });
 
@@ -86,7 +91,7 @@ describe("menuCard", () => {
     expect(card.text).toContain("Модель: deepseek-v4-pro · deepseek-official");
     expect(card.text).toContain("Задача: выполняется · 2:14 · шаг 5");
     expect(card.text).toContain("Очередь: 1");
-    expect(data(card)).toEqual(["act:files", "mdl", "ws", "act:reset", "stp", "mnu:refresh"]);
+    expect(data(card)).toEqual(["act:files", "mdl", "act:sessions", "ws", "act:reset", "stp", "mnu:refresh"]);
   });
 
   it("offers only workspace and model buttons without an active workspace", () => {
@@ -114,6 +119,11 @@ describe("menuCard", () => {
     expect(card.text).toContain("Сессия: активна");
     expect(card.text).toContain("Очередь: 2");
     expect(card.text).not.toContain("Модель:");
+  });
+
+  it("the active-workspace menu carries the sessions button", () => {
+    const card = menuCard({ workspaceLabel: "Дом агента", modelLabel: undefined, taskLine: "нет активной задачи", queue: 0 });
+    expect(data(card)).toContain("act:sessions");
   });
 });
 

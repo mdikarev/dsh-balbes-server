@@ -594,10 +594,11 @@ describe("chat machine: picking a workspace", () => {
     expect(h.activeChanges).toEqual([HOME]);
     const selected = h.bot.sent.at(-1)!;
     expect(selected.text).toBe("Выбран: Дом агента");
-    expect(h.bot.data(selected.markup)).toEqual(["act:files", "mdl", "ws", "act:reset", "stp", "mnu:refresh"]);
+    expect(h.bot.data(selected.markup)).toEqual(["act:files", "mdl", "act:sessions", "ws", "act:reset", "stp", "mnu:refresh"]);
     expect(h.bot.buttons(selected.markup).map((button) => button.text)).toEqual([
       "📄 Файлы",
       "🧠 Модель",
+      "🗂 Сессии",
       "📁 Воркспейс",
       "🔄 Сбросить контекст",
       "⏹ Стоп",
@@ -722,7 +723,7 @@ describe("chat machine: tasks", () => {
 
     expect(h.runner.runs).toHaveLength(0);
     expect(h.bot.sent[0]!.text).toContain("Воркспейс: Дом агента");
-    expect(h.bot.data(h.bot.sent[0]!.markup)).toEqual(["act:files", "mdl", "ws", "act:reset", "stp", "mnu:refresh"]);
+    expect(h.bot.data(h.bot.sent[0]!.markup)).toEqual(["act:files", "mdl", "act:sessions", "ws", "act:reset", "stp", "mnu:refresh"]);
   });
 
   it("accepts the task, then sends the agent reply", async () => {
@@ -1793,7 +1794,7 @@ describe("chat machine: context reset", () => {
 
     expect(h.runner.resets).toHaveLength(0);
     expect(h.bot.lastEdit().text).toBe("Выбран: Дом агента");
-    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual(["act:files", "mdl", "ws", "act:reset", "stp", "mnu:refresh"]);
+    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual(["act:files", "mdl", "act:sessions", "ws", "act:reset", "stp", "mnu:refresh"]);
     expect(h.machine.activeWorkspace()).toEqual(HOME);
   });
 
@@ -1968,7 +1969,7 @@ describe("chat machine: commands and menu card", () => {
 
     expect(h.bot.sent[0]!.text).toContain("Воркспейс: Дом агента");
     expect(h.bot.sent[0]!.text).toContain("Задача: нет активной задачи");
-    expect(h.bot.data(h.bot.sent[0]!.markup)).toEqual(["act:files", "mdl", "ws", "act:reset", "stp", "mnu:refresh"]);
+    expect(h.bot.data(h.bot.sent[0]!.markup)).toEqual(["act:files", "mdl", "act:sessions", "ws", "act:reset", "stp", "mnu:refresh"]);
   });
 
   it("renders the running task line, the step and the queue from live progress", async () => {

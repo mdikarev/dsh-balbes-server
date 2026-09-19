@@ -25,7 +25,8 @@ export const HELP_TEXT = [
   "/status — воркспейс, модель, задача, очередь",
   "/ws — сменить воркспейс",
   "/model — сменить модель",
-  "/reset — сбросить контекст (сессия удаляется)",
+  "/reset — начать новую сессию (прежние остаются в /sessions)",
+  "/sessions — сессии воркспейса: список, возврат, архив",
   "/stop — остановить задачу (контекст сохраняется)",
   "/help — эта справка.",
   // Accurate, and no longer a promise the chat does not keep: the alias word
@@ -89,13 +90,14 @@ export function menuCard(opts: {
           { text: "🧠 Модель", callback_data: "mdl" }
         ],
         [
-          { text: "📁 Воркспейс", callback_data: "ws" },
-          { text: "🔄 Сбросить контекст", callback_data: "act:reset" }
+          { text: "🗂 Сессии", callback_data: "act:sessions" },
+          { text: "📁 Воркспейс", callback_data: "ws" }
         ],
         [
-          { text: "⏹ Стоп", callback_data: "stp" },
-          ...REFRESH_ROW
-        ]
+          { text: "🔄 Сбросить контекст", callback_data: "act:reset" },
+          { text: "⏹ Стоп", callback_data: "stp" }
+        ],
+        REFRESH_ROW
       ];
   return { text: lines.join("\n"), keyboard: { inline_keyboard: rows } };
 }
