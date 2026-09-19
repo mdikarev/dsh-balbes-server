@@ -12,7 +12,8 @@
 - Покрывает: HTTP-контракты `/api/*` (method/path/auth/request/response/
   errors/notes) — сейчас `health`, `auth.login`, `auth.me`, `prompt`,
   `workspaces.list`, `workspaces.create`, `workspaces.delete`,
-  `workspaces.tree`, `workspaces.file`, `workspaces.events`, `models.list`,
+  `workspaces.create-from-git`, `workspaces.tree`, `workspaces.file`,
+  `workspaces.events`, `git.status`, `git.save`, `git.clear-token`, `models.list`,
   `models.catalog`, `models.save`, `models.delete`, `models.default`,
   `telegram.status`,
   `telegram.save`, `telegram.test`, `telegram.disable`, `telegram.clear-token`,
@@ -72,7 +73,7 @@
 - path: /api/workspaces/list
 - auth: bearer
 - request: `{}`
-- response: `{home: {path: string}, projects: [{name: string, path: string, createdAt?: string(ISO)}]}`
+- response: `{home: {path: string}, projects: [{name: string, path: string, createdAt?: string(ISO), source?: {provider: "github", url: string, branch: string, ref: string}}]}`
 - errors: 401, 500 (нечитаемый корень/реестр)
 - notes: каталог — источник правды: дом `$DSH_HOME/agent/` всегда в ответе,
   проекты — скан `$DSH_HOME/projects/*` (только каталоги, без скрытых);
@@ -91,6 +92,24 @@
   ведущих/хвостовых точек; создаёт каталог `$DSH_HOME/projects/<имя>/`,
   идемпотентно кладёт `<project>/.dsh/skills/README` (проектные скиллы) и
   upsert строки реестра (`createdAt: now`).
+
+### workspaces.create-from-git — создать проект из GitHub-репозитория
+- method: POST
+- path: /api/workspaces/create-from-git
+- auth: bearer
+- request: `{url: string, name: string}`
+- response: `{project: {name: string, path: string, createdAt: string(ISO),
+  source: {provider: "github", url: string, branch: string, ref: string}}}`
+- errors: 400 `invalid-url` (не `https://github.com/<owner>/<repo>`;
+  userinfo/query/fragment), 400 `invalid-name` (slug-правило), 401
+  `auth-required` (клон не удался, токен не задан), 409 `name-exists`,
+  502 `clone-failed`, 503 `git-unavailable` (плагин `dsh-balbes-git` не
+  подключён), 504 `clone-timeout`
+- notes: только GitHub, ветка по умолчанию, полная история, submodules/LFS не
+  подтягиваются; клон идёт во временный скрытый каталог
+  (`projects/.balbes-clone-<uuid>`) и переименовывается в
+  `$DSH_HOME/projects/<имя>/`; сбой не оставляет каталога проекта и записи
+  реестра; токен — ref `BALBES_GITHUB_TOKEN`, в ответе никогда нет.
 
 ### workspaces.delete — удалить проект (каталог + запись)
 - method: POST
@@ -155,6 +174,36 @@
   владельца/агента); соединение закрывает клиент; исключения из R-API-1 нет —
   запрос остаётся POST; потоковая доставка ответов модели в чат — по-прежнему
   вне scope.
+
+### git.status — состояние git-доступа
+- method: POST
+- path: /api/git/status
+- auth: bearer
+- request: `{}`
+- response: `{git: {tokenConfigured: boolean}}`
+- errors: 401
+- notes: отдаёт только признак наличия GitHub-токена; значение не
+  возвращается никогда.
+
+### git.save — сохранить GitHub-токен
+- method: POST
+- path: /api/git/save
+- auth: bearer
+- request: `{token: string}`
+- response: `{git: {tokenConfigured: true}}`
+- errors: 400 `invalid-token` (пусто/пробелы), 401
+- notes: пишет ref `BALBES_GITHUB_TOKEN` через `ctx.credentials`; токен не
+  логируется и не возвращается; используется для приватных клонов.
+
+### git.clear-token — удалить GitHub-токен
+- method: POST
+- path: /api/git/clear-token
+- auth: bearer
+- request: `{}`
+- response: `{git: {tokenConfigured: false}}`
+- errors: 401
+- notes: удаляет ref через `ctx.credentials`; публичные репозитории
+  клонируются и без токена.
 
 ### models.list — список подключений и дефолтная модель
 - method: POST
