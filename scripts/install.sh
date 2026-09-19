@@ -18,7 +18,9 @@
 # built host and the workspaces, models, sessions and telegram plugins into
 # the profile, deploys the built
 # admin UI, stores the DeepSeek API key in
-# $DSH_HOME/.credentials.yaml, generates the admin account
+# $DSH_HOME/.credentials.yaml only when DEEPSEEK_API_KEY is set (normally the
+# key is configured in the admin UI, section "Модели"), generates the admin
+# account
 # ($DSH_HOME/admin-auth.json, printed once), writes the dsh-balbes systemd
 # unit (enabled + restarted on every run, so an update takes effect at once),
 # health-checks the service, and prints the summary with the admin UI address
@@ -26,7 +28,7 @@
 # update.
 #
 # Honored environment:
-#   DEEPSEEK_API_KEY     key; when unset the script prompts on /dev/tty
+#   DEEPSEEK_API_KEY     optional key pre-seed; when unset set the key later in the admin UI
 #   DSH_HOME             dsh data dir (default: $HOME/.dsh)
 #   DSH_BALBES_REPO_DIR  repo checkout dir (default: $HOME/dsh-balbes-server)
 #
@@ -239,28 +241,6 @@ Then make the file readable only by you:
 
   chmod 600 $file
 EOF
-}
-
-# prompt_api_key — read the key silently from the controlling terminal, so the
-# prompt works inside `curl ... | bash` (the script's stdin is the consumed
-# pipe, not the terminal). Prints the key on stdout; empty when skipped.
-prompt_api_key() {
-    local key=""
-    # /dev/tty usually exists as a device node but cannot be opened without a
-    # controlling terminal (cron, CI, ssh without -t); a failed open must not
-    # abort the install — probe it first, silently.
-    if ! ( : < /dev/tty ) 2>/dev/null; then
-        warn "no usable controlling terminal (/dev/tty) — skipping API key prompt"
-        return 0
-    fi
-    printf 'DeepSeek API key (leave empty to skip): ' >&2
-    if ! read -rs key </dev/tty; then
-        printf '\n' >&2
-        warn "could not read /dev/tty — skipping API key prompt"
-        return 0
-    fi
-    printf '\n' >&2
-    printf '%s' "$key"
 }
 
 # --- engine version pin (scripts/engine-version.txt) --------------------------
@@ -489,13 +469,14 @@ sync_profile() {
 
 # --- key ----------------------------------------------------------------------
 
+# configure_api_key — store the model key ONLY from the environment: there is
+# no interactive prompt anymore, because the key is configured in the admin UI
+# (section "Модели"). DEEPSEEK_API_KEY stays as the non-interactive pre-seed
+# path for automated installs.
 configure_api_key() {
     local key="${DEEPSEEK_API_KEY:-}"
     if [[ -z "$key" ]]; then
-        key="$(prompt_api_key || true)"
-    fi
-    if [[ -z "$key" ]]; then
-        info "No API key provided — skipped. Add one later per the runbook."
+        info "DEEPSEEK_API_KEY is not set — skipped. Set the model key in the admin UI (section \"Модели\"), or export DEEPSEEK_API_KEY and re-run."
         return 0
     fi
     write_credentials_file "$key"
@@ -749,6 +730,8 @@ Installation complete. Admin UI: http://$ip:$BALBES_PORT
   Login:    (printed above / see the install log)
   Password: (printed once on first install; reset via:
              bash scripts/install.sh --reset-admin-password)
+  Model key: set it in the admin UI, section "Модели" (or export
+             DEEPSEEK_API_KEY and re-run the installer).
 
 Smoke without a browser (JWT):
   TOKEN=\$(curl -fsS -X POST http://127.0.0.1:$BALBES_PORT/api/auth/login \\

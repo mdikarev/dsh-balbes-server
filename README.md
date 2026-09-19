@@ -33,7 +33,7 @@ dsh используется как зависимость (не форк): вс
 
 - VPS с **Ubuntu** (22.04/24.04), пользователь с **sudo** (установка от root тоже работает).
 - Доступ в интернет (npm registry, GitHub) на время установки/обновления.
-- Ключ модели **DeepSeek API** (понадобится для реальных ответов).
+- Ключ модели **DeepSeek API** — понадобится для реальных ответов; задаётся после установки в админке, раздел «Модели».
 
 ## Установка (одна команда)
 
@@ -48,12 +48,12 @@ curl -fsSL https://raw.githubusercontent.com/mdikarev/dsh-balbes-server/main/scr
 3. Собирает workspace (host, плагин воркспейсов, контракты, SPA).
 4. Синхронизирует профиль `balbes` в `$DSH_HOME/profiles/balbes` и кладёт собранные host
    и плагин воркспейсов в его `node_modules`; SPA — в `$DSH_HOME/balbes/ui`.
-5. Принимает ключ DeepSeek (интерактивно; пусто = пропустить) в `$DSH_HOME/.credentials.yaml` (600).
+5. Ключ DeepSeek **не запрашивает**: если задан `DEEPSEEK_API_KEY`, пишет его в `$DSH_HOME/.credentials.yaml` (600); иначе ключ задаётся после установки в админке, раздел «Модели».
 6. Генерирует учётные данные админки **один раз** и печатает их (**сохраните пароль**).
 7. Ставит и запускает systemd-юнит `dsh-balbes` (автозапуск, переживает reboot).
 8. Проверяет сервис по `POST /api/health` (до ~120 с на холодный старт).
 
-Ключ можно передать без интерактива:
+Ключ можно необязательно передать заранее (например, для автоматизации):
 
 ```bash
 DEEPSEEK_API_KEY="sk-..." curl -fsSL https://raw.githubusercontent.com/mdikarev/dsh-balbes-server/main/scripts/install.sh | bash
@@ -121,7 +121,7 @@ curl -sS -X POST http://127.0.0.1:8080/api/workspaces/delete \
 | `BALBES_PORT` | `8080` | порт HTTP-сервера |
 | `BALBES_UI_DIST` | `$DSH_HOME/balbes/ui` | каталог собранной админки |
 | `DSH_TOOLS_MODE` | (не задана) | режим инструментов (native/ptc) |
-| `DEEPSEEK_API_KEY` | — | ключ модели (пишется в `.credentials.yaml`) |
+| `DEEPSEEK_API_KEY` | — | необязательный ключ модели для неинтерактивной установки (пишется в `.credentials.yaml`); иначе — в админке, раздел «Модели» |
 
 > Граница текущего этапа: доступ по `http://IP:8080` (HTTP, без TLS — защита паролем/токеном,
 > TLS — следующий этап).

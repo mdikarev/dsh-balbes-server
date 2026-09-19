@@ -34,8 +34,10 @@ long polling, выбор воркспейса, persistent dsh-сессии, за
 - GitHub (`mdikarev/dsh-balbes-server`, ветка `main`): источник профиля и
   скриптов; `raw.githubusercontent.com` отдаёт install.sh для `curl | bash`;
   GitHub Actions — CI.
-- API DeepSeek: модель для промптов; ключ приходит из
-  `$DSH_HOME/.credentials.yaml` (env `DEEPSEEK_API_KEY`).
+- API DeepSeek: модель для промптов; ключ хранится в
+  `$DSH_HOME/.credentials.yaml` (ref `DEEPSEEK_API_KEY`) и задаётся в админке
+  (раздел «Модели») либо, при автоматизированной установке, через env
+  `DEEPSEEK_API_KEY`.
 - Telegram Bot API: внешний HTTPS API, который сервер вызывает через long
   polling и sendMessage; телефон владельца — обычный Telegram-клиент, прямого
   соединения сервера с телефоном нет. Bot token хранится через credentials.
@@ -149,7 +151,9 @@ long polling, выбор воркспейса, persistent dsh-сессии, за
   глобальный dsh), сборка workspace (`pnpm install` → `node scripts/link-core`
   → сборка пакетов), синк профиля + копия собранного host в его `node_modules`
   (реальный каталог — резолв `@deepseek-ai/*` подъёмом к mirror), развёртывание
-  SPA в `$DSH_HOME/balbes/ui`, ключ DeepSeek в `.credentials.yaml` (600),
+  SPA в `$DSH_HOME/balbes/ui`, ключ DeepSeek в `.credentials.yaml` (600)
+  только при заданном `DEEPSEEK_API_KEY` (интерактивного запроса нет; иначе
+  ключ задаётся в админке, раздел «Модели»),
   генерация/печать учётных данных админки один раз (`scripts/admin-creds.mjs`),
   systemd-юнит `dsh-balbes` (enable + restart), health-проверка с ретраями
   (~120 c), флаг `--reset-admin-password` (ротация пароля и `jwtSecret`).
@@ -174,8 +178,9 @@ long polling, выбор воркспейса, persistent dsh-сессии, за
   `dsh --version` с пином: совпало — info-строка, разошлось или не определить —
   предупреждение в stderr, автопереустановки нет и установка продолжается)
   → сборка workspace (install → link-core → build)
-  → синк профиля → копия host → SPA в `$DSH_HOME/balbes/ui` → ключ
-  (env или /dev/tty) → композиция (`--dump-config`) → генерация/печать
+  → синк профиля → копия host → SPA в `$DSH_HOME/balbes/ui` → ключ только из
+  env `DEEPSEEK_API_KEY` (без интерактивного запроса; иначе раздел «Модели»
+  в админке) → композиция (`--dump-config`) → генерация/печать
   учётных данных админки (один раз) → systemd enable+restart → health
   (ретраи) → сводка. Повторный запуск = обновление профиля и сервиса (сервис
   перезапускается, креды не меняются); сам движок повторным запуском не
