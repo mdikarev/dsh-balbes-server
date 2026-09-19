@@ -1268,7 +1268,7 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
         from
       );
       const commands = (registration.body.commands ?? []) as Array<{ command: string; description: string }>;
-      expect(commands.map((spec) => spec.command)).toEqual(["menu", "status", "ws", "model", "reset", "stop", "help"]);
+      expect(commands.map((spec) => spec.command)).toEqual(["menu", "status", "ws", "model", "sessions", "reset", "stop", "help"]);
       // The same table the text router uses (src/commands.ts): what Telegram
       // shows and what the bot answers cannot drift.
       expect(commands).toEqual(TELEGRAM_COMMANDS.map((spec) => ({ command: spec.command, description: spec.description })));

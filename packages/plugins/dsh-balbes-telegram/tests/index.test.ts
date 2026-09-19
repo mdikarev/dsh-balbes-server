@@ -573,6 +573,7 @@ describe("balbes-telegram polling runtime (loopback Bot API)", () => {
       "status",
       "ws",
       "model",
+      "sessions",
       "reset",
       "stop",
       "help"
