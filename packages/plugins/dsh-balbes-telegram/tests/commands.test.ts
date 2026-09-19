@@ -3,12 +3,19 @@ import { TELEGRAM_COMMANDS, parseCommand } from "../src/commands.js";
 
 describe("command table", () => {
   it("is a Telegram-valid list and names exactly the routed commands", () => {
-    expect(TELEGRAM_COMMANDS.map((c) => c.command)).toEqual(["menu", "status", "ws", "model", "reset", "stop", "help"]);
+    expect(TELEGRAM_COMMANDS.map((c) => c.command)).toEqual(["menu", "status", "ws", "model", "sessions", "reset", "stop", "help"]);
     for (const entry of TELEGRAM_COMMANDS) {
       expect(entry.command).toMatch(/^[a-z][a-z0-9_]{0,31}$/);
       expect(entry.description.length).toBeGreaterThan(0);
       expect(entry.description.length).toBeLessThanOrEqual(256);
     }
+  });
+});
+
+describe("sessions command", () => {
+  it("recognizes /sessions as a channel command", () => {
+    expect(parseCommand("/sessions")).toBe("sessions");
+    expect(TELEGRAM_COMMANDS.some((spec) => spec.command === "sessions")).toBe(true);
   });
 });
 

@@ -5,7 +5,7 @@
  * never reaches the agent — that invariant lives here.
  */
 
-export type CommandName = "menu" | "status" | "ws" | "model" | "reset" | "stop" | "help";
+export type CommandName = "menu" | "status" | "ws" | "model" | "reset" | "sessions" | "stop" | "help";
 
 export interface CommandSpec {
   command: CommandName;
@@ -18,6 +18,7 @@ export const TELEGRAM_COMMANDS: CommandSpec[] = [
   { command: "status", description: "Статус: воркспейс, модель, задача, очередь" },
   { command: "ws", description: "Сменить воркспейс" },
   { command: "model", description: "Сменить модель" },
+  { command: "sessions", description: "Сессии воркспейса: список, возврат, архив" },
   { command: "reset", description: "Сбросить контекст" },
   { command: "stop", description: "Остановить задачу" },
   { command: "help", description: "Справка" }
