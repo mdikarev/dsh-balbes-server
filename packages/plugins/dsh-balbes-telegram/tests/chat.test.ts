@@ -339,6 +339,8 @@ function makeModels(rows: ModelConnectionRow[]): ModelsFake {
 interface SessionsFake {
   service: SessionsSlice;
   calls: string[];
+  /** Make the next (and every following) list() reject with this error. */
+  failList: (error: unknown) => void;
 }
 
 /**
@@ -348,8 +350,12 @@ interface SessionsFake {
  */
 function makeSessions(rows: ChannelSessionRow[] = []): SessionsFake {
   const calls: string[] = [];
+  let listFailure: unknown;
   const service: SessionsSlice = {
-    list: async () => rows.map((row) => ({ ...row })),
+    list: async () => {
+      if (listFailure !== undefined) throw listFailure;
+      return rows.map((row) => ({ ...row }));
+    },
     select: async (_ref, id) => {
       calls.push(`select:${id}`);
     },
@@ -360,7 +366,13 @@ function makeSessions(rows: ChannelSessionRow[] = []): SessionsFake {
       calls.push(`unarchive:${id}`);
     }
   };
-  return { service, calls };
+  return {
+    service,
+    calls,
+    failList: (error) => {
+      listFailure = error;
+    }
+  };
 }
 
 interface Harness {
@@ -2658,5 +2670,64 @@ describe("chat machine: session list and archive", () => {
     await h.machine.onCallback(callback("act:sessions", 610));
 
     expect(h.bot.lastEdit().text).toContain("Список сессий недоступен");
+  });
+
+  it("does not mutate a workspace a stale session card was not rendered for", async () => {
+    const sessions = makeSessions(rows);
+    const h = makeHarness({ sessions });
+    await pickHome(h);
+    await h.machine.onCallback(callback("act:sessions", 610));
+
+    // /ws switches to another workspace while the session card stays open.
+    h.workspaces.projects.push("alpha");
+    await h.machine.onMessage(message("/ws"));
+    const listId = h.bot.sent.at(-1)!.messageId;
+    await h.machine.onCallback(callback("ws:pick:1", listId));
+    expect(h.machine.activeWorkspace()).toEqual(project("alpha"));
+
+    // The card at 610 was rendered for home; its mutating buttons must not act.
+    await h.machine.onCallback(callback("ses:1", 610));
+    await h.machine.onCallback(callback("arc:1", 610));
+
+    expect(sessions.calls).toEqual([]);
+    expect(h.bot.answers.at(-1)!.text).toBe("Действие устарело — повторите");
+  });
+
+  it("does not unarchive from a stale archive card after a workspace switch", async () => {
+    const sessions = makeSessions([
+      { id: "session-b", title: null, createdAt: null, available: true, archived: true, active: false }
+    ]);
+    const h = makeHarness({ sessions });
+    await pickHome(h);
+    await h.machine.onCallback(callback("act:sessions", 610));
+    await h.machine.onCallback(callback("ses:arch", 610));
+
+    h.workspaces.projects.push("alpha");
+    await h.machine.onMessage(message("/ws"));
+    const listId = h.bot.sent.at(-1)!.messageId;
+    await h.machine.onCallback(callback("ws:pick:1", listId));
+    expect(h.machine.activeWorkspace()).toEqual(project("alpha"));
+
+    await h.machine.onCallback(callback("unarc:0", 610));
+
+    expect(sessions.calls).toEqual([]);
+    expect(h.bot.answers.at(-1)!.text).toBe("Действие устарело — повторите");
+  });
+
+  it("reports SESSIONS_FAILED instead of throwing when the session list read throws", async () => {
+    const sessions = makeSessions(rows);
+    const h = makeHarness({ sessions });
+    await pickHome(h);
+    sessions.failList(new Error("registry down"));
+
+    await h.machine.onCallback(callback("act:sessions", 610));
+
+    expect(h.bot.lastEdit().text).toContain("Не удалось получить список сессий");
+    expect(h.warns.some((line) => line.includes("session list failed"))).toBe(true);
+
+    // The /sessions send path degrades the same way.
+    await h.machine.onMessage(message("/sessions"));
+
+    expect(h.bot.sent.at(-1)!.text).toContain("Не удалось получить список сессий");
   });
 });

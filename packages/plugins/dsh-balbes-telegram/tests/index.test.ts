@@ -348,6 +348,8 @@ interface BootTelegramOptions {
   registry?: Array<{ sessionId: string; channel: string }>;
   /** When given, compose the optional sessionQuery seam with this answer. */
   observations?: TitleObservationLike[];
+  /** When set, `readTitleSnapshots` rejects with this error instead. */
+  titleFailure?: unknown;
 }
 
 interface TelegramHarness {
@@ -365,7 +367,15 @@ async function bootTelegram(options: BootTelegramOptions = {}): Promise<Telegram
     await writeFile(stateFile, JSON.stringify(options.state), "utf8");
   }
   registryEntries = options.registry ?? [];
-  if (options.observations !== undefined) {
+  if (options.titleFailure !== undefined) {
+    observedIds = [];
+    sessionQuery = {
+      readTitleSnapshots: async (ids) => {
+        observedIds.push(...ids);
+        throw options.titleFailure;
+      }
+    };
+  } else if (options.observations !== undefined) {
     observedIds = [];
     sessionQuery = {
       readTitleSnapshots: async (ids) => {
@@ -824,6 +834,26 @@ describe("balbes-telegram session catalog wiring", () => {
       { id: "newer", title: null, createdAt: null, available: true, archived: false, active: false },
       { id: "older", title: null, createdAt: null, available: true, archived: false, active: false }
     ]);
+  });
+
+  it("falls back to the degraded catalog when readTitleSnapshots throws", async () => {
+    const harness = await bootTelegram({
+      state: { version: 1, sessions: { home: "newer" }, archived: { home: ["older"] } },
+      registry: [
+        { sessionId: "older", channel: "telegram" },
+        { sessionId: "newer", channel: "telegram" }
+      ],
+      titleFailure: new Error("engine down")
+    });
+    const rows = await harness.channelSessions.list({ scope: "home" });
+    expect(rows).toEqual([
+      { id: "newer", title: null, createdAt: null, available: true, archived: false, active: true },
+      { id: "older", title: null, createdAt: null, available: true, archived: true, active: false }
+    ]);
+    // The whole catalog degrades and every row stays available.
+    expect(rows.every((row) => row.available)).toBe(true);
+    expect(rows.every((row) => row.title === null && row.createdAt === null)).toBe(true);
+    expect(warns.some((line) => line.includes("reading session titles failed"))).toBe(true);
   });
 
   it("reports the selected session before its first turn", async () => {

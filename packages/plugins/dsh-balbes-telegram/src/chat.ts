@@ -1641,6 +1641,9 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
       const index = parseIndex(data.slice("ses:".length));
       const snapshot = snapshotOf(chatId, messageId);
       if (index === undefined || snapshot === undefined || snapshot.kind !== "sessionList") return STALE_ACTION;
+      // Containment (design.md 48-50): a card rendered for the workspace that
+      // was active then must not mutate a workspace /ws switched to since.
+      if (active === undefined || workspaceRefKey(active) !== workspaceRefKey(snapshot.ref)) return STALE_ACTION;
       const row = snapshot.rows[index];
       if (row === undefined) return STALE_ACTION;
       if (!row.available) return SESSION_UNAVAILABLE;
@@ -1666,6 +1669,9 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
       const index = parseIndex(data.slice("arc:".length));
       const snapshot = snapshotOf(chatId, messageId);
       if (index === undefined || snapshot === undefined || snapshot.kind !== "sessionList") return STALE_ACTION;
+      // Containment (design.md 48-50): a card rendered for the workspace that
+      // was active then must not mutate a workspace /ws switched to since.
+      if (active === undefined || workspaceRefKey(active) !== workspaceRefKey(snapshot.ref)) return STALE_ACTION;
       const row = snapshot.rows[index];
       if (row === undefined) return STALE_ACTION;
       // Archiving the session a running task uses would strand that task, so it
@@ -1687,6 +1693,9 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
       const index = parseIndex(data.slice("unarc:".length));
       const snapshot = snapshotOf(chatId, messageId);
       if (index === undefined || snapshot === undefined || snapshot.kind !== "sessionList") return STALE_ACTION;
+      // Containment (design.md 48-50): a card rendered for the workspace that
+      // was active then must not mutate a workspace /ws switched to since.
+      if (active === undefined || workspaceRefKey(active) !== workspaceRefKey(snapshot.ref)) return STALE_ACTION;
       const row = snapshot.rows[index];
       if (row === undefined) return STALE_ACTION;
       try {

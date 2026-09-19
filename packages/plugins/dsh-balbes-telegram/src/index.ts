@@ -150,12 +150,18 @@ interface SessionsRegistryLike {
   list(ref: WorkspaceRef): Promise<Array<{ sessionId: string; channel: string }>>;
 }
 
-/** One title snapshot of the engine's `sessionQuery.readTitleSnapshots`. */
-interface TitleObservationLike {
-  sessionId: string;
-  status: "fulfilled" | "rejected";
-  value?: { session: { createdAt: number }; title?: { title: string } };
-}
+/**
+ * One title snapshot of the engine's `sessionQuery.readTitleSnapshots`, kept as
+ * the engine's own discriminated union so the `value` payload is only reachable
+ * on a fulfilled observation (no non-null assertions).
+ */
+type TitleObservationLike =
+  | {
+      sessionId: string;
+      status: "fulfilled";
+      value: { session: { createdAt: number }; title?: { title: string } };
+    }
+  | { sessionId: string; status: "rejected"; reason?: unknown };
 
 /** Structural slice of the OPTIONAL engine seam that supplies titles/createdAt. */
 interface SessionQueryLike {
@@ -361,25 +367,40 @@ export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: stri
     const archived = new Set(live.archived?.[key] ?? []);
     const activeId = live.sessions[key];
     const rows: ChannelSessionRow[] = [];
+    let observations: TitleObservationLike[] | undefined;
     if (sessionQuery !== undefined && telegram.length > 0) {
-      let observations: TitleObservationLike[] = [];
       try {
         observations = await sessionQuery.readTitleSnapshots(telegram.map((entry) => entry.sessionId));
       } catch (error) {
+        // A failed catalog read is not a per-row rejection: the engine is
+        // unreachable, so NOTHING can be proven available. Fall through to the
+        // degraded catalog below instead of marking every row unavailable.
         ctx.logger.warn(`balbes-telegram: reading session titles failed: ${reasonOf(error)}`);
       }
+    }
+    if (observations !== undefined) {
       const byId = new Map(observations.map((observation) => [observation.sessionId, observation]));
       for (const entry of telegram) {
         const observation = byId.get(entry.sessionId);
-        const fulfilled = observation?.status === "fulfilled";
-        rows.push({
-          id: entry.sessionId,
-          title: fulfilled ? observation?.value?.title?.title ?? null : null,
-          createdAt: fulfilled ? new Date(observation!.value!.session.createdAt).toISOString() : null,
-          available: fulfilled,
-          archived: archived.has(entry.sessionId),
-          active: entry.sessionId === activeId
-        });
+        if (observation !== undefined && observation.status === "fulfilled") {
+          rows.push({
+            id: entry.sessionId,
+            title: observation.value.title?.title ?? null,
+            createdAt: new Date(observation.value.session.createdAt).toISOString(),
+            available: true,
+            archived: archived.has(entry.sessionId),
+            active: entry.sessionId === activeId
+          });
+        } else {
+          rows.push({
+            id: entry.sessionId,
+            title: null,
+            createdAt: null,
+            available: false,
+            archived: archived.has(entry.sessionId),
+            active: entry.sessionId === activeId
+          });
+        }
       }
       // Total order: dated rows newest-first, undated (unavailable) rows last.
       // Array.prototype.sort is stable, so equal keys keep their registry order.
@@ -391,6 +412,11 @@ export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: stri
         return a.createdAt < b.createdAt ? 1 : -1;
       });
     } else {
+      // DEGRADED catalog: the optional engine seam is absent, the registry has
+      // no telegram entries, or readTitleSnapshots THREW (see the catch above).
+      // Titles and timestamps are unknown, every row is offered as available in
+      // registry-reversed order (newest registered first), and the archived and
+      // active flags still apply.
       for (const entry of telegram) {
         rows.push({
           id: entry.sessionId,

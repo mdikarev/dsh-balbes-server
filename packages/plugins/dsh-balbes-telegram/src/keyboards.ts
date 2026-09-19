@@ -139,7 +139,6 @@ export function resetConfirmKeyboard(): InlineKeyboardMarkup {
   };
 }
 
-
 /** One session row: global index, display label and whether it is the active one. */
 export interface SessionRowButton {
   index: number;
