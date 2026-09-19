@@ -914,9 +914,10 @@ sudo systemctl restart dsh-balbes
 `$DSH_HOME/.credentials.yaml`, polling выключен.
 
 **Шаг 11. Данные на диске.** `ls -l $DSH_HOME/telegram-state.json` —
-существует, права `600`; форма файла та же, что до появления команд и смены
-модели: `"version": 1`, `activeWorkspace`, `sessions`, `offset` — и **нет**
-токена. Токен — только в `$DSH_HOME/.credentials.yaml`; настройки — секция
+существует, права `600`; форма файла: `"version": 1`, `activeWorkspace`,
+`sessions`, опциональный `archived[<ключ воркспейса>]` и `offset` — и **нет**
+токена. Файл без `archived` читается как пустой архив (совместимость).
+Токен — только в `$DSH_HOME/.credentials.yaml`; настройки — секция
 `balbes-telegram` в `$DSH_HOME/settings.yaml`. Модель в `telegram-state.json`
 не хранится: её место — секция `agent-default-model` того же
 `$DSH_HOME/settings.yaml`, и это ровно та настройка, которой управляет раздел
