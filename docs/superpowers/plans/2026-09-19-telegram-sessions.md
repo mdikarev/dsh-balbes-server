@@ -498,6 +498,8 @@ describe("chat machine: session list and archive", () => {
 });
 ```
 
+> **Исправление (R6, внесено после Task 6).** Сетап ниже «onMessage(/ws) -> ws:pick:0 с фиксированным id 600» недействителен: у сообщения 600 нет снимка списка воркспейсов, и выбор отвечает STALE_ACTION, а не активирует воркспейс. Корректный поток: взять id сообщения, которым отрисован список (`h.bot.sent.at(-1)!.messageId`), и послать `ws:pick:0` на него; последующие callback-и (`act:sessions`, `ses:<i>`) адресовать id меню, отрисованного после выбора. Рабочая версия — в `tests/chat.test.ts` (хелпер `pickHome`). Правка R6 в ledger; код — источник истины.
+
 - [ ] **Step 2: Запустить — убедиться, что падает**
 
 Run: `pnpm --filter dsh-balbes-telegram test -- chat`
