@@ -137,6 +137,13 @@ describe("TelegramState.save shape validation", () => {
     expect(await readdir(home)).toEqual([]);
   });
 
+  it("rejects a damaged archived map before writing anything", async () => {
+    await expect(state.save({ version: 1, sessions: {}, archived: { home: [""] } })).rejects.toThrow(/invalid archived session id/);
+    await expect(state.save({ version: 1, sessions: {}, archived: "session-old" as unknown as Record<string, string[]> })).rejects.toThrow(file);
+
+    expect(await readdir(home)).toEqual([]);
+  });
+
   it("rejects a non-string activeWorkspace with the file name", async () => {
     const illegal = { version: 1 as const, sessions: {}, activeWorkspace: 7 as unknown as string };
 
@@ -173,6 +180,25 @@ describe("TelegramState round-trip", () => {
     const loaded = await state.load();
     expect(loaded.activeWorkspace).toBeUndefined();
     expect(loaded.offset).toBeUndefined();
+  });
+
+  it("round-trips the archived map and normalizes empties", async () => {
+    await state.save({
+      version: 1,
+      sessions: { home: "session-a" },
+      archived: { home: ["session-old"], "project:x": ["session-x", "session-old"] }
+    });
+
+    const loaded = await state.load();
+    expect(loaded.archived).toEqual({ home: ["session-old"], "project:x": ["session-x", "session-old"] });
+  });
+
+  it("drops an empty archived list rather than persisting it", async () => {
+    await state.save({ version: 1, sessions: {}, archived: { home: [] } });
+
+    expect((await state.load()).archived).toBeUndefined();
+    // The empty list must not even reach the file: "absence of key = empty archive".
+    expect(JSON.parse(await readFile(file, "utf8")).archived).toBeUndefined();
   });
 });
 
@@ -239,6 +265,44 @@ describe("TelegramState.load shape validation", () => {
 
       await expect(state.load()).rejects.toThrow(file);
     }
+  });
+
+  it("loads a v1 file without archived as an empty archive", async () => {
+    await writeRaw(JSON.stringify({ version: 1, sessions: { home: "session-a" } }));
+
+    const loaded = await state.load();
+    expect(loaded.archived).toBeUndefined();
+    expect(loaded.sessions).toEqual({ home: "session-a" });
+  });
+
+  it("rejects a damaged archived map naming the file", async () => {
+    await writeRaw(JSON.stringify({ version: 1, sessions: {}, archived: { home: [""] } }));
+
+    await expect(state.load()).rejects.toThrow(/telegram state file .*invalid archived session id/);
+  });
+
+  it("rejects an archived map that is not an object", async () => {
+    await writeRaw(JSON.stringify({ version: 1, sessions: {}, archived: ["session-old"] }));
+
+    await expect(state.load()).rejects.toThrow(/telegram state file .*invalid archived map/);
+  });
+
+  it("rejects a non-array archived list naming the key", async () => {
+    await writeRaw(JSON.stringify({ version: 1, sessions: {}, archived: { home: "session-old" } }));
+
+    await expect(state.load()).rejects.toThrow(/telegram state file .*non-array archived list for key home/);
+  });
+
+  it("rejects an empty archived workspace key naming the file", async () => {
+    await writeRaw(JSON.stringify({ version: 1, sessions: {}, archived: { "": ["session-old"] } }));
+
+    await expect(state.load()).rejects.toThrow(/telegram state file .*empty archived workspace key/);
+  });
+
+  it("deduplicates archived session ids", async () => {
+    await writeRaw(JSON.stringify({ version: 1, sessions: {}, archived: { home: ["a", "a", "b"] } }));
+
+    expect((await state.load()).archived).toEqual({ home: ["a", "b"] });
   });
 
   it("rejects an unreadable path with the file name instead of resetting", async () => {

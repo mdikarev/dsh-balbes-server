@@ -6,12 +6,12 @@ import { join } from "node:path";
  * Non-sensitive Telegram channel state, persisted at
  * `$DSH_HOME/telegram-state.json`.
  *
- * The file holds exactly three things: the last processed `update_id`, the
- * active workspace reference ("home" | "project:<name>", see
- * `workspaceRefKey`) and the workspace-key -> dsh sessionId map. It is NOT a
- * credential store: the bot token lives in the credentials service
- * (`$DSH_HOME/.credentials.yaml`) and has no field here by construction, so no
- * code path can persist it through this store.
+ * The file holds four things: the last processed `update_id`, the active
+ * workspace reference ("home" | "project:<name>", see `workspaceRefKey`), the
+ * workspace-key -> dsh sessionId map and the optional workspace-key -> archived
+ * sessionId list. It is NOT a credential store: the bot token lives in the
+ * credentials service (`$DSH_HOME/.credentials.yaml`) and has no field here by
+ * construction, so no code path can persist it through this store.
  */
 export interface TelegramStateData {
   version: 1;
@@ -19,6 +19,8 @@ export interface TelegramStateData {
   activeWorkspace?: string;
   /** Workspace key -> dsh sessionId, for resuming sessions after a restart. */
   sessions: Record<string, string>;
+  /** Workspace key -> archived session ids (hidden from the channel's active list). */
+  archived?: Record<string, string[]>;
   /** Last processed Telegram update_id (long polling offset). */
   offset?: number;
 }
@@ -41,12 +43,31 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 function assertShape(value: unknown, file: string): TelegramStateData {
   const invalid = (detail: string): Error => new Error(`telegram state file ${file} ${detail}`);
   if (!isPlainObject(value)) throw invalid("misses required fields");
-  const record = value as { version?: unknown; activeWorkspace?: unknown; sessions?: unknown; offset?: unknown };
+  const record = value as { version?: unknown; activeWorkspace?: unknown; sessions?: unknown; archived?: unknown; offset?: unknown };
   if (record.version !== 1 || !isPlainObject(record.sessions)) throw invalid("misses required fields");
   const sessions: Record<string, string> = {};
   for (const [key, sessionId] of Object.entries(record.sessions)) {
     if (typeof sessionId !== "string" || sessionId === "") throw invalid(`has an invalid session id for key ${key}`);
     sessions[key] = sessionId;
+  }
+  const archived: Record<string, string[]> = {};
+  if (record.archived !== undefined) {
+    if (!isPlainObject(record.archived)) throw invalid("has an invalid archived map");
+    for (const [key, rawIds] of Object.entries(record.archived)) {
+      if (key === "") throw invalid("has an empty archived workspace key");
+      if (!Array.isArray(rawIds)) throw invalid(`has a non-array archived list for key ${key}`);
+      const ids: string[] = [];
+      const seen = new Set<string>();
+      for (const raw of rawIds) {
+        if (typeof raw !== "string" || raw === "") {
+          throw invalid(`has an invalid archived session id for key ${key}`);
+        }
+        if (seen.has(raw)) continue;
+        seen.add(raw);
+        ids.push(raw);
+      }
+      if (ids.length > 0) archived[key] = ids;
+    }
   }
   const data: TelegramStateData = { version: 1, sessions };
   if (record.activeWorkspace !== undefined) {
@@ -62,6 +83,8 @@ function assertShape(value: unknown, file: string): TelegramStateData {
     }
     data.offset = record.offset;
   }
+  // An empty archive is absence, not data: only non-empty lists reach the disk.
+  if (Object.keys(archived).length > 0) data.archived = archived;
   return data;
 }
 
