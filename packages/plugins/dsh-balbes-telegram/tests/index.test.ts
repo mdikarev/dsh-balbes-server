@@ -5,6 +5,38 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { apply, name, inject, Config, telegramSettingsSchema, TELEGRAM_BOT_TOKEN_REF } from "../src/index.js";
 import type { ResLike } from "../src/admin.js";
+import type { WorkspaceRef } from "../src/agentTask.js";
+import type { ChatDeps, ChatMachine, SessionsSlice } from "../src/chat.js";
+import type { TelegramStateData } from "../src/state.js";
+
+/** One title snapshot as `sessionQuery.readTitleSnapshots` reports it. */
+interface TitleObservationLike {
+  sessionId: string;
+  status: "fulfilled" | "rejected";
+  value?: { session: { createdAt: number }; title?: { title: string } };
+}
+
+/**
+ * Capture the `ChatDeps` `apply` hands to the real chat machine.
+ *
+ * The plugin's session catalog (`channelSessions`) is a local const inside
+ * `apply` with no exported accessor, so the only way to reach it from a test
+ * without building a second composition is to wrap the real factory and record
+ * its argument. The wrapper DELEGATES to the real `createChatMachine`, so every
+ * other test in this file sees unchanged behavior.
+ */
+const captured = vi.hoisted(() => ({ chatDeps: [] as ChatDeps[] }));
+
+vi.mock("../src/chat.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/chat.js")>();
+  return {
+    ...actual,
+    createChatMachine: (deps: ChatDeps): ChatMachine => {
+      captured.chatDeps.push(deps);
+      return actual.createChatMachine(deps);
+    }
+  };
+});
 
 interface Seat {
   path: string;
@@ -99,6 +131,12 @@ let credentials: FakeCredentials;
 let workspaces: FakeWorkspaces;
 /** Every `balbesSessions.register` call the plugin made during one test. */
 let registered: Array<{ ref: unknown; sessionId: string; channel: string }>;
+/** Entries `balbesSessions.list` answers with (the fake registry's content). */
+let registryEntries: Array<{ sessionId: string; channel: string }>;
+/** The optional engine seam; undefined exercises the degraded catalog path. */
+let sessionQuery: { readTitleSnapshots(ids: readonly string[]): Promise<TitleObservationLike[]> } | undefined;
+/** Ids the catalog asked titles for, in call order. */
+let observedIds: string[];
 let warns: string[];
 let disposers: Array<() => unknown>;
 let servers: Server[];
@@ -106,6 +144,8 @@ let servers: Server[];
 interface MakeCtxOptions {
   withEffect?: boolean;
   omitHttp?: boolean;
+  /** Omit the sessions registry service to exercise the un-wired catalog path. */
+  omitSessions?: boolean;
 }
 
 function makeCtx(o: MakeCtxOptions = {}): {
@@ -119,11 +159,13 @@ function makeCtx(o: MakeCtxOptions = {}): {
         : key === "settings" ? settings
         : key === "credentials" ? credentials
         : key === "balbesWorkspaces" ? workspaces
-        : key === "balbesSessions" ? {
+        : key === "balbesSessions" ? (o.omitSessions === true ? undefined : {
             register: async (ref: unknown, sessionId: string, channel: string) => {
               registered.push({ ref, sessionId, channel });
-            }
-          }
+            },
+            list: async () => registryEntries
+          })
+        : key === "sessionQuery" ? sessionQuery
         : key === "agents" ? { create: async () => {}, resume: async () => {} }
         : key === "sessions" ? { flush: async () => {} }
         : key === "agentDefaultModel" ? { currentSelection: () => ({ provider: "test-provider", model: "test-model" }) }
@@ -270,6 +312,10 @@ beforeEach(async () => {
   credentials = new FakeCredentials();
   workspaces = new FakeWorkspaces();
   registered = [];
+  registryEntries = [];
+  sessionQuery = undefined;
+  observedIds = [];
+  captured.chatDeps.length = 0;
   warns = [];
   disposers = [];
   servers = [];
@@ -279,6 +325,80 @@ afterEach(async () => {
   for (const server of servers) await new Promise<void>((resolve) => server.close(() => resolve()));
   await rm(home, { recursive: true, force: true });
 });
+
+/** Read and parse the persisted channel document. */
+async function readState(): Promise<TelegramStateData> {
+  return JSON.parse(await readFile(stateFile, "utf8")) as TelegramStateData;
+}
+
+/** `home` | `project:<имя>` -> ref; mirrors the plugin's own key mapping. */
+function refFromStateKeyForTest(key: string): WorkspaceRef | undefined {
+  if (key === "home") return { scope: "home" };
+  if (key.startsWith("project:")) {
+    const projectName = key.slice("project:".length);
+    return projectName === "" ? undefined : { scope: "project", name: projectName };
+  }
+  return undefined;
+}
+
+interface BootTelegramOptions {
+  /** Seed telegram-state.json before apply. */
+  state?: TelegramStateData;
+  /** Entries the fake registry lists. */
+  registry?: Array<{ sessionId: string; channel: string }>;
+  /** When given, compose the optional sessionQuery seam with this answer. */
+  observations?: TitleObservationLike[];
+}
+
+interface TelegramHarness {
+  channelSessions: SessionsSlice;
+  deps: ChatDeps;
+}
+
+/**
+ * Compose the plugin through its real entry point (`apply`) and hand back the
+ * session slice `apply` wired into the chat machine. Reuses the existing
+ * `makeCtx`/`apply` harness; no second composition is built.
+ */
+async function bootTelegram(options: BootTelegramOptions = {}): Promise<TelegramHarness> {
+  if (options.state !== undefined) {
+    await writeFile(stateFile, JSON.stringify(options.state), "utf8");
+  }
+  registryEntries = options.registry ?? [];
+  if (options.observations !== undefined) {
+    observedIds = [];
+    sessionQuery = {
+      readTitleSnapshots: async (ids) => {
+        observedIds.push(...ids);
+        return options.observations ?? [];
+      }
+    };
+  } else {
+    sessionQuery = undefined;
+  }
+
+  apply(makeCtx(), { dshHome: home });
+
+  const deps = captured.chatDeps.at(-1);
+  if (deps === undefined || deps.sessions === undefined) {
+    throw new Error("channelSessions was not wired into the chat machine");
+  }
+
+  // The boot restore loads the document into `live` in a continuation; its
+  // registry sync is the observable signal that `live` now holds the seed.
+  const expected = Object.entries(options.state?.sessions ?? {})
+    .map(([key, sessionId]) => ({ ref: refFromStateKeyForTest(key), sessionId }))
+    .filter((entry): entry is { ref: WorkspaceRef; sessionId: string } => entry.ref !== undefined);
+  if (expected.length > 0) {
+    await vi.waitFor(() => {
+      for (const entry of expected) {
+        expect(registered).toContainEqual({ ...entry, channel: "telegram" });
+      }
+    }, { timeout: 5000 });
+  }
+
+  return { channelSessions: deps.sessions, deps };
+}
 
 describe("balbes-telegram plugin", () => {
   it("exposes the name/inject/Config/apply contract", () => {
@@ -605,3 +725,104 @@ describe("balbes-telegram polling runtime (loopback Bot API)", () => {
     await expect(stub.polling()).resolves.toBe(true);
   });
 });
+
+describe("balbes-telegram session catalog wiring", () => {
+  it("selects a stored session and persists the active id", async () => {
+    const harness = await bootTelegram({ state: { version: 1, sessions: { home: "session-a" } } });
+    await harness.channelSessions.select({ scope: "home" }, "session-b");
+    await vi.waitFor(async () => {
+      expect(await readState()).toMatchObject({ sessions: { home: "session-b" } });
+    });
+  });
+
+  it("archives the active session: clears the active id and records the archive", async () => {
+    const harness = await bootTelegram({ state: { version: 1, sessions: { home: "session-a" } } });
+    await harness.channelSessions.archive({ scope: "home" }, "session-a");
+    await vi.waitFor(async () => {
+      const state = await readState();
+      expect(state).toMatchObject({ archived: { home: ["session-a"] } });
+      expect(state.sessions.home).toBeUndefined();
+    });
+  });
+
+  it("unarchives without touching the active id", async () => {
+    const harness = await bootTelegram({
+      state: { version: 1, sessions: { home: "session-a" }, archived: { home: ["session-old"] } }
+    });
+    await harness.channelSessions.unarchive({ scope: "home" }, "session-old");
+    await vi.waitFor(async () => {
+      const state = await readState();
+      expect(state.sessions).toEqual({ home: "session-a" });
+      expect(state.archived).toBeUndefined();
+    });
+  });
+
+  it("lists only telegram sessions, newest first, marking the active and archived ones", async () => {
+    const harness = await bootTelegram({
+      state: { version: 1, sessions: { home: "s3" }, archived: { home: ["s1"] } },
+      registry: [
+        { sessionId: "s1", channel: "telegram" },
+        { sessionId: "s2", channel: "admin" },
+        { sessionId: "s3", channel: "telegram" }
+      ],
+      observations: [
+        { sessionId: "s1", status: "fulfilled", value: { session: { createdAt: 1000 }, title: { title: "First" } } },
+        { sessionId: "s3", status: "fulfilled", value: { session: { createdAt: 3000 } } }
+      ]
+    });
+
+    const rows = await harness.channelSessions.list({ scope: "home" });
+    expect(rows).toEqual([
+      { id: "s3", title: null, createdAt: new Date(3000).toISOString(), available: true, archived: false, active: true },
+      { id: "s1", title: "First", createdAt: new Date(1000).toISOString(), available: true, archived: true, active: false }
+    ]);
+    // The engine is asked only about the telegram entries, in registry order.
+    expect(observedIds).toEqual(["s1", "s3"]);
+  });
+
+  it("marks a session unavailable when its title snapshot rejects", async () => {
+    const harness = await bootTelegram({
+      registry: [{ sessionId: "gone", channel: "telegram" }],
+      observations: [{ sessionId: "gone", status: "rejected" }]
+    });
+    const rows = await harness.channelSessions.list({ scope: "home" });
+    expect(rows).toEqual([
+      { id: "gone", title: null, createdAt: null, available: false, archived: false, active: false }
+    ]);
+  });
+
+  it("degrades without sessionQuery: reversed registry order, all available, no titles", async () => {
+    const harness = await bootTelegram({
+      registry: [
+        { sessionId: "older", channel: "telegram" },
+        { sessionId: "newer", channel: "telegram" }
+      ]
+    });
+    const rows = await harness.channelSessions.list({ scope: "home" });
+    expect(rows).toEqual([
+      { id: "newer", title: null, createdAt: null, available: true, archived: false, active: false },
+      { id: "older", title: null, createdAt: null, available: true, archived: false, active: false }
+    ]);
+  });
+
+  it("reports the selected session before its first turn", async () => {
+    const harness = await bootTelegram({ state: { version: 1, sessions: { home: "session-a" } } });
+    await harness.channelSessions.select({ scope: "home" }, "session-b");
+    // Let the fire-and-forget save settle before the temp dir is torn down.
+    await vi.waitFor(async () => {
+      expect(await readState()).toMatchObject({ sessions: { home: "session-b" } });
+    });
+    // The raw runner holds no handle yet; the mapping must supply the answer.
+    expect(harness.deps.runner.sessionIdOf({ scope: "home" })).toBe("session-b");
+  });
+
+  it("wires the session slice into the chat machine only when the registry is composed", () => {
+    apply(makeCtx(), { dshHome: home });
+    expect(captured.chatDeps.at(-1)?.sessions).toBeDefined();
+
+    captured.chatDeps.length = 0;
+    apply(makeCtx({ omitSessions: true }), { dshHome: home });
+    expect(captured.chatDeps.at(-1)?.sessions).toBeUndefined();
+  });
+});
+

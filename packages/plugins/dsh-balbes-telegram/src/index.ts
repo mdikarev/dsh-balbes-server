@@ -21,7 +21,15 @@ import {
   type WorkspaceRef
 } from "./agentTask.js";
 import { createBotClient, type BotClient } from "./bot.js";
-import { createChatMachine, type ChatDeps, type ChatMachine, type WorkspaceFileResult, type WorkspaceTreeEntry } from "./chat.js";
+import {
+  createChatMachine,
+  type ChannelSessionRow,
+  type ChatDeps,
+  type ChatMachine,
+  type SessionsSlice,
+  type WorkspaceFileResult,
+  type WorkspaceTreeEntry
+} from "./chat.js";
 import { TELEGRAM_COMMANDS } from "./commands.js";
 import { createPoller } from "./poller.js";
 import { TelegramState, type TelegramStateData } from "./state.js";
@@ -139,6 +147,19 @@ interface PluginCtx {
  */
 interface SessionsRegistryLike {
   register(ref: WorkspaceRef, sessionId: string, channel: string): Promise<void>;
+  list(ref: WorkspaceRef): Promise<Array<{ sessionId: string; channel: string }>>;
+}
+
+/** One title snapshot of the engine's `sessionQuery.readTitleSnapshots`. */
+interface TitleObservationLike {
+  sessionId: string;
+  status: "fulfilled" | "rejected";
+  value?: { session: { createdAt: number }; title?: { title: string } };
+}
+
+/** Structural slice of the OPTIONAL engine seam that supplies titles/createdAt. */
+interface SessionQueryLike {
+  readTitleSnapshots(ids: readonly string[]): Promise<TitleObservationLike[]>;
 }
 
 function reasonOf(error: unknown): string {
@@ -173,6 +194,9 @@ export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: stri
   // composition is already broken, not that a models-less profile is supported.
   const balbesModels = ctx.get("balbesModels") as ChatDeps["models"] | undefined;
   const sessionsRegistry = ctx.get("balbesSessions") as SessionsRegistryLike | undefined;
+  // Optional by design: an absent engine degrades the catalog (no titles, no
+  // timestamps) instead of making the whole channel mandatory on it.
+  const sessionQuery = ctx.get("sessionQuery") as SessionQueryLike | undefined;
   if (sessionsRegistry === undefined) {
     ctx.logger.warn("balbes-telegram: balbesSessions service is not available; sessions will not be listed in the admin");
   }
@@ -205,7 +229,8 @@ export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: stri
       version: 1,
       sessions: { ...live.sessions },
       ...(live.activeWorkspace !== undefined ? { activeWorkspace: live.activeWorkspace } : {}),
-      ...(live.offset !== undefined ? { offset: live.offset } : {})
+      ...(live.offset !== undefined ? { offset: live.offset } : {}),
+      ...(live.archived !== undefined && Object.keys(live.archived).length > 0 ? { archived: live.archived } : {})
     };
     saveChain = saveChain
       .then(() => state.save(snapshot))
@@ -278,111 +303,192 @@ export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: stri
     setChatMenuButton: (button) => runtime.bot().setChatMenuButton(button)
   };
 
-  const runnerWithSessions: AgentTaskRunner = (() => {
-    // Both optional agent seams are read defensively (the loader may only exist
-    // while the Loader plugin is composed); the runner itself is inert until the
-    // first task.
-    const loader = ctx.get("loader") as { await(): Promise<void> } | undefined;
-    const defaultModel = ctx.get("agentDefaultModel") as { currentSelection(): { provider: string; model: string } } | undefined;
-    const runner = createAgentTaskRunner({
-      // The runner reads workspaces through its own (looser) slice; the object
-      // is the same service the chat machine consumes above.
-      workspaces: workspaces as unknown as AgentTaskDeps["workspaces"],
-      agents: ctx.get("agents") as AgentTaskDeps["agents"],
-      sessions: ctx.get("sessions") as AgentTaskDeps["sessions"],
-      ...(defaultModel !== undefined ? { defaultModel } : {}),
-      ...(loader !== undefined ? { loader } : {}),
-      logger: ctx.logger
-    });
-    return {
-      run(ref, text, opts) {
-        const key = workspaceRefKey(ref);
-        // Lazy resume: the persisted session id is offered on the first task of
-        // a workspace (the runner ignores it while it already holds a handle).
-        const sessionId = opts?.sessionId ?? live.sessions[key];
-        return runner.run(ref, text, sessionId === undefined ? undefined : { sessionId }).then(async (result) => {
-          if (result.ok) {
-            // An empty id is rejected by the state store's shape check and would
-            // make every later save of the whole document fail: never store one.
-            if (result.sessionId === "") {
-              ctx.logger.warn("balbes-telegram: agent reported an empty session id; nothing persisted");
-              return result;
-            }
-            live.sessions[key] = result.sessionId;
-            persist();
-            if (sessionsRegistry !== undefined) {
-              // Витрина сессий воркспейса: сбой записи в реестр не меняет исход
-              // задачи — регистрация логируется и остаётся best-effort.
-              await sessionsRegistry
-                .register(ref, result.sessionId, "telegram")
-                .catch((error: unknown) =>
-                  ctx.logger.warn(
-                    `balbes-telegram: registering session ${result.sessionId} in the workspace registry failed: ${
-                      error instanceof Error ? error.message : String(error)
-                    }`
-                  )
-                );
-            }
+  // Both optional agent seams are read defensively (the loader may only exist
+  // while the Loader plugin is composed); the runner itself is inert until the
+  // first task.
+  const loader = ctx.get("loader") as { await(): Promise<void> } | undefined;
+  const defaultModel = ctx.get("agentDefaultModel") as { currentSelection(): { provider: string; model: string } } | undefined;
+  const runner = createAgentTaskRunner({
+    // The runner reads workspaces through its own (looser) slice; the object
+    // is the same service the chat machine consumes above.
+    workspaces: workspaces as unknown as AgentTaskDeps["workspaces"],
+    agents: ctx.get("agents") as AgentTaskDeps["agents"],
+    sessions: ctx.get("sessions") as AgentTaskDeps["sessions"],
+    ...(defaultModel !== undefined ? { defaultModel } : {}),
+    ...(loader !== undefined ? { loader } : {}),
+    logger: ctx.logger
+  });
+
+  /** Detach the live handle and make sessionId the workspace's active session. */
+  async function selectSession(ref: WorkspaceRef, sessionId: string): Promise<void> {
+    await runner.reset(ref);
+    live.sessions[workspaceRefKey(ref)] = sessionId;
+    persist();
+  }
+
+  /** Hide a session from the active list; archiving the active one also detaches it. */
+  async function archiveSession(ref: WorkspaceRef, sessionId: string): Promise<void> {
+    const key = workspaceRefKey(ref);
+    const current = live.archived?.[key] ?? [];
+    if (!current.includes(sessionId)) {
+      live.archived = { ...(live.archived ?? {}), [key]: [...current, sessionId] };
+    }
+    if (live.sessions[key] === sessionId) {
+      await runner.reset(ref);
+      delete live.sessions[key];
+    }
+    persist();
+  }
+
+  /** Return a session to the active list; the active id is untouched. */
+  async function unarchiveSession(ref: WorkspaceRef, sessionId: string): Promise<void> {
+    const key = workspaceRefKey(ref);
+    const current = live.archived?.[key];
+    if (current === undefined) return;
+    const next = current.filter((id) => id !== sessionId);
+    const archived = { ...(live.archived ?? {}) };
+    if (next.length === 0) delete archived[key];
+    else archived[key] = next;
+    live.archived = archived;
+    persist();
+  }
+
+  /** The channel's session catalog: registry (telegram) joined with engine titles. */
+  async function listChannelSessions(ref: WorkspaceRef): Promise<ChannelSessionRow[]> {
+    const key = workspaceRefKey(ref);
+    const entries = sessionsRegistry === undefined ? [] : await sessionsRegistry.list(ref);
+    const telegram = entries.filter((entry) => entry.channel === "telegram");
+    const archived = new Set(live.archived?.[key] ?? []);
+    const activeId = live.sessions[key];
+    const rows: ChannelSessionRow[] = [];
+    if (sessionQuery !== undefined && telegram.length > 0) {
+      let observations: TitleObservationLike[] = [];
+      try {
+        observations = await sessionQuery.readTitleSnapshots(telegram.map((entry) => entry.sessionId));
+      } catch (error) {
+        ctx.logger.warn(`balbes-telegram: reading session titles failed: ${reasonOf(error)}`);
+      }
+      const byId = new Map(observations.map((observation) => [observation.sessionId, observation]));
+      for (const entry of telegram) {
+        const observation = byId.get(entry.sessionId);
+        const fulfilled = observation?.status === "fulfilled";
+        rows.push({
+          id: entry.sessionId,
+          title: fulfilled ? observation?.value?.title?.title ?? null : null,
+          createdAt: fulfilled ? new Date(observation!.value!.session.createdAt).toISOString() : null,
+          available: fulfilled,
+          archived: archived.has(entry.sessionId),
+          active: entry.sessionId === activeId
+        });
+      }
+      rows.sort((a, b) => (a.createdAt === null || b.createdAt === null ? 0 : a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+    } else {
+      for (const entry of telegram) {
+        rows.push({
+          id: entry.sessionId,
+          title: null,
+          createdAt: null,
+          available: true,
+          archived: archived.has(entry.sessionId),
+          active: entry.sessionId === activeId
+        });
+      }
+      rows.reverse();
+    }
+    return rows;
+  }
+
+  const runnerWithSessions: AgentTaskRunner = {
+    run(ref, text, opts) {
+      const key = workspaceRefKey(ref);
+      // Lazy resume: the persisted session id is offered on the first task of
+      // a workspace (the runner ignores it while it already holds a handle).
+      const sessionId = opts?.sessionId ?? live.sessions[key];
+      return runner.run(ref, text, sessionId === undefined ? undefined : { sessionId }).then(async (result) => {
+        if (result.ok) {
+          // An empty id is rejected by the state store's shape check and would
+          // make every later save of the whole document fail: never store one.
+          if (result.sessionId === "") {
+            ctx.logger.warn("balbes-telegram: agent reported an empty session id; nothing persisted");
             return result;
           }
-          // A cancelled run keeps its session (the stop's own copy promises
-          // «Контекст сохранён»), but its TaskResult carries no id — a rejected
-          // result has no sessionId field. Read it from the live handle and
-          // persist it: otherwise a workspace whose FIRST task was stopped has
-          // no mapping on disk, and a restart before any successful task starts
-          // a fresh session, which contradicts the answer the owner just got.
-          if (result.code === "cancelled") {
-            const sessionId = runner.sessionIdOf(ref);
-            // The same empty-id guard as above, for the same reason.
-            if (sessionId !== undefined && sessionId !== "" && live.sessions[key] !== sessionId) {
-              live.sessions[key] = sessionId;
-              persist();
-            }
-            // The spec's invariant — «создал сессию для воркспейса ⇒ она в
-            // реестре» — holds on this path too: a stop KEEPS the session (the
-            // receipt promises «Контекст сохранён»), so a workspace whose FIRST
-            // run was stopped must still show up in the admin's «Сессии» tab.
-            // Without this the mapping lands in telegram-state.json and nowhere
-            // else, and the session stays invisible until some later successful
-            // task happens to re-register it. Same contract as the successful
-            // path above: an empty id is never registered (the registry rejects
-            // it) and a registry failure is logged without changing the task
-            // outcome. The registry dedupes by id, so a repeat stop is a no-op.
-            if (sessionId !== undefined && sessionId !== "" && sessionsRegistry !== undefined) {
-              await sessionsRegistry
-                .register(ref, sessionId, "telegram")
-                .catch((error: unknown) =>
-                  ctx.logger.warn(
-                    `balbes-telegram: registering session ${sessionId} in the workspace registry failed: ${
-                      error instanceof Error ? error.message : String(error)
-                    }`
-                  )
-                );
-            }
+          live.sessions[key] = result.sessionId;
+          persist();
+          if (sessionsRegistry !== undefined) {
+            // Витрина сессий воркспейса: сбой записи в реестр не меняет исход
+            // задачи — регистрация логируется и остаётся best-effort.
+            await sessionsRegistry
+              .register(ref, result.sessionId, "telegram")
+              .catch((error: unknown) =>
+                ctx.logger.warn(
+                  `balbes-telegram: registering session ${result.sessionId} in the workspace registry failed: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`
+                )
+              );
           }
           return result;
-        });
-      },
-      async reset(ref) {
-        await runner.reset(ref);
-        // The session was disposed by the reset: keeping its id would make the
-        // next task for this workspace resume a session that no longer exists.
-        const key = workspaceRefKey(ref);
-        if (key in live.sessions) {
-          delete live.sessions[key];
-          persist();
         }
-      },
-      async cancel(ref) {
-        // A soft stop: unlike reset below, the session mapping is KEPT, because
-        // the handle and its session survive the cancellation.
-        return runner.cancel(ref);
-      },
-      progress: (ref) => runner.progress(ref),
-      sessionIdOf: (ref) => runner.sessionIdOf(ref),
-      snapshot: () => runner.snapshot()
-    };
-  })();
+        // A cancelled run keeps its session (the stop's own copy promises
+        // «Контекст сохранён»), but its TaskResult carries no id — a rejected
+        // result has no sessionId field. Read it from the live handle and
+        // persist it: otherwise a workspace whose FIRST task was stopped has
+        // no mapping on disk, and a restart before any successful task starts
+        // a fresh session, which contradicts the answer the owner just got.
+        if (result.code === "cancelled") {
+          const sessionId = runner.sessionIdOf(ref);
+          // The same empty-id guard as above, for the same reason.
+          if (sessionId !== undefined && sessionId !== "" && live.sessions[key] !== sessionId) {
+            live.sessions[key] = sessionId;
+            persist();
+          }
+          // The spec's invariant — «создал сессию для воркспейса ⇒ она в
+          // реестре» — holds on this path too: a stop KEEPS the session (the
+          // receipt promises «Контекст сохранён»), so a workspace whose FIRST
+          // run was stopped must still show up in the admin's «Сессии» tab.
+          // Without this the mapping lands in telegram-state.json and nowhere
+          // else, and the session stays invisible until some later successful
+          // task happens to re-register it. Same contract as the successful
+          // path above: an empty id is never registered (the registry rejects
+          // it) and a registry failure is logged without changing the task
+          // outcome. The registry dedupes by id, so a repeat stop is a no-op.
+          if (sessionId !== undefined && sessionId !== "" && sessionsRegistry !== undefined) {
+            await sessionsRegistry
+              .register(ref, sessionId, "telegram")
+              .catch((error: unknown) =>
+                ctx.logger.warn(
+                  `balbes-telegram: registering session ${sessionId} in the workspace registry failed: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`
+                )
+              );
+          }
+        }
+        return result;
+      });
+    },
+    async reset(ref) {
+      await runner.reset(ref);
+      // The session was disposed by the reset: keeping its id would make the
+      // next task for this workspace resume a session that no longer exists.
+      const key = workspaceRefKey(ref);
+      if (key in live.sessions) {
+        delete live.sessions[key];
+        persist();
+      }
+    },
+    cancel: (ref) => runner.cancel(ref),
+    progress: (ref) => runner.progress(ref),
+    sessionIdOf: (ref) => runner.sessionIdOf(ref) ?? live.sessions[workspaceRefKey(ref)],
+    snapshot: () => runner.snapshot()
+  };
+
+  const channelSessions: SessionsSlice = {
+    list: listChannelSessions,
+    select: selectSession,
+    archive: archiveSession,
+    unarchive: unarchiveSession
+  };
 
   const chat: ChatMachine = createChatMachine({
     workspaces: workspaces as ChatDeps["workspaces"],
@@ -390,6 +496,9 @@ export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: stri
     bot: chatBot,
     maxFileBytes,
     ...(balbesModels !== undefined ? { models: balbesModels } : {}),
+    // The catalog is exposed only when its source (the registry) is composed;
+    // absent, the chat falls back to "list unavailable" instead of failing.
+    ...(sessionsRegistry !== undefined ? { sessions: channelSessions } : {}),
     onActiveChange: (ref) => {
       // An absent key is the only representation of "no workspace": the state
       // store rejects an empty string.
