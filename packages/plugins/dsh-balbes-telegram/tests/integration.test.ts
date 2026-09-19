@@ -70,6 +70,9 @@ const MEMORY_REPLY = "запомнил: код проекта 41";
 const LONG_PROMPT = "Считай от 1 до 1000 по одному числу в строке, не останавливайся.";
 const FOLLOW_UP_PROMPT = "Какой код проекта ты запомнил?";
 const FOLLOW_UP_REPLY = "код проекта 41";
+/** The second workspace session's own memory, distinct from the first's. */
+const SESSION_B_PROMPT = "Запомни: код проекта 99.";
+const SESSION_B_REPLY = "запомнил: код проекта 99";
 /**
  * How long the stub holds the reply of the task the owner stops. The turn must
  * still be parked on the model when `/stop` arrives (a stop that finds nothing
@@ -177,6 +180,8 @@ interface TelegramStateLike {
   sessions: Record<string, string>;
   activeWorkspace?: string;
   offset?: number;
+  /** Per-workspace ids hidden from the active session list (Task 2). */
+  archived?: Record<string, string[]>;
 }
 
 async function startStubLlm(): Promise<StubLlm> {
@@ -1585,4 +1590,191 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
       await stopServer();
     }
   }, 300_000);
+
+  /**
+   * The session choice and the archive are CHANNEL state persisted in
+   * `$DSH_HOME/telegram-state.json` beside the active-workspace binding: a
+   * restart must restore both, and the `/sessions` cards must show exactly the
+   * restored split. Its OWN fresh home — the two sessions it creates, the one
+   * it archives and the one it selects are this case's own state, so nothing it
+   * asserts can be blamed on (or hidden by) the scenarios above.
+   *
+   * The whole choice is driven over the REAL chat surface — `/sessions` and the
+   * `arc:<i>` / `ses:<i>` buttons — never through an in-process service. The
+   * assertions then read the real files the harness already reads
+   * (`telegram-state.json` / `workspace-sessions.json`) and the restored
+   * cards, because the point of the case is what a restart actually recovers.
+   */
+  it("REAL: the chosen session and the archive survive a restart", async () => {
+    home = await prepareHome("balbes-telegram-sessions-");
+    const server = requireApi();
+    const llm = requireStub();
+    server.reset();
+    const token = await bootServer();
+    try {
+      // (a) configure the channel and pick the agent home, like the cases above
+      const saved = await tgPost(
+        "/api/telegram/save",
+        { token: BOT_TOKEN, allowedUserId: OWNER_USER_ID, enabled: true },
+        token
+      );
+      expect(saved.status, saved.text).toBe(200);
+      await waitForConnected(token, true);
+      const from = server.outbound.length;
+      const menu = await openMenu(from);
+      const menuId = sentMessageId(menu);
+      pressButton(menuId, "ws");
+      await waitForMessage((text) => text.startsWith("Выберите воркспейс"), "the workspace list", from);
+      pressButton(menuId, "ws:pick:0");
+      await waitForMessage((text) => text === "Выбран: Дом агента", "the workspace confirmation", from);
+
+      // (b) session A: the first task of the workspace
+      const firstFrom = server.outbound.length;
+      llm.setScript([{ text: MEMORY_REPLY }]);
+      llm.setDelay(0);
+      server.enqueueMessage({ fromId: OWNER_USER_ID, text: MEMORY_PROMPT });
+      await waitForMessage((text) => text === MEMORY_REPLY, "session A's answer", firstFrom, 180_000);
+      const sessionA = (
+        await waitForState((current) => current.sessions["home"] !== undefined, "session A persisted")
+      ).sessions["home"];
+      expect(sessionA).toBeTruthy();
+
+      // (c) /reset detaches A and clears the active binding; the next task then
+      // creates session B. Both stay in the append-only registry, so the
+      // workspace now has a real two-entry catalog.
+      const resetFrom = server.outbound.length;
+      server.enqueueMessage({ fromId: OWNER_USER_ID, text: "/reset" });
+      const confirm = await waitForMessage(
+        (text) => text.startsWith("Сбросить контекст"),
+        "the reset confirmation",
+        resetFrom
+      );
+      pressButton(confirm.messageId, "reset:yes");
+      await waitForState((current) => current.sessions["home"] === undefined, "the reset to clear the active session");
+      await waitForMessage((text) => text === "Контекст сессии сброшен", "the reset acknowledgement", resetFrom);
+
+      const secondFrom = server.outbound.length;
+      llm.setScript([{ text: SESSION_B_REPLY }]);
+      llm.setDelay(0);
+      server.enqueueMessage({ fromId: OWNER_USER_ID, text: SESSION_B_PROMPT });
+      await waitForMessage((text) => text === SESSION_B_REPLY, "session B's answer", secondFrom, 180_000);
+      const sessionB = (
+        await waitForState(
+          (current) => current.sessions["home"] !== undefined && current.sessions["home"] !== sessionA,
+          "session B persisted"
+        )
+      ).sessions["home"];
+      expect(sessionB).toBeTruthy();
+      expect(sessionB).not.toBe(sessionA);
+
+      // (d) the catalog: two rows, exactly one of them the active one. The
+      // active row is the one the list marks with «• »; the row's own callback
+      // index is reused for its archive button, so the test never depends on
+      // which of the two ids the engine sorts first.
+      const listFrom = server.outbound.length;
+      server.enqueueMessage({ fromId: OWNER_USER_ID, text: "/sessions" });
+      const card = await waitForMessage((text) => text.startsWith("🗂 Сессии"), "the session list", listFrom);
+      const listButtons = buttonsOf(card.entry);
+      expect(listButtons.filter((button) => /^ses:\d+$/.test(button.callback_data))).toHaveLength(2);
+      const activeLabel = listButtons.find((button) => button.text.startsWith("• "));
+      expect(activeLabel, JSON.stringify(listButtons)).toBeDefined();
+      const activeIndex = activeLabel!.callback_data.slice("ses:".length);
+
+      // (e) archive the ACTIVE session B: the harder branch, where archiving
+      // also detaches the handle and clears the active binding, both persisted.
+      const archiveFrom = server.outbound.length;
+      pressButton(card.messageId, "arc:" + activeIndex);
+      const archivedState = await waitForState(
+        (current) => (current.archived?.["home"] ?? []).includes(sessionB!),
+        "the active session to be archived"
+      );
+      expect(archivedState.archived!["home"]).toEqual([sessionB]);
+      expect(archivedState.sessions["home"]).toBeUndefined();
+
+      // (f) the active list re-rendered with the one remaining row; selecting it
+      // is a REAL switch — the chosen session was not active a press earlier.
+      const slimCard = await waitForMessage(
+        (text) => text.startsWith("🗂 Сессии"),
+        "the active list without the archived session",
+        archiveFrom
+      );
+      const slimLabels = buttonsOf(slimCard.entry).filter((button) => /^ses:\d+$/.test(button.callback_data));
+      expect(slimLabels).toHaveLength(1);
+      expect(slimLabels[0]!.text.startsWith("• ")).toBe(false);
+
+      const selectFrom = server.outbound.length;
+      pressButton(slimCard.messageId, "ses:0");
+      await waitForMessage((text) => text.startsWith("Выбрана сессия:"), "the selection confirmation", selectFrom);
+      const chosen = await waitForState(
+        (current) => current.sessions["home"] === sessionA,
+        "the chosen session to become active"
+      );
+      expect(chosen.sessions["home"]).toBe(sessionA);
+
+      // (g) the registry is untouched by the channel's choice: both sessions
+      // remain listed for the workspace (nothing is ever deleted).
+      const sessionHome = home;
+      const registry = JSON.parse(await readFile(join(sessionHome, "workspace-sessions.json"), "utf8")) as {
+        workspaces: Record<string, Array<{ sessionId: string; channel: string }>>;
+      };
+      expect(registry.workspaces["home"]).toEqual([
+        { sessionId: sessionA, channel: "telegram" },
+        { sessionId: sessionB, channel: "telegram" }
+      ]);
+
+      // ---- restart on the same home ----
+      await stopServer();
+      server.reset();
+      const token2 = await bootServer();
+      await waitForConnected(token2, true);
+
+      // (h) the persisted document is the channel's whole session state: the
+      // chosen session active, the archived one hidden, nothing else.
+      const restored = await readState();
+      expect(restored.sessions["home"]).toBe(sessionA);
+      expect(restored.archived).toEqual({ home: [sessionB] });
+
+      // (i) the restored cards show the same split, driven over the real chat
+      // surface: one active row (marked active) and one archived row.
+      const afterRestartFrom = server.outbound.length;
+      server.enqueueMessage({ fromId: OWNER_USER_ID, text: "/sessions" });
+      const restoredCard = await waitForMessage(
+        (text) => text.startsWith("🗂 Сессии"),
+        "the restored active session list",
+        afterRestartFrom
+      );
+      const restoredLabels = buttonsOf(restoredCard.entry).filter((button) => /^ses:\d+$/.test(button.callback_data));
+      expect(restoredLabels).toHaveLength(1);
+      expect(restoredLabels[0]!.text.startsWith("• ")).toBe(true);
+      pressButton(restoredCard.messageId, "ses:arch");
+      const archiveCard = await waitForMessage(
+        (text) => text.startsWith("🗄 Архив сессий"),
+        "the restored archive list",
+        afterRestartFrom
+      );
+      const archivedLabels = buttonsOf(archiveCard.entry).filter((button) => /^ses:\d+$/.test(button.callback_data));
+      const unarchiveButtons = buttonsOf(archiveCard.entry).filter((button) => /^unarc:\d+$/.test(button.callback_data));
+      expect(archivedLabels).toHaveLength(1);
+      expect(unarchiveButtons).toHaveLength(1);
+
+      // (j) the chat still resumes the CHOSEN session: the next task replays the
+      // transcript of session A (the selected one) and carries no trace of the
+      // archived session B.
+      const callsBeforeResume = llm.calls.length;
+      const resumeFrom = server.outbound.length;
+      llm.setScript([{ text: FOLLOW_UP_REPLY }]);
+      llm.setDelay(0);
+      server.enqueueMessage({ fromId: OWNER_USER_ID, text: FOLLOW_UP_PROMPT });
+      await waitForMessage((text) => text === FOLLOW_UP_REPLY, "the resumed answer", resumeFrom, 180_000);
+      const resumeTurn = await waitFor(
+        () => (llm.calls.length > callsBeforeResume ? llm.calls.at(-1) : undefined),
+        "the resumed model request"
+      );
+      const resumeBody = JSON.stringify(resumeTurn?.body ?? {});
+      expect(resumeBody, resumeBody.slice(0, 2000)).toContain(MEMORY_PROMPT);
+      expect(resumeBody, resumeBody.slice(0, 2000)).not.toContain(SESSION_B_PROMPT);
+    } finally {
+      await stopServer();
+    }
+  }, 420_000);
 });
