@@ -791,6 +791,27 @@ describe("balbes-telegram session catalog wiring", () => {
     ]);
   });
 
+  it("places unavailable (undated) sessions after every dated one", async () => {
+    const harness = await bootTelegram({
+      registry: [
+        { sessionId: "s1", channel: "telegram" },
+        { sessionId: "s2", channel: "telegram" },
+        { sessionId: "s3", channel: "telegram" }
+      ],
+      observations: [
+        { sessionId: "s1", status: "fulfilled", value: { session: { createdAt: 1000 }, title: { title: "First" } } },
+        { sessionId: "s2", status: "rejected" },
+        { sessionId: "s3", status: "fulfilled", value: { session: { createdAt: 3000 } } }
+      ]
+    });
+
+    const rows = await harness.channelSessions.list({ scope: "home" });
+    // A null createdAt in the middle must not break the dated ordering: s3 is
+    // newest, s1 next, and the unavailable s2 goes last.
+    expect(rows.map((row) => row.id)).toEqual(["s3", "s1", "s2"]);
+    expect(rows[2]).toMatchObject({ id: "s2", available: false, createdAt: null });
+  });
+
   it("degrades without sessionQuery: reversed registry order, all available, no titles", async () => {
     const harness = await bootTelegram({
       registry: [

@@ -381,7 +381,15 @@ export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: stri
           active: entry.sessionId === activeId
         });
       }
-      rows.sort((a, b) => (a.createdAt === null || b.createdAt === null ? 0 : a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+      // Total order: dated rows newest-first, undated (unavailable) rows last.
+      // Array.prototype.sort is stable, so equal keys keep their registry order.
+      rows.sort((a, b) => {
+        if (a.createdAt === null && b.createdAt === null) return 0;
+        if (a.createdAt === null) return 1;
+        if (b.createdAt === null) return -1;
+        if (a.createdAt === b.createdAt) return 0;
+        return a.createdAt < b.createdAt ? 1 : -1;
+      });
     } else {
       for (const entry of telegram) {
         rows.push({
