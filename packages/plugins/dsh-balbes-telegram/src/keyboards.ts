@@ -138,3 +138,50 @@ export function resetConfirmKeyboard(): InlineKeyboardMarkup {
     ]
   };
 }
+
+
+/** One session row: global index, display label and whether it is the active one. */
+export interface SessionRowButton {
+  index: number;
+  label: string;
+  active: boolean;
+}
+
+/**
+ * The active session list: one «[title][🗄]» row per session, the pagination
+ * row when there are several pages, then the archive entry point and the menu.
+ */
+export function sessionsKeyboard(opts: {
+  rows: SessionRowButton[];
+  page: number;
+  pages: number;
+}): InlineKeyboardMarkup {
+  const rows: InlineKeyboardButton[][] = opts.rows.map((row) => [
+    { text: `${row.active ? "• " : ""}${row.label}`, callback_data: `ses:${row.index}` },
+    { text: "🗄", callback_data: `arc:${row.index}` }
+  ]);
+  if (opts.pages > 1) rows.push(paginationRow("ses:pg", opts.page, opts.pages));
+  rows.push([{ text: "🗄 Архив", callback_data: "ses:arch" }]);
+  rows.push(menuRow());
+  return { inline_keyboard: rows };
+}
+
+/**
+ * The archive list: one «[title][↩]» row per archived session, the pagination
+ * row when there are several pages, then the way back to the active list and
+ * the menu.
+ */
+export function archiveKeyboard(opts: {
+  rows: SessionRowButton[];
+  page: number;
+  pages: number;
+}): InlineKeyboardMarkup {
+  const rows: InlineKeyboardButton[][] = opts.rows.map((row) => [
+    { text: row.label, callback_data: `ses:${row.index}` },
+    { text: "↩", callback_data: `unarc:${row.index}` }
+  ]);
+  if (opts.pages > 1) rows.push(paginationRow("ses:pg", opts.page, opts.pages));
+  rows.push([{ text: "⬆ К сессиям", callback_data: "ses:back" }]);
+  rows.push(menuRow());
+  return { inline_keyboard: rows };
+}

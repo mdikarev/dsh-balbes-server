@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  archiveKeyboard,
   fileKeyboard,
   listingKeyboard,
   menuRow,
   paginationRow,
   resetConfirmKeyboard,
+  sessionsKeyboard,
   workspacesKeyboard
 } from "../src/keyboards.js";
 
@@ -119,5 +121,36 @@ describe("keyboard builders", () => {
     expect(data(fileKeyboard({ page: 1, hasMore: false }))).toEqual(["up"]);
     expect(fileKeyboard({ page: 0, hasMore: true }).inline_keyboard[0]![0]!.text).toBe("Дальше");
     expect(fileKeyboard({ page: 1, hasMore: false }).inline_keyboard[0]![0]!.text).toBe("⬆ назад к списку");
+  });
+
+  it("renders the active session list with an archive button per row", () => {
+    const kb = sessionsKeyboard({
+      rows: [{ index: 0, label: "Без заголовка", active: true }, { index: 1, label: "Вторая", active: false }],
+      page: 0,
+      pages: 1
+    });
+    expect(kb.inline_keyboard).toEqual([
+      [{ text: "• Без заголовка", callback_data: "ses:0" }, { text: "🗄", callback_data: "arc:0" }],
+      [{ text: "Вторая", callback_data: "ses:1" }, { text: "🗄", callback_data: "arc:1" }],
+      [{ text: "🗄 Архив", callback_data: "ses:arch" }],
+      [{ text: "⬅ Меню", callback_data: "mnu" }]
+    ]);
+  });
+
+  it("renders archive rows with a restore button and a back row", () => {
+    const kb = archiveKeyboard({ rows: [{ index: 0, label: "Старая", active: false }], page: 0, pages: 1 });
+    expect(kb.inline_keyboard).toEqual([
+      [{ text: "Старая", callback_data: "ses:0" }, { text: "↩", callback_data: "unarc:0" }],
+      [{ text: "⬆ К сессиям", callback_data: "ses:back" }],
+      [{ text: "⬅ Меню", callback_data: "mnu" }]
+    ]);
+  });
+
+  it("adds pagination to both session lists", () => {
+    const kb = sessionsKeyboard({ rows: [{ index: 0, label: "A", active: false }], page: 1, pages: 2 });
+    expect(kb.inline_keyboard[1]).toEqual([
+      { text: "◀", callback_data: "ses:pg:0" },
+      { text: "▶", callback_data: "ses:pg:1" }
+    ]);
   });
 });
