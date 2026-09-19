@@ -152,5 +152,19 @@ describe("keyboard builders", () => {
       { text: "◀", callback_data: "ses:pg:0" },
       { text: "▶", callback_data: "ses:pg:1" }
     ]);
+
+    // The archive branch is asserted in full: the pagination row comes after the
+    // session rows and before the «⬆ К сессиям» footer, which is what the
+    // sessionsKeyboard-only assertion above does not cover.
+    const archived = archiveKeyboard({ rows: [{ index: 0, label: "A", active: false }], page: 1, pages: 2 });
+    expect(archived.inline_keyboard).toEqual([
+      [{ text: "A", callback_data: "ses:0" }, { text: "↩", callback_data: "unarc:0" }],
+      [
+        { text: "◀", callback_data: "ses:pg:0" },
+        { text: "▶", callback_data: "ses:pg:1" }
+      ],
+      [{ text: "⬆ К сессиям", callback_data: "ses:back" }],
+      [{ text: "⬅ Меню", callback_data: "mnu" }]
+    ]);
   });
 });
