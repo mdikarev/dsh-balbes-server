@@ -1,6 +1,6 @@
 # Сессии воркспейса из Telegram: новые и возврат к старым
 
-- Status: implementing
+- Status: absorbed
 - Design: docs/superpowers/specs/2026-09-19-telegram-sessions-design.md
 
 ## Intent
