@@ -25,12 +25,15 @@ import {
 } from "./cards.js";
 import { parseCommand } from "./commands.js";
 import {
+  archiveKeyboard,
   fileKeyboard,
   listingKeyboard,
   resetConfirmKeyboard,
+  sessionsKeyboard,
   workspacesKeyboard,
   type InlineKeyboardMarkup,
-  type ListingEntryButton
+  type ListingEntryButton,
+  type SessionRowButton
 } from "./keyboards.js";
 import { TELEGRAM_MESSAGE_LIMIT, sanitizeReply, splitMessage } from "./text.js";
 import type { ClassifiedUpdate } from "./updates.js";
@@ -90,6 +93,13 @@ import type { ClassifiedUpdate } from "./updates.js";
  *   up                        parent directory / back to the listing
  *   pg:<n>                    page n of the current listing or file snapshot
  *   reset:yes | reset:no      context-reset confirmation
+ *   act:sessions              active workspace: open the session list
+ *   ses:<i>                   i-th session of the rendered list (from the
+ *                             archive: unarchive it first, then select)
+ *   arc:<i>                   archive the i-th session of the active list
+ *   unarc:<i>                 return the i-th archived session to the active list
+ *   ses:arch | ses:back       switch the rendered list to archive / active
+ *   ses:pg:<n>                page n of the rendered session list
  */
 
 export type WorkspaceScope = "home" | "project";
@@ -105,6 +115,24 @@ export type WorkspaceFileResult =
   | { kind: "text"; content: string; truncated: boolean }
   | { kind: "binary"; size: number }
   | { kind: "link" };
+
+/** One session of a workspace as the channel reports it. */
+export interface ChannelSessionRow {
+  id: string;
+  title: string | null;
+  createdAt: string | null;
+  available: boolean;
+  archived: boolean;
+  active: boolean;
+}
+
+/** The channel's session catalog and mutations (wired in index.ts). */
+export interface SessionsSlice {
+  list(ref: WorkspaceRef): Promise<ChannelSessionRow[]>;
+  select(ref: WorkspaceRef, sessionId: string): Promise<void>;
+  archive(ref: WorkspaceRef, sessionId: string): Promise<void>;
+  unarchive(ref: WorkspaceRef, sessionId: string): Promise<void>;
+}
 
 /**
  * Structural slice of the Task 4 `BalbesWorkspacesService`
@@ -155,6 +183,8 @@ export interface ChatDeps {
   progressIntervalMs?: number;
   /** The models surface the menu card reports; absent when not composed. */
   models?: ModelsSlice;
+  /** The channel's session catalog; absent when the sessions registry is not composed. */
+  sessions?: SessionsSlice;
   /** The chat host persists the active workspace on every change. */
   onActiveChange(ref: WorkspaceRef | undefined): void;
   logger?: { warn(m: string): void };
@@ -239,6 +269,17 @@ interface ModelListSnapshot {
   pages: number;
 }
 
+/** One rendered session list: the whole catalog, keyed by the message showing it. */
+interface SessionListSnapshot {
+  kind: "sessionList";
+  /** The chat the message belongs to: a foreign chat never resolves here. */
+  chatId: number;
+  ref: WorkspaceRef;
+  mode: "active" | "archive";
+  rows: ChannelSessionRow[];
+  page: number;
+}
+
 /**
  * One rendered menu card. The card's buttons are pure codes and its content is
  * read live from the machine, so nothing about it needs remembering — the
@@ -258,7 +299,8 @@ type Snapshot =
   | ResetSnapshot
   | MenuSnapshot
   | ModelConnectionsSnapshot
-  | ModelListSnapshot;
+  | ModelListSnapshot
+  | SessionListSnapshot;
 
 const DEFAULT_LIST_PAGE_SIZE = 8;
 const DEFAULT_FILE_PAGE_CHARS = 3000;
@@ -284,6 +326,15 @@ const MAX_SNAPSHOTS = 64;
 const LIST_TITLE = "Выберите воркспейс:";
 const LIST_FAILED =
   "Не удалось получить список воркспейсов. Попробуйте позже.";
+const SESSIONS_TITLE = "Выберите сессию:";
+const ARCHIVE_TITLE = "Выберите сессию из архива:";
+const SESSIONS_NONE = "Сессий пока нет";
+const SESSIONS_NONE_ACTIVE = "Активных сессий нет";
+const ARCHIVE_EMPTY = "Архив пуст";
+const SESSIONS_FAILED = "Не удалось получить список сессий. Попробуйте позже.";
+const SESSIONS_UNAVAILABLE = "Список сессий недоступен";
+const SESSION_UNAVAILABLE = "Сессия недоступна";
+const SESSION_BUSY = "Задача выполняется — дождитесь завершения или /stop";
 const HOME_LABEL = "Дом агента";
 const NO_ACTIVE_HINT = "Воркспейс не выбран — нажмите «Воркспейсы».";
 const STOP_HINT = "Остановил.";
@@ -843,6 +894,87 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
     }
     putSnapshot(messageId, view.snapshot);
     await edit(chatId, messageId, view.text, view.keyboard);
+  }
+
+  /** The label of one session row: its title, or an honest placeholder. */
+  function sessionLabel(row: ChannelSessionRow): string {
+    const title = row.title !== null && row.title.trim() !== "" ? row.title : "Без заголовка";
+    return row.available ? title : title + " (недоступна)";
+  }
+
+  /**
+   * One page of the session list (active or archive), or `undefined` when the
+   * sessions slice is not composed or its read failed.
+   *
+   * The snapshot keeps the WHOLE filtered catalog while the card renders one
+   * page's slice with each row's GLOBAL index, so `ses:<i>`/`arc:<i>`/
+   * `unarc:<i>` stay absolute no matter which page is shown.
+   */
+  async function buildSessionsView(chatId: number, ref: WorkspaceRef, mode: "active" | "archive", page: number): Promise<
+    | { text: string; keyboard: InlineKeyboardMarkup; snapshot: SessionListSnapshot }
+    | undefined
+  > {
+    if (deps.sessions === undefined) return undefined;
+    let all: ChannelSessionRow[];
+    try {
+      all = await deps.sessions.list(ref);
+    } catch (error) {
+      warn("session list failed (" + codeOf(error) + ")");
+      return undefined;
+    }
+    const rows = all.filter((row) => (mode === "archive" ? row.archived : !row.archived));
+    const pages = Math.max(1, Math.ceil(rows.length / listPageSize));
+    const current = clampPage(page, pages);
+    const start = current * listPageSize;
+    const buttons: SessionRowButton[] = rows.slice(start, start + listPageSize).map((row, offset) => ({
+      index: start + offset,
+      label: sessionLabel(row),
+      active: row.active
+    }));
+    const header = mode === "archive" ? "🗄 Архив сессий · " + refLabel(ref) : "🗂 Сессии · " + refLabel(ref);
+    const empty =
+      mode === "archive"
+        ? ARCHIVE_EMPTY
+        : all.some((row) => row.archived)
+          ? SESSIONS_NONE_ACTIVE
+          : SESSIONS_NONE;
+    const text =
+      rows.length === 0
+        ? empty
+        : withPageLine(header + "\n" + (mode === "archive" ? ARCHIVE_TITLE : SESSIONS_TITLE), current, pages);
+    const keyboard =
+      mode === "archive"
+        ? archiveKeyboard({ rows: buttons, page: current, pages })
+        : sessionsKeyboard({ rows: buttons, page: current, pages });
+    return { text, keyboard, snapshot: { kind: "sessionList", chatId, ref: copyRef(ref)!, mode, rows, page: current } };
+  }
+
+  /** Render one session page into a known message. */
+  async function renderSessions(
+    chatId: number,
+    messageId: number,
+    ref: WorkspaceRef,
+    mode: "active" | "archive",
+    page: number
+  ): Promise<void> {
+    const view = await buildSessionsView(chatId, ref, mode, page);
+    if (view === undefined) {
+      await editWithMenu(chatId, messageId, deps.sessions === undefined ? SESSIONS_UNAVAILABLE : SESSIONS_FAILED);
+      return;
+    }
+    putSnapshot(messageId, view.snapshot);
+    await edit(chatId, messageId, view.text, view.keyboard);
+  }
+
+  /** Send one session page as a new message (the /sessions command path). */
+  async function sendSessions(chatId: number, ref: WorkspaceRef, mode: "active" | "archive", page: number): Promise<void> {
+    const view = await buildSessionsView(chatId, ref, mode, page);
+    if (view === undefined) {
+      await sendMenu(chatId, deps.sessions === undefined ? SESSIONS_UNAVAILABLE : SESSIONS_FAILED);
+      return;
+    }
+    const sentId = await send(chatId, view.text, view.keyboard);
+    if (sentId !== undefined) putSnapshot(sentId, view.snapshot);
   }
 
   /**
@@ -1480,6 +1612,92 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
       await edit(chatId, messageId, RESET_CONFIRM, resetConfirmKeyboard());
       return undefined;
     }
+    if (data === "act:sessions") {
+      const ref = active;
+      if (ref === undefined) {
+        await answerNoActive(chatId, messageId);
+        return undefined;
+      }
+      await renderSessions(chatId, messageId, ref, "active", 0);
+      return undefined;
+    }
+    // The named session codes MUST be checked before the generic `ses:<i>`:
+    // parseIndex("arch")/("back") yields undefined, which would answer a stale
+    // action for a press the card legitimately offered.
+    if (data === "ses:arch" || data === "ses:back") {
+      const snapshot = snapshotOf(chatId, messageId);
+      if (snapshot === undefined || snapshot.kind !== "sessionList") return STALE_ACTION;
+      await renderSessions(chatId, messageId, snapshot.ref, data === "ses:arch" ? "archive" : "active", 0);
+      return undefined;
+    }
+    if (data.startsWith("ses:pg:")) {
+      const page = parseIndex(data.slice("ses:pg:".length));
+      const snapshot = snapshotOf(chatId, messageId);
+      if (page === undefined || snapshot === undefined || snapshot.kind !== "sessionList") return STALE_ACTION;
+      await renderSessions(chatId, messageId, snapshot.ref, snapshot.mode, page);
+      return undefined;
+    }
+    if (data.startsWith("ses:")) {
+      const index = parseIndex(data.slice("ses:".length));
+      const snapshot = snapshotOf(chatId, messageId);
+      if (index === undefined || snapshot === undefined || snapshot.kind !== "sessionList") return STALE_ACTION;
+      const row = snapshot.rows[index];
+      if (row === undefined) return STALE_ACTION;
+      if (!row.available) return SESSION_UNAVAILABLE;
+      // A workspace mid-task cannot switch sessions: the switch would pull the
+      // running task's context out from under it (the owner can /stop first).
+      const progress = deps.runner.progress(snapshot.ref);
+      if (progress.phase !== "idle" || progress.queued > 0) return SESSION_BUSY;
+      try {
+        // A session chosen from the archive is usable only after it is brought
+        // back: unarchive and select are one user-visible action.
+        if (snapshot.mode === "archive") await deps.sessions!.unarchive(snapshot.ref, row.id);
+        await deps.sessions!.select(snapshot.ref, row.id);
+      } catch (error) {
+        warn("selecting a session failed (" + codeOf(error) + ")");
+        return SESSIONS_FAILED;
+      }
+      if (active !== undefined && workspaceRefKey(active) === workspaceRefKey(snapshot.ref)) {
+        await editWithMenu(chatId, messageId, "Выбрана сессия: " + sessionLabel(row));
+      }
+      return undefined;
+    }
+    if (data.startsWith("arc:")) {
+      const index = parseIndex(data.slice("arc:".length));
+      const snapshot = snapshotOf(chatId, messageId);
+      if (index === undefined || snapshot === undefined || snapshot.kind !== "sessionList") return STALE_ACTION;
+      const row = snapshot.rows[index];
+      if (row === undefined) return STALE_ACTION;
+      // Archiving the session a running task uses would strand that task, so it
+      // is refused exactly like switching away from it; any other row is safe.
+      if (row.active) {
+        const progress = deps.runner.progress(snapshot.ref);
+        if (progress.phase !== "idle" || progress.queued > 0) return SESSION_BUSY;
+      }
+      try {
+        await deps.sessions!.archive(snapshot.ref, row.id);
+      } catch (error) {
+        warn("archiving a session failed (" + codeOf(error) + ")");
+        return SESSIONS_FAILED;
+      }
+      await renderSessions(chatId, messageId, snapshot.ref, "active", snapshot.page);
+      return undefined;
+    }
+    if (data.startsWith("unarc:")) {
+      const index = parseIndex(data.slice("unarc:".length));
+      const snapshot = snapshotOf(chatId, messageId);
+      if (index === undefined || snapshot === undefined || snapshot.kind !== "sessionList") return STALE_ACTION;
+      const row = snapshot.rows[index];
+      if (row === undefined) return STALE_ACTION;
+      try {
+        await deps.sessions!.unarchive(snapshot.ref, row.id);
+      } catch (error) {
+        warn("unarchiving a session failed (" + codeOf(error) + ")");
+        return SESSIONS_FAILED;
+      }
+      await renderSessions(chatId, messageId, snapshot.ref, "archive", snapshot.page);
+      return undefined;
+    }
     if (data === "reset:yes" || data === "reset:no") {
       const snapshot = snapshotOf(chatId, messageId);
       if (snapshot === undefined || snapshot.kind !== "reset") return STALE_ACTION;
@@ -1609,6 +1827,15 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
         }
         if (command === "model") {
           await sendModelsCard(update.chatId);
+          return;
+        }
+        if (command === "sessions") {
+          const ref = active;
+          if (ref === undefined) {
+            await sendMenu(update.chatId, NO_ACTIVE_HINT);
+            return;
+          }
+          await sendSessions(update.chatId, ref, "active", 0);
           return;
         }
         if (command === "reset") {

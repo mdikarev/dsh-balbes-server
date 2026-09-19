@@ -3,10 +3,12 @@ import type { AgentTaskRunner, TaskProgress, TaskResult, WorkspaceRef } from "..
 import type { BotClient } from "../src/bot.js";
 import {
   createChatMachine,
+  type ChannelSessionRow,
   type ChatDeps,
   type ChatMachine,
   type ModelConnectionRow,
   type ModelsSlice,
+  type SessionsSlice,
   type WorkspaceFileResult,
   type WorkspaceTreeEntry
 } from "../src/chat.js";
@@ -333,12 +335,41 @@ function makeModels(rows: ModelConnectionRow[]): ModelsFake {
   };
 }
 
+/** The injected sessions fake: the service slice plus the mutation log tests assert on. */
+interface SessionsFake {
+  service: SessionsSlice;
+  calls: string[];
+}
+
+/**
+ * The sessions catalog fake. `list()` hands out copies of the scripted rows,
+ * so a test's own array can never be mutated by the machine, and the three
+ * mutations record their target id in the order they were called.
+ */
+function makeSessions(rows: ChannelSessionRow[] = []): SessionsFake {
+  const calls: string[] = [];
+  const service: SessionsSlice = {
+    list: async () => rows.map((row) => ({ ...row })),
+    select: async (_ref, id) => {
+      calls.push(`select:${id}`);
+    },
+    archive: async (_ref, id) => {
+      calls.push(`archive:${id}`);
+    },
+    unarchive: async (_ref, id) => {
+      calls.push(`unarchive:${id}`);
+    }
+  };
+  return { service, calls };
+}
+
 interface Harness {
   machine: ChatMachine;
   bot: ReturnType<typeof makeBot>;
   workspaces: ReturnType<typeof makeWorkspaces>;
   runner: ReturnType<typeof makeRunner>;
   models: ModelsFake | undefined;
+  sessions: SessionsFake | undefined;
   activeChanges: Array<WorkspaceRef | undefined>;
   warns: string[];
 }
@@ -349,6 +380,7 @@ function makeHarness(
     filePageChars?: number;
     maxFileBytes?: number;
     models?: ModelsFake;
+    sessions?: SessionsFake;
     progressIntervalMs?: number;
     failEdits?: number;
     failEditPlan?: boolean[];
@@ -382,6 +414,7 @@ function makeHarness(
     filePageChars: opts.filePageChars ?? 3000,
     ...(opts.progressIntervalMs === undefined ? {} : { progressIntervalMs: opts.progressIntervalMs }),
     ...(opts.models === undefined ? {} : { models: opts.models }),
+    ...(opts.sessions === undefined ? {} : { sessions: opts.sessions.service }),
     onActiveChange: (ref) => {
       activeChanges.push(ref);
     },
@@ -392,7 +425,16 @@ function makeHarness(
       }
     }
   });
-  return { machine, bot, workspaces, runner, models: opts.models, activeChanges, warns };
+  return {
+    machine,
+    bot,
+    workspaces,
+    runner,
+    models: opts.models,
+    sessions: opts.sessions,
+    activeChanges,
+    warns
+  };
 }
 
 let messageIdSeed = 500;
@@ -2421,5 +2463,200 @@ describe("chat machine: stop", () => {
     expect(h.runner.cancel).not.toHaveBeenCalled();
     expect(h.bot.sent.at(-1)!.text).toContain("Воркспейс не выбран");
     expect(h.bot.data(h.bot.sent.at(-1)!.markup)).toEqual(["ws", "mdl", "mnu:refresh"]);
+  });
+});
+
+describe("chat machine: session list and archive", () => {
+  const rows: ChannelSessionRow[] = [
+    { id: "session-a", title: "Первая", createdAt: "2026-09-19T10:00:00.000Z", available: true, archived: false, active: true },
+    { id: "session-b", title: null, createdAt: "2026-09-18T10:00:00.000Z", available: true, archived: false, active: false }
+  ];
+
+  /**
+   * Resolve agent home through the real workspace flow: /ws renders the list
+   * and the id of THAT message is what the pick resolves. A fixed message id
+   * carries no snapshot, so the pick would only answer «устарел» and leave the
+   * machine with no active workspace.
+   */
+  async function pickHome(h: Harness): Promise<void> {
+    await h.machine.onMessage(message("/ws"));
+    const listId = h.bot.sent.at(-1)!.messageId;
+    await h.machine.onCallback(callback("ws:pick:0", listId));
+    expect(h.machine.activeWorkspace()).toEqual(HOME);
+  }
+
+  it("act:sessions renders the list, marks the active session and shows titles", async () => {
+    const sessions = makeSessions(rows);
+    const h = makeHarness({ sessions });
+    await pickHome(h);
+
+    await h.machine.onCallback(callback("act:sessions", 610));
+
+    expect(h.bot.lastEdit().text).toContain("🗂 Сессии");
+    expect(h.bot.buttons(h.bot.lastEdit().markup).map((b) => b.text)).toEqual([
+      "• Первая",
+      "🗄",
+      "Без заголовка",
+      "🗄",
+      "🗄 Архив",
+      "⬅ Меню"
+    ]);
+    expect(h.bot.data(h.bot.lastEdit().markup)).toContain("arc:1");
+  });
+
+  it("ses:<i> selects the session and confirms in the menu", async () => {
+    const sessions = makeSessions(rows);
+    const h = makeHarness({ sessions });
+    await pickHome(h);
+    await h.machine.onCallback(callback("act:sessions", 610));
+
+    await h.machine.onCallback(callback("ses:1", 610));
+
+    expect(sessions.calls).toContain("select:session-b");
+    expect(h.bot.lastEdit().text).toContain("Выбрана сессия");
+  });
+
+  it("refuses to select while the workspace task is running", async () => {
+    const sessions = makeSessions(rows);
+    const h = makeHarness({ sessions });
+    await pickHome(h);
+    h.runner.progress.mockReturnValue({ phase: "running", steps: [], queued: 0 });
+    await h.machine.onCallback(callback("act:sessions", 610));
+
+    await h.machine.onCallback(callback("ses:1", 610));
+
+    expect(sessions.calls).toEqual([]);
+    expect(h.bot.answers.at(-1)?.text).toBe("Задача выполняется — дождитесь завершения или /stop");
+  });
+
+  it("refuses an unavailable session row", async () => {
+    const sessions = makeSessions([
+      { id: "session-x", title: "Сломанная", createdAt: null, available: false, archived: false, active: false }
+    ]);
+    const h = makeHarness({ sessions });
+    await pickHome(h);
+    await h.machine.onCallback(callback("act:sessions", 610));
+
+    await h.machine.onCallback(callback("ses:0", 610));
+
+    expect(sessions.calls).toEqual([]);
+    expect(h.bot.answers.at(-1)?.text).toBe("Сессия недоступна");
+  });
+
+  it("archives a session and re-renders the active list", async () => {
+    const sessions = makeSessions(rows);
+    const h = makeHarness({ sessions });
+    await pickHome(h);
+    await h.machine.onCallback(callback("act:sessions", 610));
+
+    await h.machine.onCallback(callback("arc:1", 610));
+
+    expect(sessions.calls).toContain("archive:session-b");
+    expect(h.bot.lastEdit().text).toContain("🗂 Сессии");
+  });
+
+  it("opens the archive, unarchives and returns to the active list", async () => {
+    const sessions = makeSessions([
+      { id: "session-a", title: "Первая", createdAt: null, available: true, archived: false, active: true },
+      { id: "session-b", title: null, createdAt: null, available: true, archived: true, active: false }
+    ]);
+    const h = makeHarness({ sessions });
+    await pickHome(h);
+    await h.machine.onCallback(callback("act:sessions", 610));
+
+    await h.machine.onCallback(callback("ses:arch", 610));
+
+    expect(h.bot.lastEdit().text).toContain("🗄 Архив сессий");
+    expect(h.bot.buttons(h.bot.lastEdit().markup).map((b) => b.text)).toEqual([
+      "Без заголовка",
+      "↩",
+      "⬆ К сессиям",
+      "⬅ Меню"
+    ]);
+    expect(h.bot.data(h.bot.lastEdit().markup)).toContain("unarc:0");
+
+    await h.machine.onCallback(callback("unarc:0", 610));
+
+    expect(sessions.calls).toContain("unarchive:session-b");
+
+    await h.machine.onCallback(callback("ses:back", 610));
+
+    expect(h.bot.lastEdit().text).toContain("🗂 Сессии");
+  });
+
+  it("selecting an archived session unarchives it first", async () => {
+    const sessions = makeSessions([
+      { id: "session-b", title: null, createdAt: null, available: true, archived: true, active: false }
+    ]);
+    const h = makeHarness({ sessions });
+    await pickHome(h);
+    await h.machine.onCallback(callback("act:sessions", 610));
+    await h.machine.onCallback(callback("ses:arch", 610));
+
+    await h.machine.onCallback(callback("ses:0", 610));
+
+    expect(sessions.calls).toEqual(["unarchive:session-b", "select:session-b"]);
+    expect(h.bot.lastEdit().text).toContain("Выбрана сессия");
+  });
+
+  it("pages the session list with ses:pg", async () => {
+    const many: ChannelSessionRow[] = Array.from({ length: 10 }, (_, i) => ({
+      id: "s-" + i,
+      title: "Сессия " + i,
+      createdAt: null,
+      available: true,
+      archived: false,
+      active: i === 0
+    }));
+    const sessions = makeSessions(many);
+    const h = makeHarness({ sessions, listPageSize: 8 });
+    await pickHome(h);
+
+    await h.machine.onCallback(callback("act:sessions", 610));
+
+    expect(h.bot.lastEdit().text).toContain("Страница 1/2");
+
+    await h.machine.onCallback(callback("ses:pg:1", 610));
+
+    expect(h.bot.lastEdit().text).toContain("Страница 2/2");
+    expect(h.bot.data(h.bot.lastEdit().markup)).toEqual([
+      "ses:8",
+      "arc:8",
+      "ses:9",
+      "arc:9",
+      "ses:pg:0",
+      "ses:pg:1",
+      "ses:arch",
+      "mnu"
+    ]);
+  });
+
+  it("answers the /sessions command as a new message", async () => {
+    const sessions = makeSessions(rows);
+    const h = makeHarness({ sessions });
+    await pickHome(h);
+
+    await h.machine.onMessage(message("/sessions"));
+
+    expect(h.bot.sent.at(-1)?.text).toContain("🗂 Сессии");
+  });
+
+  it("hints at the workspace when /sessions has none active", async () => {
+    const sessions = makeSessions(rows);
+    const h = makeHarness({ sessions });
+
+    await h.machine.onMessage(message("/sessions"));
+
+    expect(h.bot.sent.at(-1)?.text).toContain("Воркспейс не выбран");
+    expect(h.bot.sent.at(-1)?.text).not.toContain("🗂 Сессии");
+  });
+
+  it("degrades when the sessions slice is missing", async () => {
+    const h = makeHarness();
+    await pickHome(h);
+
+    await h.machine.onCallback(callback("act:sessions", 610));
+
+    expect(h.bot.lastEdit().text).toContain("Список сессий недоступен");
   });
 });
