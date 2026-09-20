@@ -12,10 +12,12 @@
 # dsh is absent, and warns loudly (without reinstalling) when an already
 # installed dsh differs from that pin. Then builds the workspace packages
 # (dsh-balbes-host,
-# dsh-balbes-contracts, dsh-balbes-workspaces, dsh-balbes-models,
-# dsh-balbes-sessions, dsh-balbes-telegram, the admin SPA), syncs
+# dsh-balbes-contracts, dsh-balbes-workspaces, dsh-balbes-git,
+# dsh-balbes-models, dsh-balbes-sessions, dsh-balbes-telegram, the admin SPA),
+# syncs
 # profiles/balbes from the repository into $DSH_HOME/profiles, copies the
-# built host and the workspaces, models, sessions and telegram plugins into
+# built host and the workspaces, git, models, sessions and telegram plugins
+# into
 # the profile, deploys the built
 # admin UI, stores the DeepSeek API key in
 # $DSH_HOME/.credentials.yaml only when DEEPSEEK_API_KEY is set (normally the
@@ -533,6 +535,24 @@ copy_workspaces_into_profile() {
     info "Workspaces plugin copied into $dst"
 }
 
+# copy_git_into_profile — зеркало copy_workspaces_into_profile: собранный
+# git-плагин копируется реальным каталогом в node_modules профиля.
+copy_git_into_profile() {
+    local profile_dir="$DSH_HOME/profiles/$PROFILE_NAME"
+    local src="$REPO_DIR/packages/plugins/dsh-balbes-git"
+    local dst="$profile_dir/node_modules/dsh-balbes-git"
+    if [[ ! -d "$src/lib" ]]; then
+        die "git plugin not built at $src/lib — build step failed"
+    fi
+    mkdir -p "$profile_dir/node_modules"
+    rm -rf "$dst"
+    cp -R "$src" "$dst"
+    rm -f "$dst/tsconfig.json" "$dst/tsconfig.build.json"
+    rm -rf "$dst/tests" "$dst/src" "$dst/lib/types"
+    chmod -R u+rwX,go-w "$dst"
+    info "Git plugin copied into $dst"
+}
+
 # copy_models_into_profile — зеркало copy_workspaces_into_profile: собранный
 # плагин моделей копируется реальным каталогом в node_modules профиля.
 copy_models_into_profile() {
@@ -782,6 +802,7 @@ main() {
     sync_profile
     copy_host_into_profile
     copy_workspaces_into_profile
+    copy_git_into_profile
     copy_models_into_profile
     copy_telegram_into_profile
     copy_sessions_into_profile

@@ -7,6 +7,9 @@
     - id: balbes-workspaces
       name: 'dsh-balbes-workspaces'
 
+    - id: balbes-git
+      name: 'dsh-balbes-git'
+
     - id: balbes-models
       name: 'dsh-balbes-models'
 

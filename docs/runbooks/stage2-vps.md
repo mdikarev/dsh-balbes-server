@@ -117,8 +117,8 @@ curl -fsSL https://raw.githubusercontent.com/mdikarev/dsh-balbes-server/main/scr
    `$DSH_HOME/profiles/balbes/node_modules/dsh-balbes-host` (из него
    выкидываются `src/`, `tests/`, `lib/types`, `tsconfig.json`). Тем же
    способом туда копируются собранные плагины `dsh-balbes-workspaces`,
-   `dsh-balbes-models`, `dsh-balbes-sessions`, `dsh-balbes-telegram` и
-   `dsh-balbes-home`. Импорты
+   `dsh-balbes-git`, `dsh-balbes-models`, `dsh-balbes-sessions`,
+   `dsh-balbes-telegram` и `dsh-balbes-home`. Импорты
    `@deepseek-ai/*` резолвятся подъёмом к зеркалу
    `$DSH_HOME/profiles/node_modules` (механика Этапа 1).
 7. **SPA.** Собранный дистрибутив админки копируется в
@@ -607,6 +607,49 @@ curl -sS -X POST http://127.0.0.1:8080/api/workspaces/create \
 ожидается кадр `data: {"kind":"fs","scope":"project","name":"alpha","path":""}`.
 Соединение сервер не закрывает: heartbeat `: ping` — каждые 25 с. Получив кадр,
 остановите поток в соседнем терминале (Ctrl-C).
+
+### Git-доступ и создание проекта из GitHub
+
+Владелец задаёт GitHub-токен в секции «Git-доступ» страницы «Проекты» (для
+публичных репозиториев токен не нужен). Проверка через API:
+
+```bash
+# состояние git-доступа (tokenConfigured — без значения токена)
+curl -sS -X POST http://127.0.0.1:8080/api/git/status \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{}'
+#    ожидается: {"git":{"tokenConfigured":false}}
+
+# сохранить токен (значение не возвращается и не логируется)
+curl -sS -X POST http://127.0.0.1:8080/api/git/save \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"token":"ghp_xxx"}'
+#    ожидается: {"git":{"tokenConfigured":true}}
+
+# сбросить токен
+curl -sS -X POST http://127.0.0.1:8080/api/git/clear-token \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{}'
+#    ожидается: {"git":{"tokenConfigured":false}}
+```
+
+Создание проекта из публичного репозитория (нужен `git` на сервере):
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/api/workspaces/create-from-git \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"url":"https://github.com/owner/repo.git","name":"repo"}' \
+  -w '\nHTTP %{http_code}\n'
+#    ожидается: HTTP 200, {"project":{...,"source":{"provider":"github",
+#    "url":"https://github.com/owner/repo.git","branch":"...","ref":"..."}}}
+#    и рабочая копия в $DSH_HOME/projects/repo/
+```
+
+Ошибки: занятое имя — 409 `name-exists` (без перезаписи); приватный
+репозиторий без токена — 401 `auth-required`; недоступный GitHub —
+502 `clone-failed`; превышение таймаута — 504 `clone-timeout`; git-плагин не
+попал в профиль — 503 `git-unavailable`. Полный smoke —
+`RUN_REAL=1 pnpm --filter dsh-balbes-git test` и
+`RUN_REAL=1 pnpm --filter dsh-balbes-workspaces test` (нужны `dsh` и `git`
+на PATH).
 
 Сессии воркспейса — ручка `POST /api/sessions/list` (bearer; тело
 `{"scope":"home"}` или `{"scope":"project","name":"<проект>"}`). Полный smoke —
@@ -1349,6 +1392,7 @@ Web-агента: `bash`, `web_fetch`, `skill`, субагенты и остал
   `dsh.profile.bundles`) и `node_modules/` — копии собранных пакетов,
   которыми пользуется демон: `dsh-balbes-host/` (host-бандл),
   `dsh-balbes-workspaces/` (плагин воркспейсов),
+  `dsh-balbes-git/` (плагин git-доступа),
   `dsh-balbes-models/` (плагин моделей),
   `dsh-balbes-sessions/` (плагин сессий воркспейсов),
   `dsh-balbes-telegram/` (плагин Telegram) и

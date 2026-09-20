@@ -76,6 +76,12 @@ jobs:
           rm -rf "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-sessions/tests" \
                  "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-sessions/src" \
                  "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-sessions/lib/types"
+          cp -R packages/plugins/dsh-balbes-git "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-git"
+          rm -f "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-git/tsconfig.json" \
+                "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-git/tsconfig.build.json"
+          rm -rf "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-git/tests" \
+                 "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-git/src" \
+                 "$HOME/.dsh/profiles/balbes/node_modules/dsh-balbes-git/lib/types"
 
       - name: Validate profile composition (no LLM)
         run: dsh --profile balbes --dump-config >/dev/null
@@ -136,6 +142,12 @@ jobs:
 
       - name: REAL suites — workspace sessions (registry + sessions.list)
         working-directory: packages/plugins/dsh-balbes-sessions
+        env:
+          RUN_REAL: "1"
+        run: bash node_modules/.bin/vitest run tests/integration.test.ts
+
+      - name: REAL suites — git plugin (/api/git + create-from-git)
+        working-directory: packages/plugins/dsh-balbes-git
         env:
           RUN_REAL: "1"
         run: bash node_modules/.bin/vitest run tests/integration.test.ts
