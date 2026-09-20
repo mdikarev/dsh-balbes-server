@@ -469,3 +469,33 @@ button.ws-tree-row:hover { background: var(--surface); }
   font-family: var(--mono); font-size: 13px; line-height: 1.45; white-space: pre;
 }
 
+
+.ws-git {
+  border-top: 1px solid var(--border, #2a2f3a);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ws-git-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+.ws-git-status {
+  color: var(--muted, #8b93a7);
+  font-family: var(--mono, monospace);
+}
+.ws-mode-toggle {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.ws-hint {
+  color: var(--muted, #8b93a7);
+  font-size: 12px;
+  margin: 6px 0 0;
+}
+

@@ -32,6 +32,19 @@ function makeApi(overrides: Partial<AdminApi> = {}): AdminApi {
       projects.push(project);
       return { project };
     }),
+    createWorkspaceFromGit: vi.fn(async (req: { url: string; name: string }) => {
+      const project: WorkspaceProject = {
+        name: req.name,
+        path: `/h/projects/${req.name}`,
+        createdAt: NOW,
+        source: { provider: "github", url: req.url, branch: "main", ref: "a".repeat(40) }
+      };
+      projects.push(project);
+      return { project };
+    }),
+    gitStatus: vi.fn(async () => ({ git: { tokenConfigured: false } })),
+    gitSave: vi.fn(async () => ({ git: { tokenConfigured: true } })),
+    gitClearToken: vi.fn(async () => ({ git: { tokenConfigured: false } })),
     deleteWorkspace: vi.fn(async (name: string) => {
       const idx = projects.findIndex((p) => p.name === name);
       if (idx !== -1) projects.splice(idx, 1);
@@ -347,5 +360,30 @@ describe("WorkspacesPage live events", () => {
     await screen.findByText("alpha");
     unmount();
     expect(unsub).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("WorkspacesPage git access", () => {
+  it("shows the git section, saves a token and flips the status", async () => {
+    const api = makeApi();
+    render(<WorkspacesPage api={api} />);
+    expect(await screen.findByTestId("ws-git-access")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("ws-git-open"));
+    fireEvent.change(await screen.findByTestId("git-token-input"), { target: { value: "ghp_x" } });
+    fireEvent.click(screen.getByTestId("git-token-save"));
+    await waitFor(() => expect(api.gitSave).toHaveBeenCalledWith("ghp_x"));
+    await waitFor(() => expect(screen.getByTestId("ws-git-status").textContent).toBe("токен задан"));
+  });
+
+  it("creates a project from GitHub and selects it", async () => {
+    const api = makeApi();
+    render(<WorkspacesPage api={api} />);
+    fireEvent.click(await screen.findByTestId("workspace-create-open"));
+    fireEvent.click(screen.getByTestId("workspace-create-mode-git"));
+    fireEvent.change(screen.getByTestId("workspace-git-url"), { target: { value: "https://github.com/acme/api.git" } });
+    await waitFor(() => expect((screen.getByTestId("workspace-name-input") as HTMLInputElement).value).toBe("api"));
+    fireEvent.click(screen.getByTestId("workspace-create-submit"));
+    await waitFor(() => expect(api.createWorkspaceFromGit).toHaveBeenCalledWith({ url: "https://github.com/acme/api.git", name: "api" }));
+    expect(await screen.findByTestId("ws-row-project:api")).toBeTruthy();
   });
 });

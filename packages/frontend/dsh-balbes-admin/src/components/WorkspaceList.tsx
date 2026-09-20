@@ -12,13 +12,16 @@ interface WorkspaceListProps {
   projects: WorkspaceProject[];
   selected: WorkspaceRef | null;
   busy: boolean;
+  /** null = status not loaded yet. */
+  gitConfigured: boolean | null;
   onSelect(ref: WorkspaceRef): void;
   onCreate(): void;
+  onOpenGit(): void;
   onDelete(p: WorkspaceProject): void;
 }
 
 /** Pinned agent home + projects, each row with a ⋮ action menu (delete today). */
-export default function WorkspaceList({ homePath, projects, selected, busy, onSelect, onCreate, onDelete }: WorkspaceListProps) {
+export default function WorkspaceList({ homePath, projects, selected, busy, gitConfigured, onSelect, onCreate, onOpenGit, onDelete }: WorkspaceListProps) {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [menuPos, setMenuPos] = useState<{ left: number; top: number } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -111,6 +114,17 @@ export default function WorkspaceList({ homePath, projects, selected, busy, onSe
           );
         })}
       </ul>
+      <div className="ws-git" data-testid="ws-git-access">
+        <div className="ws-git-row">
+          <span>Git-доступ</span>
+          <span className="ws-git-status" data-testid="ws-git-status">
+            {gitConfigured === null ? "…" : gitConfigured ? "токен задан" : "не задан"}
+          </span>
+        </div>
+        <button type="button" className="btn-ghost" data-testid="ws-git-open" onClick={onOpenGit} disabled={busy}>
+          {gitConfigured === true ? "Заменить токен" : "Задать токен"}
+        </button>
+      </div>
       {projects.length === 0 && <p className="ws-empty">Проектов нет.</p>}
       {openMenu !== null && menuPos !== null && menuProject !== undefined && (
         <div className="ws-menu" data-testid={`ws-dropdown-${openMenu}`} style={{ left: menuPos.left, top: menuPos.top }}>

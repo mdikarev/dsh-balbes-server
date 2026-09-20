@@ -107,17 +107,9 @@ export interface GitClearTokenResponse {
  * valid `https://github.com/<owner>/<repo>` URL.
  */
 export function suggestProjectNameFromGitUrl(url: string): string | null {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return null;
-  }
-  if (parsed.protocol !== "https:" || parsed.hostname !== "github.com") return null;
-  if (parsed.username !== "" || parsed.password !== "" || parsed.search !== "" || parsed.hash !== "") return null;
-  const segments = parsed.pathname.split("/").filter((s) => s !== "");
-  if (segments.length !== 2) return null;
-  const repo = segments[1]!.endsWith(".git") ? segments[1]!.slice(0, -4) : segments[1]!;
+  const match = /^https:\/\/github\.com\/([^/?#]+)\/([^/?#]+?)(?:\.git)?\/?$/.exec(url);
+  if (match === null) return null;
+  const repo = match[2]!;
   return repo === "" ? null : repo;
 }
 

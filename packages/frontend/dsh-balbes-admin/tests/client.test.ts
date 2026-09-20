@@ -348,4 +348,27 @@ describe("api client", () => {
     expect(seen[0]?.body).toEqual({ scope: "project", name: "alpha", path: "notes.txt" });
     vi.unstubAllGlobals();
   });
+
+  it("calls the git endpoints with POST and the right bodies", async () => {
+    const seen: Array<{ path: string; body: unknown }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (path: string, init: RequestInit) => {
+      seen.push({ path, body: JSON.parse(String(init.body)) });
+      return { ok: true, status: 200, json: async () => ({ git: { tokenConfigured: true }, project: {} }) };
+    }));
+    localStorage.setItem("balbes.authToken", "t");
+    const api = createApiClient();
+    await api.gitStatus();
+    await api.gitSave("ghp_x");
+    await api.gitClearToken();
+    await api.createWorkspaceFromGit({ url: "https://github.com/acme/api.git", name: "api" });
+    expect(seen.map((s) => s.path)).toEqual([
+      "/api/git/status",
+      "/api/git/save",
+      "/api/git/clear-token",
+      "/api/workspaces/create-from-git"
+    ]);
+    expect(seen[1]?.body).toEqual({ token: "ghp_x" });
+    expect(seen[3]?.body).toEqual({ url: "https://github.com/acme/api.git", name: "api" });
+    vi.unstubAllGlobals();
+  });
 });

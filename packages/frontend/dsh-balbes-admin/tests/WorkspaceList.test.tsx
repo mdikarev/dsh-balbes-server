@@ -14,6 +14,7 @@ function setup(overrides: Partial<Parameters<typeof WorkspaceList>[0]> = {}) {
   const handlers = {
     onSelect: vi.fn(),
     onCreate: vi.fn(),
+    onOpenGit: vi.fn(),
     onDelete: vi.fn(),
     ...overrides
   };
@@ -23,8 +24,10 @@ function setup(overrides: Partial<Parameters<typeof WorkspaceList>[0]> = {}) {
       projects={overrides.projects ?? projects}
       selected={null}
       busy={false}
+      gitConfigured={overrides.gitConfigured ?? false}
       onSelect={handlers.onSelect}
       onCreate={handlers.onCreate}
+      onOpenGit={handlers.onOpenGit}
       onDelete={handlers.onDelete}
     />
   );
@@ -75,5 +78,13 @@ describe("WorkspaceList", () => {
   it("shows the empty hint when there are no projects", () => {
     setup({ projects: [] });
     expect(screen.getByText("Проектов нет.")).toBeTruthy();
+  });
+
+  it("shows git access status and fires onOpenGit", () => {
+    const handlers = setup({ gitConfigured: true });
+    expect(screen.getByTestId("ws-git-access")).toBeTruthy();
+    expect(screen.getByTestId("ws-git-status").textContent).toBe("токен задан");
+    fireEvent.click(screen.getByTestId("ws-git-open"));
+    expect(handlers.onOpenGit).toHaveBeenCalledTimes(1);
   });
 });

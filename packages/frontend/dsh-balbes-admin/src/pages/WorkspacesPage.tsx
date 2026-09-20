@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { AdminApi } from "../api/client";
-import type { WorkspaceListResponse, WorkspaceProject } from "dsh-balbes-contracts";
+import { suggestProjectNameFromGitUrl, type WorkspaceListResponse, type WorkspaceProject } from "dsh-balbes-contracts";
 import WorkspaceList from "../components/WorkspaceList";
 import FileTree from "../components/FileTree";
 import Modal from "../components/Modal";
@@ -36,8 +36,12 @@ export default function WorkspacesPage({ api }: WorkspacesPageProps) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [fileOpen, setFileOpen] = useState<{ id: number; refKey: string; path: string } | null>(null);
   const fileOpenSeq = useRef(0);
-  const [modal, setModal] = useState<null | { type: "create" } | { type: "delete"; project: WorkspaceProject }>(null);
+  const [modal, setModal] = useState<null | { type: "create" } | { type: "git-token" } | { type: "delete"; project: WorkspaceProject }>(null);
   const [name, setName] = useState("");
+  const [gitConfigured, setGitConfigured] = useState<boolean | null>(null);
+  const [createMode, setCreateMode] = useState<"empty" | "git">("empty");
+  const [gitUrl, setGitUrl] = useState("");
+  const [tokenInput, setTokenInput] = useState("");
   const pageRef = useRef<HTMLDivElement>(null);
   // keep a stored width only when it is a sane finite pixel value (>= the drag
   // minimum of 220); anything else falls back to the CSS default (33%)
@@ -73,9 +77,19 @@ export default function WorkspacesPage({ api }: WorkspacesPageProps) {
     }
   }, [refresh]);
 
+  const loadGit = useCallback(async (): Promise<void> => {
+    try {
+      const res = await api.gitStatus();
+      setGitConfigured(res.git.tokenConfigured);
+    } catch {
+      // keep the last known value; the list load already surfaces auth errors
+    }
+  }, [api]);
+
   useEffect(() => {
     void load();
-  }, [load]);
+    void loadGit();
+  }, [load, loadGit]);
 
   // a stored width can exceed the current container (stale from a narrower
   // window or an edited value): clamp it down once the pane is laid out, never
@@ -139,14 +153,50 @@ export default function WorkspacesPage({ api }: WorkspacesPageProps) {
     setBusy(true);
     setError(null);
     try {
-      const res = await api.createWorkspace(trimmed);
+      const res =
+        createMode === "git"
+          ? await api.createWorkspaceFromGit({ url: gitUrl.trim(), name: trimmed })
+          : await api.createWorkspace(trimmed);
       setName("");
+      setGitUrl("");
+      setCreateMode("empty");
       setModal(null);
       const fresh = await refresh();
       const created = fresh.projects.find((p) => p.name === res.project.name);
       if (created !== undefined) select({ scope: "project", name: created.name });
     } catch (err) {
       setError(err instanceof Error ? err.message : "create failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveGitToken(): Promise<void> {
+    if (tokenInput.trim() === "" || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api.gitSave(tokenInput.trim());
+      setGitConfigured(res.git.tokenConfigured);
+      setTokenInput("");
+      setModal(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "token save failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function clearGitToken(): Promise<void> {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api.gitClearToken();
+      setGitConfigured(res.git.tokenConfigured);
+      setModal(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "token clear failed");
     } finally {
       setBusy(false);
     }
@@ -206,8 +256,10 @@ export default function WorkspacesPage({ api }: WorkspacesPageProps) {
           projects={data.projects}
           selected={selected}
           busy={busy}
+          gitConfigured={gitConfigured}
           onSelect={select}
           onCreate={() => setModal({ type: "create" })}
+          onOpenGit={() => setModal({ type: "git-token" })}
           onDelete={(p) => setModal({ type: "delete", project: p })}
         />
         <div
@@ -230,12 +282,30 @@ export default function WorkspacesPage({ api }: WorkspacesPageProps) {
       </div>
       {modal !== null && modal.type === "create" && (
         <Modal title="Создать проект" onClose={() => setModal(null)}>
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              void handleCreate();
-            }}
-          >
+          <form onSubmit={(event) => { event.preventDefault(); void handleCreate(); }}>
+            <div className="ws-mode-toggle">
+              <button type="button" className={createMode === "empty" ? "btn" : "btn-ghost"} data-testid="workspace-create-mode-empty" onClick={() => setCreateMode("empty")}>
+                Пустой проект
+              </button>
+              <button type="button" className={createMode === "git" ? "btn" : "btn-ghost"} data-testid="workspace-create-mode-git" onClick={() => setCreateMode("git")}>
+                Из GitHub
+              </button>
+            </div>
+            {createMode === "git" && (
+              <input
+                data-testid="workspace-git-url"
+                className="ws-name-input"
+                value={gitUrl}
+                onChange={(event) => {
+                  const next = event.target.value;
+                  setGitUrl(next);
+                  const suggested = suggestProjectNameFromGitUrl(next);
+                  if (suggested !== null) setName(suggested);
+                }}
+                placeholder="https://github.com/owner/repo"
+                aria-label="URL репозитория GitHub"
+              />
+            )}
             <input
               data-testid="workspace-name-input"
               className="ws-name-input"
@@ -243,17 +313,54 @@ export default function WorkspacesPage({ api }: WorkspacesPageProps) {
               onChange={(event) => setName(event.target.value)}
               placeholder="имя проекта (a-z, 0-9, . _ -)"
               aria-label="Имя нового проекта"
-              autoFocus
+              autoFocus={createMode === "empty"}
             />
+            {createMode === "git" && (
+              <p className="ws-hint">
+                {gitConfigured === true ? "Токен задан — приватные репозитории доступны." : "Без токена доступны только публичные репозитории."}
+              </p>
+            )}
             <div className="modal-actions">
               <button type="button" className="btn-ghost" onClick={() => setModal(null)} data-testid="workspace-create-cancel">
                 Отмена
               </button>
-              <button type="submit" className="btn" disabled={busy || name.trim() === ""} data-testid="workspace-create-submit">
-                {busy ? "Создаётся…" : "Создать"}
+              <button
+                type="submit"
+                className="btn"
+                disabled={busy || name.trim() === "" || (createMode === "git" && gitUrl.trim() === "")}
+                data-testid="workspace-create-submit"
+              >
+                {busy ? (createMode === "git" ? "Клонирование…" : "Создаётся…") : createMode === "git" ? "Клонировать" : "Создать"}
               </button>
             </div>
           </form>
+        </Modal>
+      )}
+      {modal !== null && modal.type === "git-token" && (
+        <Modal title="Git-доступ" onClose={() => setModal(null)}>
+          <p className="ws-modal-text">GitHub-токен для приватных репозиториев. Значение не показывается после сохранения.</p>
+          <input
+            data-testid="git-token-input"
+            className="ws-name-input"
+            type="password"
+            value={tokenInput}
+            onChange={(event) => setTokenInput(event.target.value)}
+            placeholder="github_pat_… / ghp_…"
+            aria-label="GitHub-токен"
+          />
+          <div className="modal-actions">
+            {gitConfigured === true && (
+              <button type="button" className="btn-danger" disabled={busy} onClick={() => void clearGitToken()} data-testid="git-token-clear">
+                Забыть токен
+              </button>
+            )}
+            <button type="button" className="btn-ghost" onClick={() => setModal(null)} data-testid="git-token-cancel">
+              Отмена
+            </button>
+            <button type="button" className="btn" disabled={busy || tokenInput.trim() === ""} onClick={() => void saveGitToken()} data-testid="git-token-save">
+              Сохранить
+            </button>
+          </div>
         </Modal>
       )}
       {modal !== null && modal.type === "delete" && (

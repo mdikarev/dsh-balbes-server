@@ -11,6 +11,12 @@ import type {
   WorkspaceCreateResponse,
   WorkspaceDeleteRequest,
   WorkspaceDeleteResponse,
+  WorkspaceCreateFromGitRequest,
+  WorkspaceCreateFromGitResponse,
+  GitStatusResponse,
+  GitSaveRequest,
+  GitSaveResponse,
+  GitClearTokenResponse,
   WorkspaceEvent,
   WorkspaceScope,
   WorkspaceTreeRequest,
@@ -67,6 +73,10 @@ export interface AdminApi {
   prompt(text: string): Promise<PromptResponse>;
   listWorkspaces(): Promise<WorkspaceListResponse>;
   createWorkspace(name: string): Promise<WorkspaceCreateResponse>;
+  createWorkspaceFromGit(req: WorkspaceCreateFromGitRequest): Promise<WorkspaceCreateFromGitResponse>;
+  gitStatus(): Promise<GitStatusResponse>;
+  gitSave(token: string): Promise<GitSaveResponse>;
+  gitClearToken(): Promise<GitClearTokenResponse>;
   deleteWorkspace(name: string): Promise<WorkspaceDeleteResponse>;
   readWorkspaceDir(scope: WorkspaceScope, name: string | undefined, path: string): Promise<WorkspaceTreeResponse>;
   readWorkspaceFile(scope: WorkspaceScope, name: string | undefined, path: string): Promise<WorkspaceFileResponse>;
@@ -178,6 +188,11 @@ export function createApiClient(): AdminApi {
     prompt: (text) => guard(request<PromptResponse>("/api/prompt", { prompt: text } satisfies PromptRequest)),
     listWorkspaces: () => guard(request<WorkspaceListResponse>("/api/workspaces/list", {})),
     createWorkspace: (name) => guard(request<WorkspaceCreateResponse>("/api/workspaces/create", { name } satisfies WorkspaceCreateRequest)),
+    createWorkspaceFromGit: (req) =>
+      guard(request<WorkspaceCreateFromGitResponse>("/api/workspaces/create-from-git", req satisfies WorkspaceCreateFromGitRequest)),
+    gitStatus: () => guard(request<GitStatusResponse>("/api/git/status", {})),
+    gitSave: (token) => guard(request<GitSaveResponse>("/api/git/save", { token } satisfies GitSaveRequest)),
+    gitClearToken: () => guard(request<GitClearTokenResponse>("/api/git/clear-token", {})),
     deleteWorkspace: (name) => guard(request<WorkspaceDeleteResponse>("/api/workspaces/delete", { name } satisfies WorkspaceDeleteRequest)),
     readWorkspaceDir: (scope, name, path) => {
       const body: WorkspaceTreeRequest = name === undefined ? { scope, path } : { scope, name, path };
