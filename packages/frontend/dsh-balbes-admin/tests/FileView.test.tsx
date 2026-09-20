@@ -86,4 +86,56 @@ describe("FileView", () => {
     render(<FileView api={api} workspace={null} path="x.txt" reloadKey={0} />);
     expect(api.readWorkspaceFile).not.toHaveBeenCalled();
   });
+
+  it("renders markdown as a document and toggles to the source", async () => {
+    const md = "# Заголовок\n\n- один\n- два\n\n| a | b |\n| - | - |\n| 1 | 2 |";
+    const api = makeApi({
+      readWorkspaceFile: vi.fn(async (): Promise<WorkspaceFileResponse> => ({ file: { kind: "text", content: md, truncated: false } }))
+    });
+    render(<FileView api={api} workspace={{ scope: "home" }} path="README.md" reloadKey={0} />);
+    await waitFor(() => expect(screen.getByTestId("file-markdown")).toBeDefined());
+    expect(screen.getByRole("heading", { name: "Заголовок" })).toBeDefined();
+    expect(screen.getByTestId("file-markdown").querySelector("table")).not.toBeNull();
+
+    fireEvent.click(screen.getByTestId("file-mode-source"));
+    await waitFor(() => expect(screen.getByTestId("file-content").textContent).toBe(md));
+    expect(screen.queryByRole("heading", { name: "Заголовок" })).toBeNull();
+
+    fireEvent.click(screen.getByTestId("file-mode-preview"));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Заголовок" })).toBeDefined());
+  });
+
+  it("highlights known code languages", async () => {
+    const api = makeApi({
+      readWorkspaceFile: vi.fn(async (): Promise<WorkspaceFileResponse> => ({ file: { kind: "text", content: "const x: number = 1;", truncated: false } }))
+    });
+    render(<FileView api={api} workspace={{ scope: "home" }} path="a.ts" reloadKey={0} />);
+    await waitFor(() => expect(screen.getByTestId("file-code")).toBeDefined());
+    expect(screen.getByTestId("file-code").className).toContain("hljs");
+    expect(screen.getByTestId("file-code").innerHTML).toContain("hljs-keyword");
+  });
+
+  it("falls back to plain text for unknown types", async () => {
+    const api = makeApi({
+      readWorkspaceFile: vi.fn(async (): Promise<WorkspaceFileResponse> => ({ file: { kind: "text", content: "hello", truncated: false } }))
+    });
+    render(<FileView api={api} workspace={{ scope: "home" }} path="notes.txt" reloadKey={0} />);
+    await waitFor(() => expect(screen.getByTestId("file-content").textContent).toBe("hello"));
+    expect(screen.queryByTestId("file-code")).toBeNull();
+    expect(screen.queryByTestId("file-markdown")).toBeNull();
+  });
+
+  it("does not execute raw html and neutralizes javascript links in markdown", async () => {
+    const md = "[x](javascript:alert(1))\n\n<script>window.__pwned = true</script>\n\n<img src=x onerror=alert(1)>";
+    const api = makeApi({
+      readWorkspaceFile: vi.fn(async (): Promise<WorkspaceFileResponse> => ({ file: { kind: "text", content: md, truncated: false } }))
+    });
+    const { container } = render(<FileView api={api} workspace={{ scope: "home" }} path="README.md" reloadKey={0} />);
+    await waitFor(() => expect(screen.getByTestId("file-markdown")).toBeDefined());
+    expect(container.querySelector("script")).toBeNull();
+    expect((window as unknown as { __pwned?: boolean }).__pwned).toBeUndefined();
+    for (const anchor of Array.from(container.querySelectorAll("a"))) {
+      expect(anchor.getAttribute("href") ?? "").not.toContain("javascript:");
+    }
+  });
 });

@@ -468,6 +468,45 @@ button.ws-tree-row:hover { background: var(--surface); }
   flex: 1; min-height: 0; margin: 0; padding: 12px 14px; overflow: auto;
   font-family: var(--mono); font-size: 13px; line-height: 1.45; white-space: pre;
 }
+.ws-file-toolbar {
+  display: flex; gap: 6px; padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.ws-file-toolbar .btn-ghost.active {
+  background: var(--surface-2); color: var(--text); border-color: var(--border);
+}
+.ws-markdown { flex: 1; min-height: 0; overflow: auto; padding: 12px 18px 24px; line-height: 1.6; }
+.ws-markdown > :first-child { margin-top: 0; }
+.ws-markdown h1, .ws-markdown h2 { border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+.ws-markdown h1, .ws-markdown h2, .ws-markdown h3, .ws-markdown h4 { font-weight: 600; line-height: 1.3; }
+.ws-markdown a { color: var(--accent-hi); }
+.ws-markdown code {
+  font-family: var(--mono); font-size: 12.5px;
+  background: var(--surface-2); padding: 1px 5px; border-radius: 4px;
+}
+.ws-markdown pre {
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 10px 12px; overflow: auto;
+}
+.ws-markdown pre code { background: none; padding: 0; font-size: 12.5px; }
+.ws-markdown table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+.ws-markdown th, .ws-markdown td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; }
+.ws-markdown th { background: var(--surface-2); }
+.ws-markdown blockquote { margin: 8px 0; padding: 2px 12px; color: var(--text-dim); border-left: 3px solid var(--border); }
+.ws-markdown img { max-width: 100%; }
+.ws-markdown ul, .ws-markdown ol { padding-left: 22px; }
+.hljs { background: transparent; color: var(--text); }
+.hljs-comment, .hljs-quote { color: var(--text-dim); font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-name { color: #ff7b72; }
+.hljs-string, .hljs-doctag, .hljs-regexp { color: #a5d6ff; }
+.hljs-number, .hljs-built_in, .hljs-builtin-name { color: #ffa657; }
+.hljs-title, .hljs-section, .hljs-title.class_, .hljs-title.function_ { color: #d2a8ff; }
+.hljs-attr, .hljs-attribute, .hljs-variable, .hljs-template-variable { color: #79c0ff; }
+.hljs-type, .hljs-class .hljs-title { color: #ffa657; }
+.hljs-symbol, .hljs-bullet, .hljs-link { color: #79c0ff; }
+.hljs-meta { color: var(--text-dim); }
+.hljs-deletion { background: rgba(248, 81, 73, .15); }
+.hljs-addition { background: rgba(63, 185, 80, .15); }
 
 
 .ws-git {

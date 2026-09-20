@@ -197,7 +197,7 @@ export default function WorkspaceRightPane({ api, workspace, fileOpen = null }: 
           </p>
         ) : openTab !== undefined ? (
           openTab.kind === "file" ? (
-            <FileView api={api} workspace={workspace} path={openTab.path} reloadKey={reloadKey} />
+            <FileView key={openTab.id} api={api} workspace={workspace} path={openTab.path} reloadKey={reloadKey} />
           ) : (
             <SessionTranscript api={api} workspace={workspace} sessionId={openTab.sessionId} reloadKey={reloadKey} />
           )

@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { WorkspaceFileResponse } from "dsh-balbes-contracts";
 import type { AdminApi } from "../api/client";
+import { detectFileRenderKind, languageForPath } from "../fileRender";
 import type { WorkspaceRef } from "../workspaceRef";
 import { isSameRef } from "../workspaceRef";
+import CodeView from "./CodeView";
+import MarkdownView from "./MarkdownView";
 
 interface FileViewProps {
   api: AdminApi;
@@ -14,6 +17,7 @@ interface FileViewProps {
 export default function FileView({ api, workspace, path, reloadKey }: FileViewProps) {
   const [data, setData] = useState<WorkspaceFileResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [markdownSource, setMarkdownSource] = useState(false);
   const lastWorkspace = useRef<WorkspaceRef | null>(null);
   const generation = useRef(0);
   const loadSeq = useRef(0);
@@ -44,6 +48,10 @@ export default function FileView({ api, workspace, path, reloadKey }: FileViewPr
       setError(null);
     }
   }, [workspace]);
+
+  useEffect(() => {
+    setMarkdownSource(false);
+  }, [workspace, path]);
 
   useEffect(() => {
     void load();
@@ -82,6 +90,8 @@ export default function FileView({ api, workspace, path, reloadKey }: FileViewPr
   if (file.content === "") {
     return <p className="ws-placeholder" data-testid="file-empty">Файл пуст</p>;
   }
+  const renderKind = detectFileRenderKind(path, file.content);
+  const language = languageForPath(path);
   return (
     <div className="ws-file-view" data-testid="file-view">
       {file.truncated && (
@@ -89,7 +99,35 @@ export default function FileView({ api, workspace, path, reloadKey }: FileViewPr
           Файл показан не полностью (лимит 256 КиБ)
         </p>
       )}
-      <pre className="ws-file-content" data-testid="file-content">{file.content}</pre>
+      {renderKind === "markdown" && (
+        <div className="ws-file-toolbar" role="group" aria-label="Режим просмотра" data-testid="file-mode-toggle">
+          <button
+            type="button"
+            className={markdownSource ? "btn-ghost" : "btn-ghost active"}
+            aria-pressed={!markdownSource}
+            data-testid="file-mode-preview"
+            onClick={() => setMarkdownSource(false)}
+          >
+            Просмотр
+          </button>
+          <button
+            type="button"
+            className={markdownSource ? "btn-ghost active" : "btn-ghost"}
+            aria-pressed={markdownSource}
+            data-testid="file-mode-source"
+            onClick={() => setMarkdownSource(true)}
+          >
+            Исходник
+          </button>
+        </div>
+      )}
+      {renderKind === "markdown" && !markdownSource ? (
+        <MarkdownView content={file.content} />
+      ) : renderKind === "code" && language !== null ? (
+        <CodeView content={file.content} language={language} />
+      ) : (
+        <pre className="ws-file-content" data-testid="file-content">{file.content}</pre>
+      )}
     </div>
   );
 }
