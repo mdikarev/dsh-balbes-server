@@ -1,6 +1,8 @@
 # Создание воркспейсов из GitHub
 
-- Status: draft
+- Status: absorbed
+- Design: docs/superpowers/specs/2026-09-19-workspaces-from-git-design.md
+- Plan: docs/superpowers/plans/2026-09-19-workspaces-from-git.md
 
 ## Intent
 
