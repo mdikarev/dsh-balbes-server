@@ -170,3 +170,33 @@ describe("session transcript contracts", () => {
     expect(projectReq.name).toBe("alpha");
   });
 });
+
+// Git workspace creation contracts — structural shape is the contract (R-API-1 + types win).
+import { suggestProjectNameFromGitUrl } from "../src/index.js";
+import type {
+  GitStatusResponse,
+  GitSaveRequest,
+  GitClearTokenResponse,
+  WorkspaceCreateFromGitRequest,
+  WorkspaceGitSource
+} from "../src/index.js";
+
+describe("git workspace contracts", () => {
+  it("exposes the documented shapes and the URL name suggestion", () => {
+    const source: WorkspaceGitSource = { provider: "github", url: "https://github.com/acme/api.git", branch: "main", ref: "a".repeat(40) };
+    const fromGitReq: WorkspaceCreateFromGitRequest = { url: source.url, name: "api" };
+    const status: GitStatusResponse = { git: { tokenConfigured: false } };
+    const saveReq: GitSaveRequest = { token: "ghp_x" };
+    const clear: GitClearTokenResponse = { git: { tokenConfigured: false } };
+    expect(fromGitReq.name).toBe("api");
+    expect(status.git.tokenConfigured).toBe(false);
+    expect(saveReq.token).toBe("ghp_x");
+    expect(clear.git.tokenConfigured).toBe(false);
+    expect(suggestProjectNameFromGitUrl("https://github.com/acme/api.git")).toBe("api");
+    expect(suggestProjectNameFromGitUrl("https://github.com/acme/my.repo")).toBe("my.repo");
+    expect(suggestProjectNameFromGitUrl("https://gitlab.com/acme/api.git")).toBeNull();
+    expect(suggestProjectNameFromGitUrl("http://github.com/acme/api.git")).toBeNull();
+    expect(suggestProjectNameFromGitUrl("https://github.com/acme")).toBeNull();
+    expect(suggestProjectNameFromGitUrl("not a url")).toBeNull();
+  });
+});

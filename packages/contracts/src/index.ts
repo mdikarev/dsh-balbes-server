@@ -40,10 +40,23 @@ export interface ApiErrorBody {
 }
 export type ApiResult<T> = { ok: true; value: T } | { ok: false; error: ApiErrorBody["error"] };
 
+/** GitHub source of a project created from a repository. */
+export interface WorkspaceGitSource {
+  provider: "github";
+  /** Clean https URL without a token. */
+  url: string;
+  /** Default branch name. */
+  branch: string;
+  /** Resolved commit sha. */
+  ref: string;
+}
+
 export interface WorkspaceProject {
   name: string;
   path: string;
   createdAt?: string; // ISO 8601; absent for hand-made dirs without a registry row
+  /** Present only when the project was cloned from a git repository. */
+  source?: WorkspaceGitSource;
 }
 export interface WorkspaceHome {
   path: string;
@@ -64,6 +77,49 @@ export interface WorkspaceDeleteRequest {
   name: string;
 }
 export interface WorkspaceDeleteResponse {}
+
+export interface WorkspaceCreateFromGitRequest {
+  url: string;
+  name: string;
+}
+export interface WorkspaceCreateFromGitResponse {
+  project: WorkspaceProject;
+}
+
+export interface GitStatusRequest {}
+export interface GitStatusResponse {
+  git: { tokenConfigured: boolean };
+}
+export interface GitSaveRequest {
+  token: string;
+}
+export interface GitSaveResponse {
+  git: { tokenConfigured: boolean };
+}
+export interface GitClearTokenRequest {}
+export interface GitClearTokenResponse {
+  git: { tokenConfigured: boolean };
+}
+
+/**
+ * Suggested project slug from a GitHub https URL (UI prefill only; the server
+ * validates whatever name is actually submitted). Null when the URL is not a
+ * valid `https://github.com/<owner>/<repo>` URL.
+ */
+export function suggestProjectNameFromGitUrl(url: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "https:" || parsed.hostname !== "github.com") return null;
+  if (parsed.username !== "" || parsed.password !== "" || parsed.search !== "" || parsed.hash !== "") return null;
+  const segments = parsed.pathname.split("/").filter((s) => s !== "");
+  if (segments.length !== 2) return null;
+  const repo = segments[1]!.endsWith(".git") ? segments[1]!.slice(0, -4) : segments[1]!;
+  return repo === "" ? null : repo;
+}
 
 export type WorkspaceScope = "home" | "project";
 
