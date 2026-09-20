@@ -8,6 +8,8 @@ import {
   listWorkspaces,
   createProject,
   deleteProject,
+  createProjectFromGit,
+  type BalbesGitLike,
   readRegistry,
   writeRegistry,
   homeDir,
@@ -271,5 +273,46 @@ describe("deleteProject", () => {
   it("refuses path-traversal names", async () => {
     await expect(deleteProject(home, "..")).rejects.toMatchObject({ code: "invalid-name" });
     await expect(deleteProject(home, "/etc")).rejects.toMatchObject({ code: "invalid-name" });
+  });
+});
+
+function fakeGit(behavior: "ok" | "fail" = "ok"): BalbesGitLike {
+  return {
+    inspect: (url: string) => ({ provider: "github", url }),
+    clone: async (_source, destDir) => {
+      if (behavior === "fail") throw new Error("network down");
+      await mkdir(destDir, { recursive: true });
+      await writeFile(join(destDir, "README.md"), "hi", "utf8");
+      return { branch: "main", ref: "a".repeat(40) };
+    }
+  };
+}
+
+describe("createProjectFromGit", () => {
+  it("clones into the project path and records source in the registry", async () => {
+    const gitHome = await mkdtemp(join(tmpdir(), "ws-git-"));
+    const project = await createProjectFromGit(gitHome, fakeGit(), "https://github.com/acme/api.git", "api");
+    expect(project.source).toEqual({ provider: "github", url: "https://github.com/acme/api.git", branch: "main", ref: "a".repeat(40) });
+    expect(await readFile(join(gitHome, "projects", "api", "README.md"), "utf8")).toBe("hi");
+    expect((await listWorkspaces(gitHome)).projects[0]?.source?.branch).toBe("main");
+    const reg = JSON.parse(await readFile(join(gitHome, "projects.json"), "utf8")) as { projects: Record<string, unknown> };
+    expect(reg.projects.api).toMatchObject({ source: { provider: "github" } });
+    await rm(gitHome, { recursive: true, force: true });
+  });
+
+  it("rejects a taken name with name-exists and leaves the project untouched", async () => {
+    const gitHome = await mkdtemp(join(tmpdir(), "ws-git-"));
+    await createProjectFromGit(gitHome, fakeGit(), "https://github.com/acme/api.git", "api");
+    await expect(createProjectFromGit(gitHome, fakeGit(), "https://github.com/acme/api.git", "api")).rejects.toMatchObject({ code: "name-exists" });
+    await rm(gitHome, { recursive: true, force: true });
+  });
+
+  it("cleans the temp dir and writes nothing on clone failure", async () => {
+    const gitHome = await mkdtemp(join(tmpdir(), "ws-git-"));
+    await expect(createProjectFromGit(gitHome, fakeGit("fail"), "https://github.com/acme/api.git", "api")).rejects.toThrow("network down");
+    const entries = await readdir(join(gitHome, "projects"));
+    expect(entries).toEqual([]);
+    await expect(readFile(join(gitHome, "projects.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await rm(gitHome, { recursive: true, force: true });
   });
 });

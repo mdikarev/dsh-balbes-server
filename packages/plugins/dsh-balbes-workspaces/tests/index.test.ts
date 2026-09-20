@@ -41,10 +41,12 @@ afterEach(async () => {
   }
 });
 
-function boot(): void {
+function boot(git?: unknown): void {
   const ctx = {
     get(key: string): unknown {
-      return key === "balbesHttp" ? http : undefined;
+      if (key === "balbesHttp") return http;
+      if (key === "balbesGit") return git;
+      return undefined;
     },
     provide(key: string, value: unknown): void {
       provided.set(key, value);
@@ -87,6 +89,7 @@ describe("balbes-workspaces plugin", () => {
     boot();
     expect(seats.map((s) => s.path).sort()).toEqual([
       "/api/workspaces/create",
+      "/api/workspaces/create-from-git",
       "/api/workspaces/delete",
       "/api/workspaces/events",
       "/api/workspaces/file",
@@ -129,5 +132,26 @@ describe("balbes-workspaces plugin", () => {
     const missing = await call("/api/workspaces/file", { scope: "project", name: "p1", path: "nope.txt" });
     expect(missing.status).toBe(404);
     expect((missing.json as { error?: { code?: string } }).error?.code).toBe("not-found");
+  });
+
+  it("create-from-git returns 503 when the git plugin is absent", async () => {
+    boot();
+    const res = await call("/api/workspaces/create-from-git", { url: "https://github.com/acme/api.git", name: "api" });
+    expect(res.status).toBe(503);
+    expect((res.json as { error?: { code?: string } }).error?.code).toBe("git-unavailable");
+  });
+
+  it("create-from-git maps clone errors onto HTTP codes", async () => {
+    const git = {
+      inspect: (url: string) => ({ provider: "github", url }),
+      clone: async () => {
+        const error = Object.assign(new Error("private"), { code: "auth-required" });
+        throw error;
+      }
+    };
+    boot(git);
+    const res = await call("/api/workspaces/create-from-git", { url: "https://github.com/acme/api.git", name: "api" });
+    expect(res.status).toBe(401);
+    expect((res.json as { error?: { code?: string } }).error?.code).toBe("auth-required");
   });
 });

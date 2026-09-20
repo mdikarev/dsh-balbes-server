@@ -176,6 +176,11 @@ describe.skipIf(!realEnabled)("REAL composition (workspaces API)", () => {
       const anonDelete = await postJson(`${base}/api/workspaces/delete`, { name: "alpha" });
       expect(anonDelete.status).toBe(401);
 
+      // the fixture profile has no git plugin: the route must fail closed
+      const noGit = await postJson(`${base}/api/workspaces/create-from-git`, { url: "https://github.com/acme/api.git", name: "api" }, token);
+      expect(noGit.status).toBe(503);
+      expect((noGit.json as { error?: { code?: string } }).error?.code).toBe("git-unavailable");
+
       // list on a fresh home: home + empty projects, and $DSH_HOME/agent exists
       const empty = await postJson(`${base}/api/workspaces/list`, {}, token);
       expect(empty.status, JSON.stringify(empty.json)).toBe(200);

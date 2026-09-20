@@ -3,14 +3,34 @@ import { mkdir, readFile, readdir, rm, rename, stat, writeFile, chmod, unlink } 
 import type { Dirent } from "node:fs";
 import { join, resolve, sep } from "node:path";
 
+/** Origin of a project that was cloned from a git repository. */
+export interface ProjectSource {
+  provider: "github";
+  url: string;
+  branch: string;
+  ref: string;
+}
+
 /** Structural slice of the workspace contract (see dsh-balbes-contracts). */
 export interface WorkspaceProject {
   name: string;
   path: string;
   createdAt?: string;
+  source?: ProjectSource;
 }
 export interface WorkspaceHome {
   path: string;
+}
+
+/** Structural slice of the balbesGit service (no cross-package import). */
+export interface GitSourceLike {
+  provider: string;
+  url: string;
+  [key: string]: unknown;
+}
+export interface BalbesGitLike {
+  inspect(url: string): GitSourceLike;
+  clone(source: GitSourceLike, destDir: string, opts?: { timeoutMs?: number }): Promise<{ branch: string; ref: string }>;
 }
 
 export type WorkspaceErrorCode = "invalid-name" | "name-exists" | "not-found" | "registry-invalid" | "invalid-path";
@@ -29,7 +49,7 @@ export const PROJECT_NAME_RE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?
 /** Registry index shape: metadata only, never the source of truth. */
 export interface RegistryData {
   version: 1;
-  projects: Record<string, { createdAt: string }>;
+  projects: Record<string, { createdAt: string; source?: ProjectSource }>;
 }
 
 export function validateProjectName(name: string): boolean {
@@ -169,6 +189,14 @@ function emptyRegistry(): RegistryData {
   return { version: 1, projects: {} };
 }
 
+/** Parse an optional registry source row; drop anything malformed. */
+function parseSource(value: unknown): ProjectSource | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const s = value as { provider?: unknown; url?: unknown; branch?: unknown; ref?: unknown };
+  if (s.provider !== "github" || typeof s.url !== "string" || typeof s.branch !== "string" || typeof s.ref !== "string") return undefined;
+  return { provider: "github", url: s.url, branch: s.branch, ref: s.ref };
+}
+
 export async function readRegistry(dshHome: string): Promise<RegistryData> {
   const file = registryFile(dshHome);
   let raw: string;
@@ -195,10 +223,14 @@ export async function readRegistry(dshHome: string): Promise<RegistryData> {
   ) {
     throw workspaceError("registry-invalid", `registry ${file} misses required fields`);
   }
-  const projects: Record<string, { createdAt: string }> = {};
+  const projects: Record<string, { createdAt: string; source?: ProjectSource }> = {};
   for (const [name, meta] of Object.entries(record.projects as Record<string, unknown>)) {
-    const m = meta as { createdAt?: unknown };
-    if (typeof m?.createdAt === "string") projects[name] = { createdAt: m.createdAt };
+    const m = meta as { createdAt?: unknown; source?: unknown };
+    if (typeof m?.createdAt !== "string") continue;
+    const row: { createdAt: string; source?: ProjectSource } = { createdAt: m.createdAt };
+    const source = parseSource(m.source);
+    if (source !== undefined) row.source = source;
+    projects[name] = row;
   }
   return { version: 1, projects };
 }
@@ -257,8 +289,11 @@ async function scanProjectDirs(dshHome: string): Promise<string[]> {
   return names;
 }
 
-function withOptionalCreatedAt(name: string, path: string, createdAt?: string): WorkspaceProject {
-  return createdAt === undefined ? { name, path } : { name, path, createdAt };
+function toProject(name: string, path: string, row?: { createdAt?: string; source?: ProjectSource }): WorkspaceProject {
+  const project: WorkspaceProject = { name, path };
+  if (row?.createdAt !== undefined) project.createdAt = row.createdAt;
+  if (row?.source !== undefined) project.source = row.source;
+  return project;
 }
 
 export async function listWorkspaces(dshHome: string): Promise<{ home: WorkspaceHome; projects: WorkspaceProject[] }> {
@@ -275,10 +310,7 @@ export async function listWorkspaces(dshHome: string): Promise<{ home: Workspace
     else changed = true;
   }
   if (changed) await writeRegistry(dshHome, cleaned);
-  const projects = names.map((name) => {
-    const row = cleaned.projects[name];
-    return withOptionalCreatedAt(name, join(projectsRoot(dshHome), name), row?.createdAt);
-  });
+  const projects = names.map((name) => toProject(name, join(projectsRoot(dshHome), name), cleaned.projects[name]));
   return { home: { path: home }, projects };
 }
 
@@ -310,7 +342,7 @@ export async function createProject(dshHome: string, name: string): Promise<Work
   const createdAt = new Date().toISOString();
   reconciled.projects[name] = { createdAt };
   await writeRegistry(dshHome, reconciled);
-  return withOptionalCreatedAt(name, target, createdAt);
+  return toProject(name, target, { createdAt });
 }
 
 export async function deleteProject(dshHome: string, name: string): Promise<void> {
@@ -338,4 +370,75 @@ export async function deleteProject(dshHome: string, name: string): Promise<void
     delete reg.projects[name];
     await writeRegistry(dshHome, reg);
   }
+}
+
+/**
+ * Create a project by cloning a git repository through the balbesGit service.
+ * The clone lands in a hidden temp dir and is renamed into place only on
+ * success, so a failure leaves neither a visible project nor a registry row.
+ */
+export async function createProjectFromGit(
+  dshHome: string,
+  git: BalbesGitLike,
+  url: string,
+  name: string
+): Promise<WorkspaceProject> {
+  if (!validateProjectName(name)) throw workspaceError("invalid-name", `invalid project name: ${name}`);
+  const root = projectsRoot(dshHome);
+  const target = resolve(root, name);
+  if (target !== join(root, name) || !target.startsWith(root + sep)) {
+    throw workspaceError("invalid-name", `project name escapes the projects root: ${name}`);
+  }
+  const source = git.inspect(url); // throws a GitError on an invalid URL
+  try {
+    await stat(target);
+    throw workspaceError("name-exists", `project already exists: ${name}`);
+  } catch (error) {
+    if (error instanceof WorkspaceError) throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  await mkdir(root, { recursive: true });
+  const temp = join(root, `.balbes-clone-${randomUUID()}`);
+  let moved = false;
+  try {
+    const { branch, ref } = await git.clone(source, temp);
+    try {
+      await rename(temp, target);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "EEXIST" || code === "ENOTEMPTY") throw workspaceError("name-exists", `project already exists: ${name}`);
+      throw error;
+    }
+    moved = true;
+    const skillsDir = join(target, ".dsh", "skills");
+    await mkdir(skillsDir, { recursive: true });
+    await provisionFile(join(skillsDir, "README"), SKILLS_README_STARTER);
+    const reg = await readRegistry(dshHome);
+    const reconciled = await reconcileRegistry(dshHome, reg);
+    const createdAt = new Date().toISOString();
+    const projectSource: ProjectSource = { provider: "github", url: source.url, branch, ref };
+    reconciled.projects[name] = { createdAt, source: projectSource };
+    await writeRegistry(dshHome, reconciled);
+    return toProject(name, target, { createdAt, source: projectSource });
+  } catch (error) {
+    await rm(temp, { recursive: true, force: true }).catch(() => {});
+    if (moved) await rm(target, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+/** Remove stale hidden clone temp dirs left by a crash mid-clone. */
+export async function cleanupStaleCloneDirs(dshHome: string): Promise<void> {
+  const root = projectsRoot(dshHome);
+  let entries: Dirent[];
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  await Promise.all(
+    entries
+      .filter((e) => e.isDirectory() && e.name.startsWith(".balbes-clone-"))
+      .map((e) => rm(join(root, e.name), { recursive: true, force: true }))
+  );
 }

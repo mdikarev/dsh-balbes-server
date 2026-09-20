@@ -1,6 +1,15 @@
 import z from "@deepseek-ai/schemastery";
 import { join } from "node:path";
-import { ensureHome, listWorkspaces, createProject, deleteProject, WorkspaceError } from "./workspaces.js";
+import {
+  ensureHome,
+  listWorkspaces,
+  createProject,
+  createProjectFromGit,
+  cleanupStaleCloneDirs,
+  deleteProject,
+  WorkspaceError,
+  type BalbesGitLike
+} from "./workspaces.js";
 import { readWorkspaceDir, type WorkspaceScope } from "./tree.js";
 import { readWorkspaceFile } from "./file.js";
 import { createWorkspacesService } from "./service.js";
@@ -49,6 +58,11 @@ export function apply(ctx: {
     ctx.logger.warn(`balbes-workspaces: ensureHome failed: ${error instanceof Error ? error.message : String(error)}`);
   });
 
+  // Stale hidden clone temp dirs can only be leftovers from a crash mid-clone.
+  cleanupStaleCloneDirs(dshHome).catch((error: unknown) => {
+    ctx.logger.warn(`balbes-workspaces: stale clone cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+  });
+
   // Facade for later stages (telegram chat, admin, agentTask): list/root/read
   // workspaces without an HTTP loopback. Independent of the route seats below.
   ctx.provide("balbesWorkspaces", createWorkspacesService(dshHome));
@@ -72,6 +86,38 @@ export function apply(ctx: {
       if (error instanceof WorkspaceError) {
         const status = error.code === "invalid-name" ? 400 : error.code === "name-exists" ? 409 : 500;
         send(res, status, { error: { code: error.code, message: error.message } });
+        return;
+      }
+      send(res, 500, { error: { code: "internal", message: error instanceof Error ? error.message : String(error) } });
+    }
+  });
+
+  http.post("/api/workspaces/create-from-git", "bearer", async (_req, res, body) => {
+    const git = ctx.get("balbesGit") as BalbesGitLike | undefined;
+    if (git === undefined) {
+      send(res, 503, { error: { code: "git-unavailable", message: "git support is not available" } });
+      return;
+    }
+    const b = body as { url?: unknown; name?: unknown };
+    const url = typeof b?.url === "string" ? b.url : "";
+    const name = typeof b?.name === "string" ? b.name : "";
+    try {
+      const project = await createProjectFromGit(dshHome, git, url, name);
+      send(res, 200, { project });
+    } catch (error) {
+      if (error instanceof WorkspaceError) {
+        const status = error.code === "invalid-name" ? 400 : error.code === "name-exists" ? 409 : 500;
+        send(res, status, { error: { code: error.code, message: error.message } });
+        return;
+      }
+      const code = (error as { code?: unknown }).code;
+      if (typeof code === "string") {
+        const status =
+          code === "invalid-url" ? 400 :
+          code === "auth-required" ? 401 :
+          code === "clone-timeout" ? 504 :
+          code === "clone-failed" ? 502 : 500;
+        send(res, status, { error: { code, message: error instanceof Error ? error.message : String(error) } });
         return;
       }
       send(res, 500, { error: { code: "internal", message: error instanceof Error ? error.message : String(error) } });
