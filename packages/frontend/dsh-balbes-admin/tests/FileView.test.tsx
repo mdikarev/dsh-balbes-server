@@ -138,4 +138,29 @@ describe("FileView", () => {
       expect(anchor.getAttribute("href") ?? "").not.toContain("javascript:");
     }
   });
+
+  it("hides html comments in markdown", async () => {
+    const md = "hello\n\n<!-- doc-canon:start -->\n\n# Heading\n\ntext <!-- inline note --> more";
+    const api = makeApi({
+      readWorkspaceFile: vi.fn(async (): Promise<WorkspaceFileResponse> => ({ file: { kind: "text", content: md, truncated: false } }))
+    });
+    render(<FileView api={api} workspace={{ scope: "home" }} path="AGENTS.md" reloadKey={0} />);
+    await waitFor(() => expect(screen.getByTestId("file-markdown")).toBeDefined());
+    const text = screen.getByTestId("file-markdown").textContent ?? "";
+    expect(text).not.toContain("doc-canon");
+    expect(text).not.toContain("inline note");
+    expect(text).toContain("hello");
+    expect(text).toContain("text");
+    expect(screen.getByRole("heading", { name: "Heading" })).toBeDefined();
+  });
+
+  it("keeps comment-like text inside fenced code blocks", async () => {
+    const md = "\u0060\u0060\u0060html\n<!-- keep me -->\n\u0060\u0060\u0060";
+    const api = makeApi({
+      readWorkspaceFile: vi.fn(async (): Promise<WorkspaceFileResponse> => ({ file: { kind: "text", content: md, truncated: false } }))
+    });
+    render(<FileView api={api} workspace={{ scope: "home" }} path="notes.md" reloadKey={0} />);
+    await waitFor(() => expect(screen.getByTestId("file-markdown")).toBeDefined());
+    expect(screen.getByTestId("file-markdown").textContent).toContain("<!-- keep me -->");
+  });
 });
