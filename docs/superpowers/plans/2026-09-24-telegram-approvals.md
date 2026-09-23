@@ -1092,6 +1092,8 @@ const APPROVAL_DENY_REPLY = "запись отменена";
     const from = server.outbound.length;
     const menu = await openMenu(from);
     const menuId = sentMessageId(menu);
+    pressButton(menuId, "ws");
+    await waitForMessage((text) => text.startsWith("Выберите воркспейс"), "the workspace list", from);
     pressButton(menuId, "ws:pick:0");
     await waitForOutbound(
       (e) => e.method === "sendMessage" && e.body.text === "Выбран: Дом агента",
@@ -1158,6 +1160,8 @@ const APPROVAL_DENY_REPLY = "запись отменена";
     const from = server.outbound.length;
     const menu = await openMenu(from);
     const menuId = sentMessageId(menu);
+    pressButton(menuId, "ws");
+    await waitForMessage((text) => text.startsWith("Выберите воркспейс"), "the workspace list", from);
     pressButton(menuId, "ws:pick:0");
     await waitForOutbound(
       (e) => e.method === "sendMessage" && e.body.text === "Выбран: Дом агента",
