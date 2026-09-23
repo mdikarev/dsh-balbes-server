@@ -95,6 +95,16 @@ export interface AgentTaskRunner {
   snapshot(): Array<{ key: string; sessionId: string }>;
 }
 
+/**
+ * Structural seam the runner uses to compose an approval answerer on each
+ * agent. The concrete gate (Task 3/Task 6) is supplied as an optional dep, so
+ * this package never imports it: the runner only calls attach from the same
+ * agent-scoped setup that installs the model selection.
+ */
+export interface ApprovalAttachment {
+  attach(agentCtx: unknown, ref: WorkspaceRef): void;
+}
+
 export interface AgentTaskDeps {
   loader?: { await(): Promise<void> };
   /** Structural slices of the dsh agent services (see runner.ts + Task 1 facts). */
@@ -110,6 +120,12 @@ export interface AgentTaskDeps {
   defaultModel?: { currentSelection(): { provider: string; model: string } };
   /** The Task 4 workspaces service slice; only root() is consumed by the runner. */
   workspaces: BalbesWorkspacesService;
+  /**
+   * The approval gate (Task 3), attached per agent inside the shared setup so
+   * every created/resumed session can surface a tool approval to the owner.
+   * Absent when the channel runs without approvals.
+   */
+  approvals?: ApprovalAttachment;
   logger?: { warn(m: string): void };
 }
 
@@ -487,11 +503,13 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
 
   async function acquireHandle(
     root: string,
+    ref: WorkspaceRef,
     opts: { sessionId?: string } | undefined
   ): Promise<{ handle: AgentHandleLike; sessionId: string }> {
     const selection = liveSelection(deps.defaultModel);
     const setup = (agentCtx: unknown): void => {
       composeAgentSetup(agentCtx, { selection: selection.ref });
+      deps.approvals?.attach(agentCtx, ref);
     };
     if (opts?.sessionId !== undefined) {
       try {
@@ -553,7 +571,7 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
     let sessionId: string | undefined;
     try {
       if (entry.handle === undefined) {
-        const acquired = await acquireHandle(root, opts);
+        const acquired = await acquireHandle(root, ref, opts);
         handle = acquired.handle;
         sessionId = acquired.sessionId;
         // reset() may have landed while create/resume was still resolving. The

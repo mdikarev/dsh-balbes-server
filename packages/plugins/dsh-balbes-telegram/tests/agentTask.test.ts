@@ -1199,6 +1199,35 @@ describe("composeAgentSetup tool surface", () => {
   });
 });
 
+/**
+ * The runner's setup seam composes the approval answerer next to the model
+ * selection, for BOTH create and resume. The fake agents service does not call
+ * setup itself, so the test drives the recorded callback by hand — the same
+ * seam the composeAgentSetup suite above exercises.
+ */
+describe("approval attachment", () => {
+  it("attaches the approval listener through setup for every created agent", async () => {
+    const base = await mkdtemp(join(tmpdir(), "agenttask-approval-"));
+    const agents = makeAgents();
+    const attached: Array<{ ctx: unknown; ref: WorkspaceRef }> = [];
+    const runner = createAgentTaskRunner({
+      agents: agents as unknown as AgentTaskDeps["agents"],
+      sessions: { flush: vi.fn(async () => {}) },
+      defaultModel: { currentSelection: () => SELECTION },
+      workspaces: makeWorkspaces(base) as unknown as AgentTaskDeps["workspaces"],
+      approvals: { attach: (ctx, ref) => { attached.push({ ctx, ref }); } },
+      logger: { warn: vi.fn() }
+    });
+    const result = runner.run({ scope: "home" }, "task");
+    await waitFor(() => agents.createOpts.length === 1);
+    const agentCtx = { on: vi.fn(), get: vi.fn() };
+    agents.createOpts[0]!.setup(agentCtx);
+    expect(attached).toEqual([{ ctx: agentCtx, ref: { scope: "home" } }]);
+    await runToCompletion(agents.created[0]!, 1);
+    await result;
+  });
+});
+
 describe("live model selection", () => {
   it("resolves every request through the current global default", async () => {
     let selection = { provider: "deepseek-official", model: "deepseek-v4-flash" };
