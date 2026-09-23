@@ -25,6 +25,8 @@ const UP_LABEL = "⬆ вверх";
 const NEXT_PAGE_LABEL = "Дальше";
 const BACK_TO_LIST_LABEL = "⬆ назад к списку";
 const MENU_LABEL = "⬅ Меню";
+export const APPROVAL_ALLOW_LABEL = "✅ Разрешить один раз";
+export const APPROVAL_REJECT_LABEL = "⛔ Отклонить";
 
 /**
  * The ONE row that takes a sub-card back to the menu card. Canon gives every
@@ -136,6 +138,20 @@ export function resetConfirmKeyboard(): InlineKeyboardMarkup {
       ],
       menuRow()
     ]
+  };
+}
+
+/**
+ * The one-shot decision of one approval request. Nothing is remembered: the
+ * code carries the request id, and the machine answers the same id as an
+ * already-resolved request if the button is pressed twice.
+ */
+export function approvalKeyboard(id: string): InlineKeyboardMarkup {
+  return {
+    inline_keyboard: [[
+      { text: APPROVAL_ALLOW_LABEL, callback_data: "ap:" + id + ":y" },
+      { text: APPROVAL_REJECT_LABEL, callback_data: "ap:" + id + ":n" }
+    ]]
   };
 }
 

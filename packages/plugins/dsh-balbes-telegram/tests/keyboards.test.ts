@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  approvalKeyboard,
   archiveKeyboard,
   fileKeyboard,
   listingKeyboard,
@@ -144,6 +145,15 @@ describe("keyboard builders", () => {
       [{ text: "⬆ К сессиям", callback_data: "ses:back" }],
       [{ text: "⬅ Меню", callback_data: "mnu" }]
     ]);
+  });
+
+  it("approvalKeyboard renders the one-shot decision as ap:<id>:y / ap:<id>:n", () => {
+    expect(approvalKeyboard("deadbeef")).toEqual({
+      inline_keyboard: [[
+        { text: "✅ Разрешить один раз", callback_data: "ap:deadbeef:y" },
+        { text: "⛔ Отклонить", callback_data: "ap:deadbeef:n" }
+      ]]
+    });
   });
 
   it("adds pagination to both session lists", () => {

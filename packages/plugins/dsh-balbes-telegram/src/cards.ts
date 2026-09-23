@@ -4,7 +4,7 @@
  * machine owns snapshots and dispatch, this module owns copy and layout.
  */
 import type { TaskProgressStep, TaskProgressTodo } from "./agentTask.js";
-import { menuRow, paginationRow } from "./keyboards.js";
+import { approvalKeyboard, menuRow, paginationRow } from "./keyboards.js";
 import type { InlineKeyboardMarkup } from "./keyboards.js";
 
 export interface CardView {
@@ -164,6 +164,37 @@ function clampCardLine(line: string, max: number): string {
   return `${collapsed.slice(0, end)}…`;
 }
 
+export type ApprovalView = "allowed" | "rejected" | "expired" | "cancelled";
+
+const APPROVAL_VIEW_MARK: Record<ApprovalView, string> = {
+  allowed: "✅ Разрешено",
+  rejected: "⛔ Отклонено",
+  expired: "⌛ Истёк тайм-аут",
+  cancelled: "⏹ Отменено"
+};
+
+/**
+ * The request card: who asks (workspace), what (tool), why (reason) and the
+ * task echo. Free text arrives already clamped by the gate.
+ */
+export function approvalCard(opts: {
+  id: string;
+  workspaceLabel: string;
+  toolName: string;
+  reason?: string;
+  taskText?: string;
+}): CardView {
+  const lines = ["🔐 Запрос подтверждения · " + opts.workspaceLabel, "", "Инструмент: " + opts.toolName];
+  if (opts.reason !== undefined && opts.reason !== "") lines.push("Причина: " + opts.reason);
+  if (opts.taskText !== undefined && opts.taskText !== "") lines.push("", "Задача: " + opts.taskText);
+  return { text: lines.join("\n"), keyboard: approvalKeyboard(opts.id) };
+}
+
+/** What the request message becomes once the decision is made. */
+export function approvalResolvedText(opts: { toolName: string; outcome: ApprovalView }): string {
+  return APPROVAL_VIEW_MARK[opts.outcome] + " · " + opts.toolName;
+}
+
 export function progressCard(opts: {
   workspaceLabel: string;
   taskText: string;
@@ -172,9 +203,11 @@ export function progressCard(opts: {
   steps: TaskProgressStep[];
   todos?: TaskProgressTodo[];
   queued: number;
+  waitingFor?: string;
 }): CardView {
   const head = `⏳ ${opts.workspaceLabel} · ${formatElapsed(opts.elapsedMs)}${opts.step === undefined ? "" : ` · шаг ${opts.step}`}`;
   const lines = [head];
+  if (opts.waitingFor !== undefined) lines.push("⏳ ждёт подтверждения: " + opts.waitingFor);
   if (opts.todos !== undefined && opts.todos.length > 0) {
     // Both ends are capped: the plan of a long task may be dozens of items long
     // and any single item may be a paragraph. The hidden count is stated rather

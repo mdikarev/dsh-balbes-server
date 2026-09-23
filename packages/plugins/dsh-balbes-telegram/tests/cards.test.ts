@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   HELP_TEXT,
+  approvalCard,
+  approvalResolvedText,
   MAX_TODO_LINES,
   MAX_TODO_LINE_CHARS,
   TASK_IDLE_LINE,
@@ -322,5 +324,56 @@ describe("receiptCard", () => {
     expect(receiptCard({ kind: "stopped", elapsedMs: 1000, steps: 1, detail: "таймаут" }).text).toBe(
       "⏹ Остановлено владельцем · 0:01"
     );
+  });
+});
+
+describe("approvalCard", () => {
+  it("renders tool, reason, workspace label and task echo with the decision keyboard", () => {
+    const card = approvalCard({
+      id: "deadbeef",
+      workspaceLabel: "Дом агента",
+      toolName: "bash",
+      reason: "escalate sandbox to danger-full-access: нужно",
+      taskText: "почини сборку"
+    });
+    expect(card.text).toBe(
+      [
+        "🔐 Запрос подтверждения · Дом агента",
+        "",
+        "Инструмент: bash",
+        "Причина: escalate sandbox to danger-full-access: нужно",
+        "",
+        "Задача: почини сборку"
+      ].join("\n")
+    );
+    expect(card.keyboard.inline_keyboard[0]![0]!.callback_data).toBe("ap:deadbeef:y");
+  });
+
+  it("omits reason and task when absent", () => {
+    const card = approvalCard({ id: "deadbeef", workspaceLabel: "Проект: demo", toolName: "bash" });
+    expect(card.text).toBe("🔐 Запрос подтверждения · Проект: demo\n\nИнструмент: bash");
+  });
+});
+
+describe("approvalResolvedText", () => {
+  it("names every view", () => {
+    expect(approvalResolvedText({ toolName: "bash", outcome: "allowed" })).toBe("✅ Разрешено · bash");
+    expect(approvalResolvedText({ toolName: "bash", outcome: "rejected" })).toBe("⛔ Отклонено · bash");
+    expect(approvalResolvedText({ toolName: "bash", outcome: "expired" })).toBe("⌛ Истёк тайм-аут · bash");
+    expect(approvalResolvedText({ toolName: "bash", outcome: "cancelled" })).toBe("⏹ Отменено · bash");
+  });
+});
+
+describe("progressCard waitingFor", () => {
+  it("renders the waiting line while a request is pending", () => {
+    const view = progressCard({
+      workspaceLabel: "Дом агента",
+      taskText: "почини",
+      elapsedMs: 1000,
+      steps: [],
+      queued: 0,
+      waitingFor: "bash"
+    });
+    expect(view.text).toContain("⏳ ждёт подтверждения: bash");
   });
 });
