@@ -1200,7 +1200,10 @@ const APPROVAL_DENY_REPLY = "запись отменена";
       approvalFrom,
       180_000
     );
-    expect(JSON.stringify(llm.calls.at(-1)?.body ?? {})).not.toContain("should-not-run");
+    // The rejection reaches the model as the tool's isError result; the raw
+    // command string still rides the assistant tool_use in conversation history,
+    // so assert on the rejection text, not on the absent command.
+    expect(JSON.stringify(llm.calls.at(-1)?.body ?? {})).toContain("rejected");
   });
 ~~~
 
