@@ -1192,6 +1192,18 @@ sudo npm i -g "@deepseek-ai/dsh@$(cat scripts/engine-version.txt)"
 dsh --version   # должно совпасть с scripts/engine-version.txt
 ```
 
+Зеркало `$DSH_HOME/profiles/node_modules/@deepseek-ai`, оставшееся от прежнего
+движка, тоже нужно обновить: `link-core` предпочитает зеркало с пинованной
+версией, а при полном несовпадении использует первое и печатает предупреждение.
+Если после установки движка сборка всё ещё падает на типах, удалите старое
+зеркало и переlinkуйте:
+
+```bash
+rm -rf "${DSH_HOME:-$HOME/.dsh}/profiles/node_modules/@deepseek-ai"
+node scripts/link-core.mjs
+node -e "console.log('dsh-base:', require('@deepseek-ai/dsh-base/package.json').version)"  # должно совпасть с пином
+```
+
 Если версию определить не удалось (`dsh --version` не печатает ничего похожего
 на версию), установщик отдельно предупреждает об этом и тоже продолжает
 работу — проверьте `command -v dsh` и `dsh --version` вручную.

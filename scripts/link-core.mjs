@@ -38,9 +38,27 @@ function candidates() {
   return list;
 }
 
-const src = candidates().find((c) => existsSync(c));
-if (!src) {
-  const pin = pinnedEngineVersion();
+/** The engine version a scope directory carries, read from dsh or dsh-base. */
+function engineVersionOf(scopeDir) {
+  for (const pkg of ["dsh", "dsh-base"]) {
+    try {
+      const manifest = JSON.parse(readFileSync(join(scopeDir, pkg, "package.json"), "utf8"));
+      if (typeof manifest.version === "string" && manifest.version !== "") return manifest.version;
+    } catch { /* try the next package name */ }
+  }
+  return null;
+}
+
+const pin = pinnedEngineVersion();
+const available = candidates().filter((c) => existsSync(c));
+// A $DSH_HOME/profiles mirror left by a previous engine version wins on
+// candidate order, which would compile this workspace against stale types.
+// Prefer a mirror that carries the pinned version; only when none does keep the
+// old first-candidate behavior (the installer deliberately continues on a
+// version mismatch instead of reinstalling the engine).
+const matching = pin === null ? available : available.filter((c) => engineVersionOf(c) === pin);
+const src = matching[0] ?? available[0];
+if (src === undefined) {
   console.error("link-core: no @deepseek-ai mirror found (a global dsh install or $DSH_HOME is required).");
   if (pin) {
     console.error(`Install it with: npm i -g "@deepseek-ai/dsh@${pin}"  (CI installs it itself).`);
@@ -49,6 +67,10 @@ if (!src) {
     console.error("(that file could not be read — see it in the repository; CI installs dsh itself).");
   }
   process.exit(1);
+}
+if (pin !== null && matching.length === 0) {
+  console.error(`link-core: WARNING: no @deepseek-ai mirror carries the pinned dsh ${pin}; using ${src} (${engineVersionOf(src) ?? "unknown version"}).`);
+  console.error(`link-core: install the pinned engine and re-run: npm i -g "@deepseek-ai/dsh@${pin}"`);
 }
 mkdirSync(dirname(target), { recursive: true });
 mkdirSync(target, { recursive: true });
