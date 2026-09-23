@@ -112,6 +112,13 @@
   теперь выполняется в `AsyncResource`, захваченном при загрузке модуля (вне
   транзакции).
 
+## Итог CI
+
+- CI run #65 на commit `1f470ed`: job `validate` и job `real` — **success**
+  (host, telegram, sessions и git REAL-наборы зелёные). Инициатива p8 готова к
+  серверному апгрейду; после подтверждения на VPS статус в future_plans можно
+  перевести в `absorbed`.
+
 ## Проверка на сервере (владелец)
 
 1. Дождаться зелёного CI на `main` (job `validate` и job `real` —
