@@ -100,7 +100,8 @@ interface PendingApproval {
 ```
 
 Реестр — `Map<string, PendingApproval>`. Мягкий потолок одновременных pending
-(32): лишний запрос сразу `unavailable`.
+(32): при его достижении listener делегирует через `next()`, поэтому лишний
+запрос получает исход `unavailable` (fail-closed), а не молчаливое разрешение.
 
 ### Поток запроса и ответа
 
