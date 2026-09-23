@@ -1319,10 +1319,10 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
         const answer = server.outbound.filter((entry) => entry.method === "answerCallbackQuery").at(-1);
         const answerText = (answer?.body as { text?: unknown } | undefined)?.text;
         if (typeof answerText === "string" && answerText !== "") {
-          await sleep(200);
-          const log = childLog();
-          const warnLine = /saving the default model failed[^\n]*/.exec(log)?.[0];
-          throw new Error(`bot answered: ${answerText} | ${warnLine ?? log.slice(-1200)}`);
+          // The /model press went through the chat; call the models route
+          // directly to surface the exact rejection code.
+          const direct = await post(`${baseUrl()}/api/models/default`, { provider: "deepseek-official", model: chosen }, token);
+          throw new Error(`bot answered: ${answerText} | direct default save: ${direct.status} ${direct.text}`);
         }
         return undefined;
       }, `the persisted default model to become ${chosen}`);
