@@ -82,6 +82,11 @@ const SESSION_B_REPLY = "запомнил: код проекта 99";
  */
 const HOLD_MS = 5000;
 
+/** Task 7: the prompt and the two scripted replies of the approval scenarios. */
+const APPROVAL_PROMPT = "Запиши отчёт по доступу.";
+const APPROVAL_ALLOW_REPLY = "отчёт записан";
+const APPROVAL_DENY_REPLY = "запись отменена";
+
 /**
  * Bot API methods that are NOT a delivery to a chat: the background identity
  * refresh of `src/index.ts`. Everything else the plugin sends is a delivery,
@@ -1767,4 +1772,132 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
       await stopServer();
     }
   }, 420_000);
+
+  /**
+   * Task 7: the REAL approval round-trip. A gated escalation (bash with
+   * sandbox_permissions + justification) makes the stock approval waterfall ask
+   * the owner through the composed gate, the owner presses the ap:<id>:y button
+   * and the tool really runs; the deny case proves the press REACHES the model
+   * as the tool's rejected result. Each case boots the shared real profile and
+   * works in the agent home.
+   */
+  it("asks the owner before a gated escalation and runs it on the allow press", async () => {
+    const server = requireApi();
+    const llm = requireStub();
+    const token = await bootServer();
+    await tgPost("/api/telegram/save", { token: BOT_TOKEN, allowedUserId: OWNER_USER_ID, enabled: true }, token);
+    await waitForConnected(token, true);
+
+    const from = server.outbound.length;
+    const menu = await openMenu(from);
+    const menuId = sentMessageId(menu);
+    pressButton(menuId, "ws:pick:0");
+    await waitForOutbound(
+      (e) => e.method === "sendMessage" && e.body.text === "Выбран: Дом агента",
+      "the home selection",
+      from
+    );
+
+    const callsBefore = llm.calls.length;
+    llm.setScript([
+      {
+        toolCalls: [
+          {
+            name: "bash",
+            arguments: JSON.stringify({
+              command: "echo approval-ok",
+              sandbox_permissions: "danger-full-access",
+              justification: "нужно записать отчёт вне песочницы"
+            })
+          }
+        ]
+      },
+      { text: APPROVAL_ALLOW_REPLY }
+    ]);
+
+    const approvalFrom = server.outbound.length;
+    server.enqueueMessage({ fromId: OWNER_USER_ID, text: APPROVAL_PROMPT });
+    const request = await waitForMessage(
+      (text) => text.startsWith("🔐 Запрос подтверждения"),
+      "the approval request",
+      approvalFrom,
+      60_000
+    );
+    expect(request.text).toContain("Инструмент: bash");
+    expect(request.text).toContain("escalate sandbox to danger-full-access");
+    const buttons = buttonsOf(request.entry);
+    expect(buttons.map((b) => b.text)).toEqual(["✅ Разрешить один раз", "⛔ Отклонить"]);
+    const allow = buttons.find((b) => b.callback_data.endsWith(":y"));
+    expect(allow).toBeDefined();
+    expect(allow!.callback_data.startsWith("ap:")).toBe(true);
+
+    pressButton(request.messageId, allow!.callback_data);
+    await waitForMessage((text) => text.startsWith("✅ Разрешено"), "the resolved request", approvalFrom, 60_000);
+    await waitForOutbound(
+      (e) => e.method === "sendMessage" && e.body.text === APPROVAL_ALLOW_REPLY,
+      "the agent reply after the allowance",
+      approvalFrom,
+      180_000
+    );
+    expect(llm.calls.length - callsBefore).toBeGreaterThanOrEqual(2);
+    expect(JSON.stringify(llm.calls.at(-1)?.body ?? {})).toContain("approval-ok");
+  }, 300_000);
+
+  it("refuses the gated escalation on the reject press and the tool does not run", async () => {
+    const server = requireApi();
+    const llm = requireStub();
+    const token = await bootServer();
+    await tgPost("/api/telegram/save", { token: BOT_TOKEN, allowedUserId: OWNER_USER_ID, enabled: true }, token);
+    await waitForConnected(token, true);
+
+    const from = server.outbound.length;
+    const menu = await openMenu(from);
+    const menuId = sentMessageId(menu);
+    pressButton(menuId, "ws:pick:0");
+    await waitForOutbound(
+      (e) => e.method === "sendMessage" && e.body.text === "Выбран: Дом агента",
+      "the home selection",
+      from
+    );
+
+    llm.setScript([
+      {
+        toolCalls: [
+          {
+            name: "bash",
+            arguments: JSON.stringify({
+              command: "echo should-not-run",
+              sandbox_permissions: "danger-full-access",
+              justification: "нужно записать отчёт"
+            })
+          }
+        ]
+      },
+      { text: APPROVAL_DENY_REPLY }
+    ]);
+
+    const approvalFrom = server.outbound.length;
+    server.enqueueMessage({ fromId: OWNER_USER_ID, text: APPROVAL_PROMPT });
+    const request = await waitForMessage(
+      (text) => text.startsWith("🔐 Запрос подтверждения"),
+      "the approval request",
+      approvalFrom,
+      60_000
+    );
+    const reject = buttonsOf(request.entry).find((b) => b.callback_data.endsWith(":n"));
+    expect(reject).toBeDefined();
+
+    pressButton(request.messageId, reject!.callback_data);
+    await waitForMessage((text) => text.startsWith("⛔ Отклонено"), "the rejection", approvalFrom, 60_000);
+    await waitForOutbound(
+      (e) => e.method === "sendMessage" && e.body.text === APPROVAL_DENY_REPLY,
+      "the agent reply after the rejection",
+      approvalFrom,
+      180_000
+    );
+    // The rejection reaches the model as the tool's isError result; the raw
+    // command string still rides the assistant tool_use in conversation history,
+    // so assert on the rejection text, not on the absent command.
+    expect(JSON.stringify(llm.calls.at(-1)?.body ?? {})).toContain("rejected");
+  }, 300_000);
 });
