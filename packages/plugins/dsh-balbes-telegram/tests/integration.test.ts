@@ -93,7 +93,7 @@ const NON_DELIVERY_METHODS = new Set(["getMe"]);
 
 interface StubCall {
   path: string;
-  body: { messages?: Array<{ role?: string; content?: unknown }> };
+  body: { messages?: Array<{ role?: string; content?: unknown }>; system?: unknown };
 }
 
 /** The scripted LLM stub's control surface (helpers/stub-llm.mjs). */
@@ -896,10 +896,11 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
       // bundle's system-prompt row ("Your working directory is {{cwd}}") is
       // composed AND substituted with the agent home root, which is the
       // workspace under test.
-      const messages = llm.calls.at(-1)?.body.messages ?? [];
-      const systemMessage = messages.find((message) => message.role === "system");
-      const systemText = JSON.stringify(systemMessage ?? {});
-      expect(systemText, JSON.stringify(messages).slice(0, 2000)).toContain("Your working directory is");
+      // dsh 0.1.7-rc.1 seam fact: the Messages request carries the system prompt
+      // in a top-level `system` field, not as a role "system" message.
+      const lastBody = llm.calls.at(-1)?.body;
+      const systemText = typeof lastBody?.system === "string" ? lastBody.system : "";
+      expect(systemText, JSON.stringify(lastBody ?? {}).slice(0, 2000)).toContain("Your working directory is");
       expect(systemText, systemText.slice(0, 2000)).toContain(agentRoot);
 
       // (j) the state document: one session, an acknowledged offset, no token

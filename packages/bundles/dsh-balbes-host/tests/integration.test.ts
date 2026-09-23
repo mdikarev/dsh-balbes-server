@@ -2,7 +2,7 @@ import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, mkdir, cp, writeFile, rm } from "node:fs/promises";
-import { existsSync, realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -223,20 +223,16 @@ describe.skipIf(!realEnabled)("REAL composition (dsh CLI + LLM stub)", () => {
     // services) inside this vitest process through the same Loader boot the
     // CLI performs, with one extra probe row that captures a plugin context
     // able to resolve the core services (same mechanism as headless-runner).
-    const { boot, healProfilesModuleFallback, loadOverlayPatches } = await import("@deepseek-ai/dsh-app-boot");
+    const { boot, createRuntimeResolution, PluginPackages, loadOverlayPatches } = await import("@deepseek-ai/dsh-app-boot");
     const baseDir = dirname(requireFromHere.resolve("@deepseek-ai/dsh-base/package.json"));
     const basePatches = loadOverlayPatches("dsh", join(baseDir, "cordis.patch.yml"));
-    if (!existsSync(join(home, "profiles", "node_modules", "@deepseek-ai"))) {
-      // dsh heals $DSH_HOME/profiles/node_modules from its own install at
-      // profile boot; mirror that here so the in-process include can resolve
-      // @deepseek-ai/* from the temp home. The anchor is the running dsh
-      // CLI's own package.json (workspace @deepseek-ai links resolve to it).
-      const dshPkgDir = dirname(realpathSync(requireFromHere.resolve("@deepseek-ai/dsh")));
-      await healProfilesModuleFallback({
-        installAnchor: join(dshPkgDir, "package.json"),
-        home
-      });
-    }
+    // dsh 0.1.7-rc.1 seam fact: the profile package table is an in-memory runtime
+    // resolution mounted as the PluginPackages service before any config-tree
+    // entry, not a physical profiles/node_modules mirror (see seams.test.ts).
+    // The anchor is the running dsh CLI's own package.json (the workspace
+    // @deepseek-ai links resolve to it; bare "@deepseek-ai/dsh" has no main).
+    const installAnchor = join(dirname(realpathSync(requireFromHere.resolve("@deepseek-ai/dsh/package.json"))), "package.json");
+    const resolution = await createRuntimeResolution({ installAnchor, home });
     const minDir = join(home, "profiles", "balbes-test-min");
     await mkdir(minDir, { recursive: true });
     await writeFile(join(minDir, "cordis.yml"), "# in-process REAL test root\n[]\n");
@@ -247,11 +243,18 @@ describe.skipIf(!realEnabled)("REAL composition (dsh CLI + LLM stub)", () => {
     process.env.DEEPSEEK_API_KEY = "test-key";
     let bootCtx: { fiber: { dispose(): Promise<unknown> } } | undefined;
     try {
-      bootCtx = await boot("dsh", join(minDir, "cordis.yml"), [
-        ...basePatches,
-        { insert: [{ id: "balbes-runprobe", name: join(here, "helpers", "runprobe.mjs") }] },
-        { id: "session-telemetry-otel", disabled: true }
-      ]);
+      bootCtx = await boot(
+        "dsh",
+        join(minDir, "cordis.yml"),
+        [
+          ...basePatches,
+          { insert: [{ id: "balbes-runprobe", name: join(here, "helpers", "runprobe.mjs") }] },
+          { id: "session-telemetry-otel", disabled: true }
+        ],
+        async (hostCtx) => {
+          await hostCtx.plugin(PluginPackages, { resolution });
+        }
+      );
       const probeCtx = globalThis[PROBE_GLOBAL_KEY as keyof typeof globalThis] as { get(key: string): unknown } | undefined;
       expect(probeCtx).toBeDefined();
       const agents = probeCtx?.get("agents") as { list(): unknown[] } | undefined;

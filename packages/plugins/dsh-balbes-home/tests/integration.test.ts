@@ -35,7 +35,7 @@ const PROFILE = "balbes-home-test";
 
 interface StubCall {
   path: string;
-  body: { messages?: Array<{ role?: string; content?: unknown }> };
+  body: { messages?: Array<{ role?: string; content?: unknown }>; system?: unknown };
 }
 interface StubLlm {
   port: number;
@@ -112,10 +112,10 @@ async function waitForHealth(port: number, child: ReturnType<typeof spawn>, time
   throw new Error(`server did not become healthy within ${timeoutMs}ms`);
 }
 
-/** Сериализованное содержимое системного сообщения запроса (или "{}"). */
+/** Содержимое системного промпта запроса (или "{}"). dsh 0.1.7-rc.1:
+ *  системный промпт — верхнеуровневое поле `system`, а не сообщение role. */
 function systemText(call: StubCall): string {
-  const system = (call.body.messages ?? []).find((message) => message.role === "system");
-  return JSON.stringify(system ?? {});
+  return typeof call.body.system === "string" ? call.body.system : JSON.stringify({});
 }
 
 const realEnabled = (process.env.RUN_REAL ?? "").trim() !== "" ? await hasDsh() : false;

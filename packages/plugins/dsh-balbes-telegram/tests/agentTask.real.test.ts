@@ -147,15 +147,20 @@ async function waitFor(check: () => boolean, description: string, timeoutMs = 30
   }
 }
 
-/** Concatenate the text content of every `role: "tool"` message across calls. */
+/** Concatenate the content of every `tool_result` block across calls
+ *  (dsh 0.1.7-rc.1: results are user-role `tool_result` blocks, not
+ *  `role: "tool"` messages). */
 function toolResults(calls: StubCall[]): string[] {
   const out: string[] = [];
   for (const call of calls) {
     for (const message of call.body.messages ?? []) {
-      if (message.role !== "tool") continue;
       const content = message.content;
-      if (typeof content === "string") out.push(content);
-      else out.push(JSON.stringify(content));
+      if (!Array.isArray(content)) continue;
+      for (const block of content) {
+        const entry = block as { type?: unknown; content?: unknown };
+        if (entry?.type !== "tool_result") continue;
+        out.push(typeof entry.content === "string" ? entry.content : JSON.stringify(entry.content));
+      }
     }
   }
   return out;
@@ -190,13 +195,14 @@ async function makeHome(): Promise<string> {
 }
 
 async function bootSeams(home: string, stubPort: number): Promise<{ fiber: FiberLike; ctx: SeamCtx }> {
-  const { boot, healProfilesModuleFallback, loadOverlayPatches } = await import("@deepseek-ai/dsh-app-boot");
+  const { boot, createRuntimeResolution, PluginPackages, loadOverlayPatches } = await import("@deepseek-ai/dsh-app-boot");
   const baseDir = dirname(requireFromHere.resolve("@deepseek-ai/dsh-base/package.json"));
   const basePatches = loadOverlayPatches("dsh", join(baseDir, "cordis.patch.yml"));
-  if (!existsSync(join(home, "profiles", "node_modules", "@deepseek-ai"))) {
-    const dshPkgDir = dirname(realpathSync(requireFromHere.resolve("@deepseek-ai/dsh/package.json")));
-    await healProfilesModuleFallback({ installAnchor: join(dshPkgDir, "package.json"), home });
-  }
+  // dsh 0.1.7-rc.1 seam fact: the profile package table is an in-memory runtime
+  // resolution mounted as the PluginPackages service before any config-tree
+  // entry — not a physical profiles/node_modules mirror (see host seams.test.ts).
+  const installAnchor = join(dirname(realpathSync(requireFromHere.resolve("@deepseek-ai/dsh/package.json"))), "package.json");
+  const resolution = await createRuntimeResolution({ installAnchor, home });
   await writeFile(
     join(home, "settings.yaml"),
     `agent-default-model:\n  provider: deepseek-official\n  model: deepseek-v4-flash\nllm-deepseek:\n  baseURL: http://127.0.0.1:${stubPort}\n`
@@ -204,12 +210,19 @@ async function bootSeams(home: string, stubPort: number): Promise<{ fiber: Fiber
   process.env.DSH_HOME = home;
   process.env.DEEPSEEK_API_KEY = "test-key";
   const probeHelper = join(here, "..", "..", "..", "bundles", "dsh-balbes-host", "tests", "helpers", "runprobe.mjs");
-  const booted = await boot("dsh", join(home, "profiles", "balbes-min", "cordis.yml"), [
-    ...basePatches,
-    { insert: [{ id: "balbes-runprobe", name: probeHelper }] },
-    { id: "session-telemetry-otel", disabled: true },
-    { id: "session-title-llm", disabled: true }
-  ]);
+  const booted = await boot(
+    "dsh",
+    join(home, "profiles", "balbes-min", "cordis.yml"),
+    [
+      ...basePatches,
+      { insert: [{ id: "balbes-runprobe", name: probeHelper }] },
+      { id: "session-telemetry-otel", disabled: true },
+      { id: "session-title-llm", disabled: true }
+    ],
+    async (hostCtx) => {
+      await hostCtx.plugin(PluginPackages, { resolution });
+    }
+  );
   const probeCtx = globalThis[PROBE_GLOBAL_KEY as keyof typeof globalThis] as SeamCtx | undefined;
   if (probeCtx === undefined) throw new Error("runprobe plugin did not publish its context");
   return { fiber: booted.fiber as FiberLike, ctx: probeCtx };

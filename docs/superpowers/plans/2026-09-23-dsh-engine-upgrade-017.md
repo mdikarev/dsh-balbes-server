@@ -58,6 +58,21 @@
 - `docs/canon/future_plans/p8-engine-upgrade.md` + `INDEX.md` — статус
   `implementing`.
 
+## Найдено после CI run #52 (тестовый контур)
+
+- **app-boot:** `healProfilesModuleFallback` удалён. В 0.1.7 таблица пакетов
+  профиля — это in-memory `createRuntimeResolution({installAnchor, home})`,
+  монтируемая сервисом `PluginPackages` в `prepare` до включения дерева
+  (ровно как в `@deepseek-ai/dsh/profile-boot` `runProfile`). Тесты host seams,
+  host integration и telegram agentTask.real переведены на этот рецепт; голый
+  `resolve("@deepseek-ai/dsh")` заменён на `@deepseek-ai/dsh/package.json`.
+- **DeepSeek-адаптер:** `dsh-llm-deepseek` теперь говорит на Anthropic Messages
+  (`POST <baseURL>/v1/messages`: `message_start` → `content_block_*` →
+  `message_delta` → `message_stop`), а не на OpenAI chat-completions; `[DONE]`
+  недопустим. Четыре тестовых LLM-стаба переписаны; `tool`-результаты и
+  system-prompt в тестах читаются из формата Messages (`tool_result`-блоки,
+  верхнеуровневый `system`).
+
 ## Проверка на сервере (владелец)
 
 1. Дождаться зелёного CI на `main` (job `validate` и job `real` —

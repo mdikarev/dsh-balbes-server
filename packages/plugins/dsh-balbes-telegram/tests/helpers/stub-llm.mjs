@@ -9,70 +9,82 @@ function ssePayload(payload) {
 }
 
 /**
- * One chat-completion chunk: id/object/created/model framing, one delta, an
- * optional finish_reason, and optional usage. The DeepSeek adapter reads the
- * delta fields (role/content/tool_calls) and defers finish + usage until the
- * `[DONE]` sentinel.
+ * dsh 0.1.7-rc.1 seam fact: @deepseek-ai/dsh-llm-deepseek streams the DeepSeek
+ * Messages (Anthropic-style) SSE protocol, NOT OpenAI chat-completions:
+ * message_start -> content_block_start/delta/stop -> message_delta ->
+ * message_stop. There is no `data: [DONE]` sentinel, and every frame's JSON
+ * must carry a string `type` (the parser rejects anything else as a type
+ * mismatch).
  */
-function chunk({ delta, finish_reason = null, usage } = {}) {
-  const payload = {
-    id: "stub-1",
-    object: "chat.completion.chunk",
-    created: Math.floor(Date.now() / 1000),
-    model: "stub",
-    choices: [{ index: 0, delta, finish_reason }]
+function messageStart() {
+  return {
+    type: "message_start",
+    message: { id: "stub-1", type: "message", role: "assistant", usage: {} }
   };
-  if (usage !== undefined) payload.usage = usage;
-  return payload;
 }
 
-const ROLE_CHUNK = chunk({ delta: { role: "assistant" } });
-const USAGE_CHUNK = chunk({
-  delta: {},
-  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
-});
+/** Text response: one text block, end_turn, message_stop. */
+function textFrames(text) {
+  return [
+    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+    { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } },
+    { type: "content_block_stop", index: 0 },
+    { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } },
+    { type: "message_stop" }
+  ];
+}
+
+/** One tool_use block per call; the arguments arrive as input_json_delta. */
+function toolFrames(calls) {
+  const frames = [];
+  calls.forEach((call, index) => {
+    frames.push({
+      type: "content_block_start",
+      index,
+      content_block: {
+        type: "tool_use",
+        id: `call_stub${index === 0 ? "" : `_${index}`}`,
+        name: call.name,
+        input: {}
+      }
+    });
+    frames.push({
+      type: "content_block_delta",
+      index,
+      delta: { type: "input_json_delta", partial_json: call.arguments }
+    });
+    frames.push({ type: "content_block_stop", index });
+  });
+  frames.push({ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 1 } });
+  frames.push({ type: "message_stop" });
+  return frames;
+}
 
 /**
- * SSE chunks for one scripted response entry. `entry.toolCall` (single-call
- * form) and `entry.toolCalls` (list form) emit one `delta.tool_calls` chunk
- * per call with the SAME name/arguments JSON the real tool expects, then
- * finish_reason "tool_calls"; `entry.text` emits the content delta and
- * finish_reason "stop" as the plain-text stub always did.
+ * Frames for one scripted response entry. `entry.toolCall` (single-call form)
+ * and `entry.toolCalls` (list form) emit one `tool_use` block per call with the
+ * SAME name/arguments JSON the real tool expects, then stop_reason "tool_use";
+ * `entry.text` emits one text block and stop_reason "end_turn".
  */
-function chunksFor(entry) {
+function framesFor(entry) {
   const text = entry.text;
   const calls = entry.toolCalls ?? (entry.toolCall !== undefined ? [entry.toolCall] : undefined);
-  const chunks = [ROLE_CHUNK];
   if (calls !== undefined) {
-    chunks.push(
-      chunk({
-        delta: {
-          tool_calls: calls.map((call, index) => ({
-            index,
-            id: `call_stub${index === 0 ? "" : `_${index}`}`,
-            type: "function",
-            function: { name: call.name, arguments: call.arguments }
-          }))
-        },
-        finish_reason: "tool_calls"
-      })
-    );
-  } else if (typeof text === "string") {
-    chunks.push(chunk({ delta: { content: text } }), chunk({ delta: {}, finish_reason: "stop" }));
-  } else {
-    throw new Error(`startStubLlm: script entry must carry text or toolCall/toolCalls, got ${JSON.stringify(entry)}`);
+    if (calls.length === 0) throw new Error("startStubLlm: toolCalls must not be empty");
+    return [messageStart(), ...toolFrames(calls)];
   }
-  chunks.push(USAGE_CHUNK);
-  return chunks;
+  if (typeof text === "string") return [messageStart(), ...textFrames(text)];
+  throw new Error(`startStubLlm: script entry must carry text or toolCall/toolCalls, got ${JSON.stringify(entry)}`);
 }
 
 /**
- * OpenAI-compatible chat-completions stub for the REAL composition tests.
- * @deepseek-ai/dsh-llm-deepseek always streams: its adapter parses the
- * response body as an SSE event stream and aborts without a trailing
- * `data: [DONE]` sentinel, so a plain JSON response never reaches the
- * agent. Emit a minimal streaming completion instead:
- *   role delta -> (content delta | tool_calls delta) -> finish -> [DONE]
+ * DeepSeek Messages (Anthropic-style) SSE stub for the REAL composition tests.
+ * @deepseek-ai/dsh-llm-deepseek sends `POST <baseURL>/v1/messages` with
+ * `stream: true` and always parses the response body as that SSE stream, so a
+ * plain JSON response never reaches the agent. Emit a minimal streaming
+ * completion instead:
+ *   message_start -> content_block_start -> content_block_delta ->
+ *   content_block_stop -> message_delta(stop_reason) -> message_stop
  * Every request is recorded in `calls` ({ path, body }).
  *
  * Backward-compatible `script` extension: when `script` (an ordered list of
@@ -103,7 +115,7 @@ export function startStubLlm({ text = "ok", script } = {}) {
           connection: "keep-alive"
         });
         const entry = entries === null ? { text } : entries[cursor++ % entries.length];
-        res.end(chunksFor(entry).map(ssePayload).join("") + "data: [DONE]\n\n");
+        res.end(framesFor(entry).map(ssePayload).join(""));
       };
       if (delayMs > 0) setTimeout(respond, delayMs);
       else respond();
