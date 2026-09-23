@@ -1318,7 +1318,9 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
         // rejected) in the timeout diagnostics.
         const answer = server.outbound.filter((entry) => entry.method === "answerCallbackQuery").at(-1);
         const answerText = (answer?.body as { text?: unknown } | undefined)?.text;
-        if (typeof answerText === "string" && answerText !== "") throw new Error(`bot answered: ${answerText}`);
+        if (typeof answerText === "string" && answerText !== "") {
+          throw new Error(`bot answered: ${answerText} | server tail: ${childLog().slice(-2500)}`);
+        }
         return undefined;
       }, `the persisted default model to become ${chosen}`);
       expect(after).toEqual({ provider: "deepseek-official", model: chosen });
