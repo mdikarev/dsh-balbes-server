@@ -90,6 +90,17 @@
 - **`tool-ralph` теперь `disabled: true`** в базовом патче 0.1.7, поэтому в
   поверхности деплоя нет `ralph`; ожидание `DEPLOYMENT_TOOLS` обновлено.
 
+## Найдено после CI run #59 (code-runtime)
+
+- Базовый патч 0.1.7 сам монтирует PTC-runtime
+  (`ptc-runtime` -> `@deepseek-ai/dsh-ptc-runtime-node`), а пакет
+  `@deepseek-ai/dsh-code-runtime-worker-thread` из движка удалён. Наш host-патч
+  всё ещё вставлял `code-runtime` — entry не активировался, и
+  `configEditor.edit` (reconcile при записи конфига) падал, из-за чего
+  сохранение дефолтной модели через `/model` возвращало MODEL_SAVE_FAILED.
+  Вставка удалена; живые секции ARCHITECTURE/GLOSSARY, упоминавшие
+  `code-runtime`, обновлены.
+
 ## Проверка на сервере (владелец)
 
 1. Дождаться зелёного CI на `main` (job `validate` и job `real` —

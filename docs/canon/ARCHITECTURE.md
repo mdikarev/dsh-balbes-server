@@ -62,7 +62,7 @@ GitHub-репозиторий — источник проекта: плагин 
   (агентский цикл, тулы bash/fs/web/workflow/subagent/skill, скиллы, сессии,
   credentials, политики).
 - `packages/bundles/dsh-balbes-host/` — собственный Cordis-бандл: патч-слой
-  (`cordis.patch.yml`: persona, PTC-режим тулов, `code-runtime`, вставки
+  (`cordis.patch.yml`: persona, PTC-режим тулов, вставки
   плагинов) + плагины по экспортным подпутям: `startup` (app-слой CLI; без
   внешних зависимостей), `server` (HTTP на `node:http`, сервис `balbesHttp`:
   POST-роутинг `/api/*` с публичными/bearer-местами, лимит тела 1 МиБ, dispose

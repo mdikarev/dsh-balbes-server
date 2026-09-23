@@ -31,10 +31,11 @@
   config:
     customSkillDirs: !!js "[(process.env.DSH_HOME ?? ((process.env.HOME ?? \".\") + \"/.dsh\")) + \"/agent/skills\"]"
 
+# dsh 0.1.7-rc.1: the base bundle already mounts the PTC runtime
+# (`ptc-runtime` -> @deepseek-ai/dsh-ptc-runtime-node); the old
+# `code-runtime` insert pointed at @deepseek-ai/dsh-code-runtime-worker-thread,
+# which no longer exists and failed the entry (breaking config reconcile).
 - insert:
-    - id: code-runtime
-      name: '@deepseek-ai/dsh-code-runtime-worker-thread'
-
     - id: balbes-startup
       name: 'dsh-balbes-host/startup'
 
