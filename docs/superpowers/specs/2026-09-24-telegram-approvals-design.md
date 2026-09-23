@@ -78,7 +78,7 @@ interface ApprovalGateDeps {
 interface ApprovalGate {
   attach(agentCtx: unknown, ref: WorkspaceRef): void;
   handles(data: string): boolean;         // data.startsWith("ap:")
-  onCallback(update: ClassifiedUpdate & { kind: "callback" }): Promise<string | undefined>;
+  onCallback(update: ClassifiedUpdate & { kind: "callback" }): Promise<void>; // сам правит сообщение и отвечает на callback
   pendingFor(ref: WorkspaceRef): { toolName: string } | undefined; // при нескольких — самый свежий
   withdrawAll(): void;
 }
