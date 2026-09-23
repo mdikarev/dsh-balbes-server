@@ -476,7 +476,7 @@ describe.skipIf(!realEnabled)("REAL composition (models API)", () => {
       const dsBody = ds.json as { provider: string; models: Array<{ id: string; name?: string }> };
       expect(dsBody.provider).toBe("deepseek-official");
       expect(dsBody.models.map((m) => m.id)).toEqual([
-        "deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"
+        "deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"
       ]);
       expect(new Set(dsBody.models.map((m) => m.id)).size).toBe(dsBody.models.length);
 
@@ -500,7 +500,7 @@ describe.skipIf(!realEnabled)("REAL composition (models API)", () => {
       const listedBody = listed.json as ModelsListBody;
       const dsConn = listedBody.connections.find((c) => c.routeId === "deepseek-official");
       expect(dsConn?.models).toEqual([
-        "deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"
+        "deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"
       ]);
       // the same anti-desync guard as the first test, now on this boot
       const defaultConn = listedBody.connections.find((c) => c.routeId === listedBody.default.provider);

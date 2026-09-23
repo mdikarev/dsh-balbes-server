@@ -502,7 +502,7 @@ curl -sS -X POST http://127.0.0.1:8080/api/models/list \
 # ожидается: "default":{"provider":"deepseek-official","model":"deepseek-flash"}
 #             (дефолт свежего профиля движка 0.1.7-rc.1) и подключение
 #             deepseek-official с 4 моделями каталога движка:
-#             deepseek-flash, deepseek-v4-flash, deepseek-v4-pro,
+#             deepseek-flash, deepseek-v4-pro, deepseek-v4-flash,
 #             deepseek-v4-flash-vision-exp; дефолт входит в каталог своего
 #             соединения, поэтому models.default его принимает
 ```
@@ -512,8 +512,8 @@ curl -sS -X POST http://127.0.0.1:8080/api/models/list \
 curl -sS -X POST http://127.0.0.1:8080/api/models/catalog \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"provider":"deepseek-official"}'
-# ожидается: models содержит те же 4 id — deepseek-flash, deepseek-v4-flash,
-#             deepseek-v4-pro, deepseek-v4-flash-vision-exp (4)
+# ожидается: models содержит те же 4 id — deepseek-flash, deepseek-v4-pro,
+#             deepseek-v4-flash, deepseek-v4-flash-vision-exp (4)
 curl -sS -X POST http://127.0.0.1:8080/api/models/catalog \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"provider":"openai"}'

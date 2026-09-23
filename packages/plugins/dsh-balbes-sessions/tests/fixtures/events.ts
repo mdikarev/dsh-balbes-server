@@ -35,12 +35,15 @@ export function userMessage(
   );
 }
 
-export function pluginContext(seq: number, text: string, form?: string): SessionEvent {
+export function contextMessage(seq: number, text: string, form?: string): SessionEvent {
+  // dsh 0.1.7-rc.1: producer context declares its own source kind and optional
+  // context form; there is no shared `plugin` kind any more. Any kind other
+  // than `user` on a user-role message reads as injected context.
   return event("user/message", seq, "append", {
     id: `m${seq}`,
     role: "user",
     content: [{ type: "text", text }],
-    source: form === undefined ? { kind: "plugin", plugin: "test" } : { kind: "plugin", plugin: "test", form }
+    source: form === undefined ? { kind: "agent-instructions" } : { kind: "agent-instructions", form }
   });
 }
 
@@ -70,7 +73,7 @@ export function systemMessage(seq: number, text: string): SessionEvent {
   return event("system/message", seq, "append", {
     turn: 0,
     step: 0,
-    message: { id: `m${seq}`, role: "system", content: [{ type: "text", text }], source: { kind: "plugin", plugin: "test" } }
+    message: { id: `m${seq}`, role: "system", content: [{ type: "text", text }], source: { kind: "system-prompt" } }
   });
 }
 
@@ -80,9 +83,11 @@ export function toolResult(seq: number, text: string, isError = false): SessionE
     step: 0,
     message: {
       id: `m${seq}`,
-      role: "user",
-      content: [{ type: "tool-result", toolCallId: "call-1", content: [{ type: "text", text }], isError }],
-      source: { kind: "tool", callId: "call-1" }
+      role: "tool",
+      content: [{ type: "text", text }],
+      source: { kind: "tool", callId: "call-1" },
+      toolCallId: "call-1",
+      isError
     }
   });
 }
@@ -98,9 +103,11 @@ export function toolResultWithError(seq: number, name: string, code: string): Se
     step: 0,
     message: {
       id: `m${seq}`,
-      role: "user",
-      content: [{ type: "tool-result", toolCallId: "call-1", content: [], isError: true }],
-      source: { kind: "tool", callId: "call-1" }
+      role: "tool",
+      content: [],
+      source: { kind: "tool", callId: "call-1" },
+      toolCallId: "call-1",
+      isError: true
     },
     error: { name, code }
   });

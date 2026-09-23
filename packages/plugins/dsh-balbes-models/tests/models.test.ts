@@ -54,12 +54,12 @@ describe("models domain", () => {
   it("pins the 4-model official DeepSeek fallback catalog (native union pi-ai, native order)", () => {
     expect(DEEPSEEK_OFFICIAL_MODELS.map((m) => m.id)).toEqual([
       "deepseek-flash",
-      "deepseek-v4-flash",
       "deepseek-v4-pro",
+      "deepseek-v4-flash",
       "deepseek-v4-flash-vision-exp"
     ]);
     expect(DEEPSEEK_OFFICIAL_MODELS.find((m) => m.id === "deepseek-flash")?.name).toBe("DeepSeek-V41-Flash");
-    expect(DEEPSEEK_OFFICIAL_MODELS.find((m) => m.id === "deepseek-v4-flash-vision-exp")?.name).toBe("DeepSeek-V4-Flash-Vision-Exp");
+    expect(DEEPSEEK_OFFICIAL_MODELS.find((m) => m.id === "deepseek-v4-flash-vision-exp")?.name).toBe("DeepSeek V4 Flash Vision Exp");
   });
 
   it("pins both source catalogs the official fallback unions", () => {
@@ -70,17 +70,15 @@ describe("models domain", () => {
       { id: "deepseek-v4-flash-vision-exp", name: "DeepSeek V4 Flash Vision Exp" },
       { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro" }
     ]);
-    // native @deepseek-ai/dsh-llm-deepseek DEFAULT_MODELS (4 ids), the catalog
-    // of the reserved route itself
+    // native @deepseek-ai/dsh-llm-deepseek DEFAULT_MODELS (2 ids since dsh
+    // 0.1.7-rc.1), the catalog of the reserved route itself
     expect(DEEPSEEK_NATIVE_MODELS.map((m) => m.id)).toEqual([
       "deepseek-flash",
-      "deepseek-v4-flash",
-      "deepseek-v4-pro",
-      "deepseek-v4-flash-vision-exp"
+      "deepseek-v4-pro"
     ]);
   });
 
-  it("the pinned official catalog contains the dsh 0.1.5 fresh-profile engine default deepseek-flash", () => {
+  it("the pinned official catalog contains the dsh 0.1.7-rc.1 fresh-profile engine default deepseek-flash", () => {
     // Regression guard for the models.list / models.default desync: the engine
     // default must always be resolvable inside its own connection's catalog.
     expect(DEEPSEEK_OFFICIAL_MODELS.map((m) => m.id)).toContain("deepseek-flash");
@@ -174,15 +172,14 @@ describe("engine catalog reader", () => {
   };
 
   // Fake mirror of @deepseek-ai/dsh-llm-deepseek: its public
-  // resolveAdapterOptions seam returns the native 4-model DEFAULT_MODELS.
+  // resolveAdapterOptions seam returns the 0.1.7-rc.1 native 2-model
+  // DEFAULT_MODELS.
   const fakeNative = {
     resolveAdapterOptions(): { models: Array<{ id: string; name?: string }> } {
       return {
         models: [
           { id: "deepseek-flash", name: "DeepSeek-V41-Flash" },
-          { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash" },
-          { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" },
-          { id: "deepseek-v4-flash-vision-exp", name: "DeepSeek-V4-Flash-Vision-Exp" }
+          { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" }
         ]
       };
     }
@@ -203,9 +200,9 @@ describe("engine catalog reader", () => {
     expect(seen).toEqual([NATIVE_MODULE, ENGINE_MODULE]);
     expect(models).toEqual([
       { id: "deepseek-flash", name: "DeepSeek-V41-Flash" },
-      { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash" },
       { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" },
-      { id: "deepseek-v4-flash-vision-exp", name: "DeepSeek-V4-Flash-Vision-Exp" }
+      { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" },
+      { id: "deepseek-v4-flash-vision-exp", name: "DeepSeek V4 Flash Vision Exp" }
     ]);
   });
 
@@ -234,8 +231,8 @@ describe("engine catalog reader", () => {
     });
     expect((await reader.list("deepseek")).map((m) => m.id)).toEqual([
       "deepseek-flash",
-      "deepseek-v4-flash",
       "deepseek-v4-pro",
+      "deepseek-v4-flash",
       "deepseek-v4-flash-vision-exp"
     ]);
   });

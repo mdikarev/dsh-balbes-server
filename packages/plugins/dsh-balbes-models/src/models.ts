@@ -33,15 +33,13 @@ export const PI_AI_DEEPSEEK_MODELS: ModelOption[] = [
 ];
 
 /** Pinned mirror of the native @deepseek-ai/dsh-llm-deepseek DEFAULT_MODELS
- *  catalog (4 models), synced on engine upgrade. This is the catalog of the
- *  route the plugin reserves — "deepseek-official" is that adapter's PROVIDER
- *  — and it carries `deepseek-flash`, the engine 0.1.5 fresh-profile default.
- *  Order is the native catalog order. */
+ *  catalog (2 models since dsh 0.1.7-rc.1), synced on engine upgrade. This is
+ *  the catalog of the route the plugin reserves — "deepseek-official" is that
+ *  adapter's PROVIDER — and it carries `deepseek-flash`, the engine
+ *  0.1.7-rc.1 fresh-profile default. Order is the native catalog order. */
 export const DEEPSEEK_NATIVE_MODELS: ModelOption[] = [
   { id: "deepseek-flash", name: "DeepSeek-V41-Flash" },
-  { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash" },
-  { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" },
-  { id: "deepseek-v4-flash-vision-exp", name: "DeepSeek-V4-Flash-Vision-Exp" }
+  { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" }
 ];
 
 /** Order-stable union of model catalogs: catalogs are visited left to right and
@@ -87,7 +85,7 @@ export interface ModelCatalogReader {
 const ENGINE_CATALOG_MODULE = "@earendil-works/pi-ai/providers/all";
 
 /** The native adapter that owns the reserved deepseek-official route and
- *  declares that route's 4-model catalog. */
+ *  declares that route's native catalog. */
 const NATIVE_CATALOG_MODULE = "@deepseek-ai/dsh-llm-deepseek";
 
 interface CatalogModuleLike {
@@ -164,7 +162,7 @@ async function readNativeDeepSeekCatalog(loadModule: EngineCatalogLoader): Promi
  *  the order-stable union of the native dsh-llm-deepseek catalog and the pi-ai
  *  builtin catalog (native entries first), deduplicated by id. Each side falls
  *  back to its own pinned mirror independently, so `deepseek-flash` — the dsh
- *  0.1.5 engine default — survives any single runtime read failure. For every
+ *  0.1.7-rc.1 engine default — survives any single runtime read failure. For every
  *  other key the answer is the pi-ai catalog, or [] when that read fails (no
  *  pinned fallback exists for non-deepseek providers). */
 export function createEngineCatalogReader(load?: EngineCatalogLoader): ModelCatalogReader {
@@ -261,7 +259,7 @@ export function validateCustomPayload(p: {
 /**
  * Preset provider catalog (id + label). Display/validation copy of
  * MODEL_PROVIDER_PRESETS in packages/contracts — keep both lists in sync; the
- * engine pi-ai catalog provider ids (dsh 0.1.5-rc.2) are the ground truth and
+ * engine pi-ai catalog provider ids (dsh 0.1.7-rc.1) are the ground truth and
  * route ids of preset connections equal these provider ids.
  */
 export const PROVIDER_PRESETS: ReadonlyArray<{ providerId: string; label: string }> = [

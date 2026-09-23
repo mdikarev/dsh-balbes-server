@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildTranscript } from "../src/transcript.js";
-import { assistantText, assistantToolCall, emptyAssistant, pluginContext, systemMessage, toolResult, toolResultWithError, userMessage } from "./fixtures/events.js";
+import { assistantText, assistantToolCall, contextMessage, emptyAssistant, systemMessage, toolResult, toolResultWithError, userMessage } from "./fixtures/events.js";
 
 const session = { id: "session-1", createdAt: 1_700_000_000_000 } as never;
 
@@ -8,7 +8,7 @@ describe("buildTranscript", () => {
   it("maps durable messages, tool calls, results and current context", () => {
     const events = [
       systemMessage(0, "системный промпт"),
-      pluginContext(1, "правила проекта", "instructions"),
+      contextMessage(1, "правила проекта", "instructions"),
       userMessage(2, "привет"),
       assistantToolCall(3, "read", "{\"path\":\"/a\"}", "сейчас прочитаю"),
       toolResult(4, "содержимое файла"),
@@ -21,8 +21,8 @@ describe("buildTranscript", () => {
       [2, "message", "user", true],
       [3, "message", "assistant", true],
       [3, "tool-call", "assistant", true],
-      [4, "tool-result", "user", true],
-      [5, "tool-result", "user", true]
+      [4, "tool-result", "tool", true],
+      [5, "tool-result", "tool", true]
     ]);
     expect(entries[0]?.detail).toBe("системный промпт");
     expect(entries[1]?.form).toBe("instructions");
@@ -34,7 +34,7 @@ describe("buildTranscript", () => {
 
   it("drops a replaced context snapshot but keeps the durable conversation", () => {
     const events = [
-      pluginContext(0, "старые правила", "instructions"),
+      contextMessage(0, "старые правила", "instructions"),
       userMessage(1, "привет"),
       userMessage(2, "сводка", { op: "replace", startSeq: 0, endSeq: 0 }, [0])
     ];

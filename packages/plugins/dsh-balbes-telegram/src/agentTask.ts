@@ -166,9 +166,11 @@ interface SessionEventLike {
     message?: {
       content?: Array<{ type: string; text?: string; toolCallId?: string; isError?: boolean }>;
       /**
-       * The message source. A tool result carries its `callId` here
-       * (`{ kind: "tool", callId }`) — the event itself has none.
+       * dsh 0.1.7-rc.1: a tool result is a `role: "tool"` message that carries
+       * its own `isError`; the `callId` lives on the source (`{ kind: "tool",
+       * callId }`) — the event itself has none.
        */
+      isError?: boolean;
       source?: { kind?: string; callId?: string };
     };
     reason?: unknown;
@@ -362,11 +364,11 @@ function progressTarget(tool: string, rawArguments: string): string | undefined 
 /**
  * The call identity of a `tool/result`. The engine puts it on the model-facing
  * result message, not on the event: `message.source.callId` is the required tool
- * source of that message and the `tool-result` block repeats it as
- * `toolCallId` (@deepseek-ai/dsh-llm `createToolResultMessage`, appended by
+ * source of that message (dsh 0.1.7-rc.1 `ToolMessageSource`, appended by
  * dsh-agent-loop's `appendToolResult`). A result whose identity cannot be read
  * is left unpaired — a step keeps reporting "running" rather than being
- * credited to the wrong call.
+ * credited to the wrong call. The 0.1.5 `tool-result` content-block fallback is
+ * kept only for reading older logs.
  */
 function resultCallId(message: SessionEventLike["data"]["message"]): string | undefined {
   const source = message?.source;
@@ -376,14 +378,18 @@ function resultCallId(message: SessionEventLike["data"]["message"]): string | un
 }
 
 /**
- * A `tool/result` reports a failed call when the tool itself said so (the
- * model-facing result block is an error) or when the harness attached a failure
- * identity. Both matter: a sandbox/approval denial is an `isError` result with
- * NO identity, so reading only the identity would render a denied call as a
- * success.
+ * A `tool/result` reports a failed call when the tool itself said so or when
+ * the harness attached a failure identity. Both matter: a sandbox/approval
+ * denial is an `isError` result with NO identity, so reading only the identity
+ * would render a denied call as a success. dsh 0.1.7-rc.1 carries `isError` on
+ * the result message itself; the block-level read is kept only for older logs.
  */
 function resultFailed(event: SessionEventLike): boolean {
-  return event.data.message?.content?.[0]?.isError === true || event.data.error !== undefined;
+  return (
+    event.data.message?.isError === true ||
+    event.data.message?.content?.[0]?.isError === true ||
+    event.data.error !== undefined
+  );
 }
 
 /**

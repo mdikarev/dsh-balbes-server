@@ -139,7 +139,7 @@ describe("balbes-models plugin", () => {
     apply(ctx as never, {});
     const { json } = await call("/api/models/list", {});
     const models = (json as { connections: Array<{ routeId: string; models: string[] }> }).connections.find((c) => c.routeId === "deepseek-official")!.models;
-    expect(models).toEqual(["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"]);
+    expect(models).toEqual(["deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"]);
   });
 
   it("save custom writes the pi-ai route and the key ref", async () => {

@@ -310,7 +310,7 @@ export interface SessionsListResponse {
 }
 
 // Session transcript surface — one workspace session's dialogue
-export type TranscriptRole = "user" | "assistant" | "system";
+export type TranscriptRole = "user" | "assistant" | "system" | "developer" | "tool";
 export type TranscriptKind = "message" | "tool-call" | "tool-result" | "context";
 
 export interface TranscriptEntry {
@@ -324,7 +324,7 @@ export interface TranscriptEntry {
   detail?: string;
   /** kind === "tool-call". */
   toolName?: string;
-  /** kind === "context": plugin ContextForm, когда объявлен. */
+  /** kind === "context": producer ContextForm (dsh 0.1.7-rc.1), когда объявлен. */
   form?: string;
   /** kind === "tool-result". */
   isError?: boolean;

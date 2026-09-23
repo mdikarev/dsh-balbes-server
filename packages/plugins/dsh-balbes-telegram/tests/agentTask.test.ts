@@ -817,14 +817,14 @@ function toolCall(callId: string, name: string, args: unknown, step = 1): EventL
 }
 
 /**
- * One `tool/result` in the engine's own shape. The engine does NOT put `callId`
- * on this event (`'tool/result': { turn, step, message, error?, meta? }` in
- * @deepseek-ai/dsh-session): the call identity rides the model-facing result
- * message — `message.source.callId` and the `tool-result` block's `toolCallId`
- * (dsh-llm `createToolResultMessage`). The event-level `error` is the harness
- * failure IDENTITY (`{name, code}`), which dsh-agent-loop attaches only when the
- * failure carries one, so it is not the only sign of a failed call: a path-guard
- * denial is an `isError` result with no identity.
+ * One `tool/result` in the engine's own shape (dsh 0.1.7-rc.1). The engine does
+ * NOT put `callId` on this event (`'tool/result': { turn, step, message, error?,
+ * meta? }` in @deepseek-ai/dsh-session): the call identity rides the model-facing
+ * result message as `message.source.callId`, and `isError` now sits on that
+ * `role: "tool"` message itself. The event-level `error` is the harness failure
+ * IDENTITY (`{name, code}`), which dsh-agent-loop attaches only when the failure
+ * carries one, so it is not the only sign of a failed call: a path-guard denial
+ * is an `isError` result with no identity.
  */
 function toolResult(
   callId: string,
@@ -836,15 +836,10 @@ function toolResult(
       turn: 1,
       step: 1,
       message: {
-        role: "user",
-        content: [
-          {
-            type: "tool-result",
-            toolCallId: callId,
-            content: [{ type: "text", text: opts.text ?? "result" }],
-            isError: opts.isError ?? false
-          }
-        ],
+        role: "tool",
+        isError: opts.isError ?? false,
+        toolCallId: callId,
+        content: [{ type: "text", text: opts.text ?? "result" }],
         source: { kind: "tool", callId }
       },
       ...(opts.identity !== undefined ? { error: opts.identity } : {})

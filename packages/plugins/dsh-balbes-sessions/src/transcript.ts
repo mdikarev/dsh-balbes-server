@@ -4,11 +4,11 @@ import {
   isAppendSurfaceEvent,
   isSurfaceEvent
 } from "@deepseek-ai/dsh-session";
-import type { ContentBlock, Message, ToolCallBlock, ToolResultBlock } from "@deepseek-ai/dsh-llm";
+import type { ContentBlock, Message, ToolCallBlock } from "@deepseek-ai/dsh-llm";
 import type { SessionEvent, SessionHeader } from "@deepseek-ai/dsh-session";
 import { extractSessionEventText } from "@deepseek-ai/dsh-session-query";
 
-export type TranscriptRole = "user" | "assistant" | "system";
+export type TranscriptRole = "user" | "assistant" | "system" | "developer" | "tool";
 export type TranscriptKind = "message" | "tool-call" | "tool-result" | "context";
 
 export interface TranscriptEntry {
@@ -36,21 +36,36 @@ function joinTextBlocks(content: readonly ContentBlock[]): string {
     .join("\n");
 }
 
+/**
+ * Whether a message is injected context rather than a conversation turn
+ * (dsh 0.1.7-rc.1 seam fact). Producer context arrives as a user-role message
+ * whose source kind is producer-declared (e.g. `agent-instructions`) — the
+ * engine has no shared `plugin` kind — while a real prompt carries `kind:
+ * "user"`. The system prompt and developer session changes are context by
+ * role; assistant and tool messages never are.
+ */
+function isContextMessage(message: Message): boolean {
+  if (message.role === "system" || message.role === "developer") return true;
+  if (message.role === "user") return message.source.kind !== "user";
+  return false;
+}
+
 function contextForm(message: Message): string | undefined {
-  if (message.source.kind !== "plugin") return undefined;
   const form = (message.source as { form?: unknown }).form;
   return typeof form === "string" ? form : undefined;
 }
 
 function entriesForEvent(event: SessionEvent, message: Message, inContext: boolean): TranscriptEntry[] {
   const head = { seq: event.seq, time: new Date(event.time).toISOString(), role: message.role, inContext };
-  if (message.source.kind === "tool") {
-    const blocks = message.content.filter((block): block is ToolResultBlock => block.type === "tool-result");
-    const detail = joinTextBlocks(blocks.flatMap((block) => block.content)) || extractSessionEventText(event);
+  if (message.role === "tool") {
+    // dsh 0.1.7-rc.1: a tool result is its own `role: "tool"` message; its
+    // blocks are the model-facing content and `isError` sits on the message.
+    // The 0.1.5 `tool-result` content block no longer exists.
+    const detail = joinTextBlocks(message.content) || extractSessionEventText(event);
     const entry: TranscriptEntry = { ...head, kind: "tool-result", text: "", detail };
-    return blocks.some((block) => block.isError === true) ? [{ ...entry, isError: true }] : [entry];
+    return message.isError === true ? [{ ...entry, isError: true }] : [entry];
   }
-  if (message.source.kind === "plugin") {
+  if (isContextMessage(message)) {
     const entry: TranscriptEntry = { ...head, kind: "context", text: "", detail: joinTextBlocks(message.content) };
     const form = contextForm(message);
     return form === undefined ? [entry] : [{ ...entry, form }];
@@ -73,7 +88,7 @@ export function buildTranscript(log: TranscriptLog): TranscriptEntry[] {
     const message = deriveEventMessage(event);
     if (message === null) continue;
     const inContext = currentNodes.has(event.seq);
-    const isContext = message.source.kind === "plugin";
+    const isContext = isContextMessage(message);
     if (isContext && !inContext) continue;
     if (!isContext && !isAppendSurfaceEvent(event) && !inContext) continue;
     entries.push(...entriesForEvent(event, message, inContext));

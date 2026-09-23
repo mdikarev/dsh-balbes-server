@@ -31,6 +31,23 @@
 - Набор инструментов: `dsh-tool-str-replace-editor` в базовой композиции
   отсутствует и в 0.1.7; ожидания `agentTask.real.test.ts` уже это учитывают.
 
+## Найдено и исправлено после CI run #51
+
+- **Сессии (модель сообщений).** В 0.1.7 tool-результат — отдельное
+  `role: "tool"` сообщение (`ToolResultMessage`, `isError` на сообщении), блока
+  `tool-result` в `ContentBlock` больше нет; общего источника `plugin` тоже
+  нет — контекст приходит user-ролью с producer-kind (`form`). Роль
+  `developer` добавлена в контракт. Переписаны `transcript.ts`, фикстуры и
+  `TranscriptRole` в contracts.
+- **Модели.** Нативный каталог `dsh-llm-deepseek` сократился 4→2
+  (`deepseek-flash`, `deepseek-v4-pro`); объединение с pi-ai (3 ids) по-прежнему
+  даёт 4 модели, но порядок теперь `deepseek-flash, deepseek-v4-pro,
+  deepseek-v4-flash, deepseek-v4-flash-vision-exp`. Синхронизированы
+  `DEEPSEEK_NATIVE_MODELS`, тесты и canon/runbook.
+- **Telegram progress.** `resultFailed` читал `isError` из content-блока;
+  в 0.1.7 он на сообщении — исправлено (старый чтение оставлено для логов
+  0.1.5).
+
 ## Изменения
 
 - `scripts/engine-version.txt` — единственный пин, `0.1.7-rc.1`. CI
