@@ -658,7 +658,7 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
    */
   async function readDefaultModel(token: string): Promise<{ provider?: string; model?: string }> {
     const res = await post(`${baseUrl()}/api/models/list`, {}, token);
-    if (res.status !== 200) return {};
+    if (res.status !== 200) throw new Error(`models/list ${res.status}: ${res.text}`);
     return (res.json as { default?: { provider?: string; model?: string } } | undefined)?.default ?? {};
   }
 
@@ -1313,7 +1313,13 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
       pressButton(models.messageId, target!.callback_data);
       const after = await waitFor(async () => {
         const current = await readDefaultModel(token);
-        return current.model === chosen ? current : undefined;
+        if (current.model === chosen) return current;
+        // Surface the bot's answer (MODEL_SAVE_FAILED when the write was
+        // rejected) in the timeout diagnostics.
+        const answer = server.outbound.filter((entry) => entry.method === "answerCallbackQuery").at(-1);
+        const answerText = (answer?.body as { text?: unknown } | undefined)?.text;
+        if (typeof answerText === "string" && answerText !== "") throw new Error(`bot answered: ${answerText}`);
+        return undefined;
       }, `the persisted default model to become ${chosen}`);
       expect(after).toEqual({ provider: "deepseek-official", model: chosen });
       // The section replace touched ONLY its own section: the stub's endpoint the
