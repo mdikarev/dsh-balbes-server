@@ -1,4 +1,5 @@
 import z from "@deepseek-ai/schemastery";
+import { AsyncResource } from "node:async_hooks";
 import { join } from "node:path";
 import {
   TELEGRAM_BOT_TOKEN_REF,
@@ -140,6 +141,17 @@ interface TelegramConfigLike {
 
 const SETTINGS_ENTRY_ID = "balbes-telegram";
 
+/**
+ * Captured at module evaluation (boot), where no HMR transaction is active.
+ * dsh 0.1.7 wraps config writes in `hmr.runExclusive`, which uses an
+ * AsyncLocalStorage to reject nested transactions. A settings watcher runs
+ * inside that transaction, so anything it starts (the poller loop) would
+ * inherit the store and every later `configEditor.edit` from the poller would
+ * fail with "HMR transactions cannot be nested". Running the watcher callback
+ * in this module-scope resource keeps the poller outside the transaction.
+ */
+const settingsWatchScope = new AsyncResource("balbes-telegram-settings-watch");
+
 /** Read a live Volatile reference, tolerating a plain/absent value (unit fakes). */
 function configRefValue<T>(ref: { get(): T } | undefined, fallback: T): T {
   return ref !== undefined && typeof ref.get === "function" ? ref.get() : fallback;
@@ -170,7 +182,9 @@ function createSettingsScope(ctx: PluginCtx, settings: SettingsLike, config: Tel
         const next = read();
         const before = previous;
         previous = next;
-        void callback(next, before);
+        settingsWatchScope.runInAsyncScope(() => {
+          void callback(next, before);
+        });
       };
       ctx.on?.("app-boot/config-reload", listener);
       return () => {

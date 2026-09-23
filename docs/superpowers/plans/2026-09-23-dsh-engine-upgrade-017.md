@@ -101,6 +101,17 @@
   Вставка удалена; живые секции ARCHITECTURE/GLOSSARY, упоминавшие
   `code-runtime`, обновлены.
 
+## Найдено после CI run #64 (HMR nesting)
+
+- `configEditor.edit` обёрнут в `hmr.runExclusive`, который через
+  AsyncLocalStorage запрещает вложенные транзакции. Наш settings-watcher
+  (`app-boot/config-reload`) запускал reconcile (и Telegram-поллер) внутри
+  транзакции сохранения настроек; поллер наследовал ALS-контекст, и последующий
+  `configEditor.edit` из его callback'а (сохранение дефолтной модели через
+  `/model`) падал с «HMR transactions cannot be nested». Callback watcher'а
+  теперь выполняется в `AsyncResource`, захваченном при загрузке модуля (вне
+  транзакции).
+
 ## Проверка на сервере (владелец)
 
 1. Дождаться зелёного CI на `main` (job `validate` и job `real` —
