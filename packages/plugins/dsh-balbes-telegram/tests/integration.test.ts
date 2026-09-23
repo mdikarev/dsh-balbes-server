@@ -1319,7 +1319,10 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
         const answer = server.outbound.filter((entry) => entry.method === "answerCallbackQuery").at(-1);
         const answerText = (answer?.body as { text?: unknown } | undefined)?.text;
         if (typeof answerText === "string" && answerText !== "") {
-          throw new Error(`bot answered: ${answerText} | server tail: ${childLog().slice(-2500)}`);
+          await sleep(200);
+          const log = childLog();
+          const warnLine = /saving the default model failed[^\n]*/.exec(log)?.[0];
+          throw new Error(`bot answered: ${answerText} | ${warnLine ?? log.slice(-1200)}`);
         }
         return undefined;
       }, `the persisted default model to become ${chosen}`);
