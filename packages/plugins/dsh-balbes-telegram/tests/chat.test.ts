@@ -394,6 +394,11 @@ function makeHarness(
     models?: ModelsFake;
     sessions?: SessionsFake;
     progressIntervalMs?: number;
+    /**
+     * The approval gate's pending read. Absent means no approval surface is
+     * composed: the card then never shows a waiting line.
+     */
+    approvals?: { pendingFor(ref: WorkspaceRef): { toolName: string } | undefined };
     failEdits?: number;
     failEditPlan?: boolean[];
     failSends?: number;
@@ -425,6 +430,7 @@ function makeHarness(
     listPageSize: opts.listPageSize ?? 8,
     filePageChars: opts.filePageChars ?? 3000,
     ...(opts.progressIntervalMs === undefined ? {} : { progressIntervalMs: opts.progressIntervalMs }),
+    ...(opts.approvals === undefined ? {} : { approvals: opts.approvals }),
     ...(opts.models === undefined ? {} : { models: opts.models }),
     ...(opts.sessions === undefined ? {} : { sessions: opts.sessions.service }),
     onActiveChange: (ref) => {
@@ -1517,6 +1523,33 @@ describe("chat machine: progress card", () => {
     // Nothing was sent for this task, so there is no card message to edit.
     expect(h.bot.edits).toHaveLength(0);
     expect(h.warns.some((line) => line.includes("sendMessage failed"))).toBe(true);
+  });
+
+  it("shows the waiting-for-approval line on the live card and on the menu card", async () => {
+    vi.useFakeTimers();
+    try {
+      const approvals = { pendingFor: vi.fn(() => ({ toolName: "bash" })) };
+      const h = makeHarness({ progressIntervalMs: 3500, approvals });
+      withActive(h);
+      const gate = h.runner.hold();
+      await h.machine.onMessage(message("починить парсер"));
+      const cardId = h.bot.sent[0]!.messageId;
+      h.runner.progress.mockReturnValue({
+        phase: "running", taskText: "починить парсер", startedAt: Date.now(), steps: [], queued: 0
+      });
+      await vi.advanceTimersByTimeAsync(3500);
+      expect(h.bot.lastEdit().messageId).toBe(cardId);
+      expect(h.bot.lastEdit().text).toContain("⏳ ждёт подтверждения: bash");
+
+      await h.machine.onMessage(message("/menu"));
+      expect(h.bot.sent.at(-1)!.text).toContain("ждёт подтверждения: bash");
+
+      h.runner.progress.mockReturnValue({ phase: "idle", steps: [], queued: 0 });
+      gate.release({ ok: true, text: "готово", sessionId: "s-1" });
+      await drain();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

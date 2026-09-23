@@ -185,6 +185,8 @@ export interface ChatDeps {
   models?: ModelsSlice;
   /** The channel's session catalog; absent when the sessions registry is not composed. */
   sessions?: SessionsSlice;
+  /** The gate's pending read; absent when no approval surface is composed. */
+  approvals?: { pendingFor(ref: WorkspaceRef): { toolName: string } | undefined };
   /** The chat host persists the active workspace on every change. */
   onActiveChange(ref: WorkspaceRef | undefined): void;
   logger?: { warn(m: string): void };
@@ -414,7 +416,7 @@ function nameOf(ref: WorkspaceRef): string | undefined {
   return ref.scope === "project" ? ref.name : undefined;
 }
 
-function refLabel(ref: WorkspaceRef): string {
+export function refLabel(ref: WorkspaceRef): string {
   return ref.scope === "home" ? HOME_LABEL : `Проект: ${ref.name}`;
 }
 
@@ -740,7 +742,8 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
     const ref = active;
     const progress = ref === undefined ? undefined : deps.runner.progress(ref);
     const model = deps.models?.current();
-    const taskLine =
+    const waiting = ref === undefined ? undefined : deps.approvals?.pendingFor(ref);
+    const baseTaskLine =
       progress === undefined || progress.phase === "idle"
         ? TASK_IDLE_LINE
         : [
@@ -750,6 +753,8 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
           ]
             .filter((part): part is string => part !== undefined)
             .join(" · ");
+    const taskLine =
+      waiting === undefined ? baseTaskLine : baseTaskLine + " · ждёт подтверждения: " + waiting.toolName;
     const card = menuCard({
       workspaceLabel: ref === undefined ? undefined : refLabel(ref),
       modelLabel: model === undefined ? undefined : `${model.model} · ${model.provider}`,
@@ -1295,6 +1300,7 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
         // was until the runner reports this task's own text.
         if (progress.phase === "idle" || progress.taskText !== taskText) return;
         seenSteps = progress.steps.length;
+        const waiting = deps.approvals?.pendingFor(ref);
         const view = progressCard({
           workspaceLabel: refLabel(ref),
           taskText,
@@ -1302,6 +1308,7 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
           ...(progress.step === undefined ? {} : { step: progress.step }),
           steps: progress.steps,
           ...(progress.todos === undefined ? {} : { todos: progress.todos }),
+          ...(waiting === undefined ? {} : { waitingFor: waiting.toolName }),
           queued: progress.queued
         });
         if (view.text === lastText) return;
