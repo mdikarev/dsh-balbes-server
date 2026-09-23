@@ -230,6 +230,8 @@ async function bootSeams(home: string, stubPort: number): Promise<{ fiber: Fiber
     [
       ...basePatches,
       { insert: [{ id: "balbes-runprobe", name: probeHelper }] },
+      // dsh 0.1.7 imports the legacy settings.yaml asynchronously (see host seams.test.ts).
+      { id: "llm-deepseek", config: { baseURL: `http://127.0.0.1:${stubPort}` } },
       { id: "session-telemetry-otel", disabled: true },
       { id: "session-title-llm", disabled: true }
     ],

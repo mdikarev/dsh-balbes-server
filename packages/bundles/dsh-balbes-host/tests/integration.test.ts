@@ -262,6 +262,8 @@ describe.skipIf(!realEnabled)("REAL composition (dsh CLI + LLM stub)", () => {
         [
           ...basePatches,
           { insert: [{ id: "balbes-runprobe", name: join(here, "helpers", "runprobe.mjs") }] },
+          // dsh 0.1.7 imports the legacy settings.yaml asynchronously (see seams.test.ts).
+          { id: "llm-deepseek", config: { baseURL: `http://127.0.0.1:${stub.port}` } },
           { id: "session-telemetry-otel", disabled: true }
         ],
         async (hostCtx) => {
