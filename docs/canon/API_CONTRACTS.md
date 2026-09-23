@@ -216,7 +216,7 @@
   `llm-pi-ai`); встроенный `deepseek-official` в списке всегда, его модели —
   объединение builtin-каталога pi-ai и нативного каталога движка
   `dsh-llm-deepseek` без дублей: 4 модели (`deepseek-flash` — дефолт свежего
-  профиля движка 0.1.5, `deepseek-v4-flash`, `deepseek-v4-pro`,
+  профиля движка 0.1.7-rc.1, `deepseek-v4-flash`, `deepseek-v4-pro`,
   `deepseek-v4-flash-vision-exp`); pinned-список DeepSeek — только fallback
   при недоступности рантайм-каталога, синхронизируется по движку.
   Пресеты (`kind: "preset"`) — подключения по каталоговым провайдерам

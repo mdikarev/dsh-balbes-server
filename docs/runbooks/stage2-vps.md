@@ -492,7 +492,7 @@ curl -sS -X POST http://127.0.0.1:8080/api/workspaces/delete \
 
 Модели: список подключений и дефолтная модель — `POST /api/models/list`
 (bearer). Полный smoke — REAL-тест пакета `dsh-balbes-models`; на свежем доме
-движок 0.1.5 дефолтит на `deepseek-flash`, и с настроенным ключом DeepSeek
+движок 0.1.7-rc.1 дефолтит на `deepseek-flash`, и с настроенным ключом DeepSeek
 ожидается подключение `deepseek-official`:
 
 ```bash
@@ -500,7 +500,7 @@ curl -sS -X POST http://127.0.0.1:8080/api/workspaces/delete \
 curl -sS -X POST http://127.0.0.1:8080/api/models/list \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{}'
 # ожидается: "default":{"provider":"deepseek-official","model":"deepseek-flash"}
-#             (дефолт свежего профиля движка 0.1.5) и подключение
+#             (дефолт свежего профиля движка 0.1.7-rc.1) и подключение
 #             deepseek-official с 4 моделями каталога движка:
 #             deepseek-flash, deepseek-v4-flash, deepseek-v4-pro,
 #             deepseek-v4-flash-vision-exp; дефолт входит в каталог своего
