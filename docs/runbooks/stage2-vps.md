@@ -99,11 +99,10 @@ curl -fsSL https://raw.githubusercontent.com/mdikarev/dsh-balbes-server/main/scr
    отсутствует — ставит глобально:
    `sudo npm i -g "@deepseek-ai/dsh@$(cat scripts/engine-version.txt)"`.
    Если `dsh` уже установлен, установщик **сверяет его версию** с пином:
-   совпадение — обычная info-строка; расхождение — громкое предупреждение в
-   stderr (какая версия стоит, какая ожидается, чем это грозит и точная команда
-   обновления). Автоматической переустановки нет: обычный запуск не требует
-   sudo, а сознательно выбранная на хосте версия не затирается (см.
-   «Устранение неполадок → Предупреждение о рассинхроне версии dsh»).
+   совпадение — обычная info-строка; расхождение — он сам ставит пинованную
+   версию (`run_priv npm i -g`; sudo нужен только на расхождении) и удаляет
+   устаревшее зеркало движка, после чего установка продолжается (см.
+   «Устранение неполадок → Обновление версии dsh»).
 4. **Сборка workspace.** В клоне репозитория: `pnpm install` и
    `pnpm -r --if-present run build` — собираются `dsh-balbes-contracts`
    (типы), `dsh-balbes-host` (tsc) и SPA админки `dsh-balbes-admin`
@@ -1164,26 +1163,20 @@ sudo journalctl -u dsh-balbes -n 50
 `export DSH_HOME=...` перед запуском). После ручной правки юнита —
 `sudo systemctl daemon-reload && sudo systemctl restart dsh-balbes`.
 
-### Предупреждение о рассинхроне версии dsh
+### Обновление версии dsh
 
 Установщик сверяет установленную версию движка (`dsh --version`) с пином из
-`scripts/engine-version.txt` и при расхождении печатает в stderr блок вида:
+`scripts/engine-version.txt`. При расхождении он **сам** ставит пинованную версию
+(`run_priv npm i -g`; sudo нужен только на расхождении), удаляет устаревшее
+зеркало `$DSH_HOME/profiles/node_modules/@deepseek-ai` и продолжает установку.
+Так повторный запуск установщика обновляет одной командой и репозиторий, и
+движок, и сервис:
 
-```text
-=====================================================================
-WARNING: dsh engine version mismatch
-  installed: <что стоит на хосте>
-  expected:  <версия из scripts/engine-version.txt>
-...
-  sudo npm i -g "@deepseek-ai/dsh@<версия>"
-=====================================================================
+```bash
+curl -fsSL https://raw.githubusercontent.com/mdikarev/dsh-balbes-server/main/scripts/install.sh | bash
 ```
 
-Это **не** ошибка установки: установщик продолжает работу и не переустанавливает
-движок сам (обычный запуск не требует sudo, а сознательно выбранная на хосте
-версия не затирается). Но профиль, канон и CI нацелены на ожидаемую версию,
-поэтому сервер на другой версии может вести себя иначе. Обновите движок явно и
-повторите установщик:
+Обновить движок вручную (например, без установщика):
 
 ```bash
 cd ~/dsh-balbes-server
@@ -1192,16 +1185,13 @@ sudo npm i -g "@deepseek-ai/dsh@$(cat scripts/engine-version.txt)"
 dsh --version   # должно совпасть с scripts/engine-version.txt
 ```
 
-Зеркало `$DSH_HOME/profiles/node_modules/@deepseek-ai`, оставшееся от прежнего
-движка, тоже нужно обновить: `link-core` предпочитает зеркало с пинованной
-версией, а при полном несовпадении использует первое и печатает предупреждение.
-Если после установки движка сборка всё ещё падает на типах, удалите старое
-зеркало и переlinkуйте:
+Если сборка всё ещё падает на типах (старое зеркало пережило обновление),
+удалите его и переlinkуйте:
 
 ```bash
 rm -rf "${DSH_HOME:-$HOME/.dsh}/profiles/node_modules/@deepseek-ai"
 node scripts/link-core.mjs
-node -e "console.log('dsh-base:', require('@deepseek-ai/dsh-base/package.json').version)"  # должно совпасть с пином
+node -e "console.log('dsh-base:', require('@deepseek-ai/dsh-base/package.json').version)"  # = пин
 ```
 
 Если версию определить не удалось (`dsh --version` не печатает ничего похожего

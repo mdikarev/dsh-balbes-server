@@ -39,5 +39,5 @@
 `agent/AGENTS.md`, `agent/self.md`, `agent/skills/`, `<project>/.dsh/skills`)
 абсорбировано в живые секции canon; вне глобального контекста остаются
 `notes/` и память. Подъём самого движка dsh до актуальной версии (единый пин
-`scripts/engine-version.txt`; обычный `install.sh` движок не переустанавливает) —
+`scripts/engine-version.txt`; `install.sh` сам поднимает движок до пина) —
 реализуется: цель `0.1.7-rc.1`, пин поднят, проверка — CI и сервер (p8).

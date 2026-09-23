@@ -9,8 +9,10 @@
 # Provisions the environment (Node >= 22 via NodeSource, pnpm, git), ensures the
 # global @deepseek-ai/dsh CLI (never patched or edited — dsh is a dependency,
 # not a fork): installs the version pinned in scripts/engine-version.txt when
-# dsh is absent, and warns loudly (without reinstalling) when an already
-# installed dsh differs from that pin. Then builds the workspace packages
+# dsh is absent, and updates it to that pin (reinstalling with sudo, and
+# refreshing the stale profile mirror) when an already installed dsh differs.
+# So re-running this installer updates repo, engine and service in one command.
+# Then builds the workspace packages
 # (dsh-balbes-host,
 # dsh-balbes-contracts, dsh-balbes-workspaces, dsh-balbes-git,
 # dsh-balbes-models, dsh-balbes-sessions, dsh-balbes-telegram, the admin SPA),
@@ -308,29 +310,17 @@ dsh_version_tokens() {
         | awk '!seen[$0]++' || true
 }
 
-# engine_version_mismatch_warning INSTALLED EXPECTED — loud, multi-line,
-# stderr-only. The installer deliberately keeps going: an outdated engine must
-# never block the server's update path, and a mismatch must not silently
-# reinstall a version the host chose on purpose (that would also demand sudo on
-# ordinary runs).
-engine_version_mismatch_warning() {
-    local installed="$1" expected="$2"
-    cat >&2 <<EOF
-=====================================================================
-WARNING: dsh engine version mismatch
-  installed: $installed
-  expected:  $expected   (pinned in scripts/engine-version.txt)
-
-The profile, the canon and CI all target the expected version, so this
-server may fail in ways none of them cover. The installer does NOT
-reinstall dsh on its own (that would need sudo on every run and would
-overwrite a version the host deliberately chose).
-
-Update the engine explicitly, then re-run this installer:
-
-  sudo npm i -g "@deepseek-ai/dsh@$expected"
-=====================================================================
-EOF
+# refresh_engine_mirror — drop the physical @deepseek-ai mirror a previous
+# engine version left in $DSH_HOME/profiles/node_modules. link-core and older
+# boot paths could otherwise keep resolving the stale packages after the engine
+# was updated and compile the workspace against old types. dsh owns its module
+# resolution; link-core re-links the workspace from the fresh global install.
+refresh_engine_mirror() {
+    local mirror="$DSH_HOME/profiles/node_modules/@deepseek-ai"
+    if [[ -e "$mirror" ]]; then
+        info "Refreshing the engine mirror at $mirror (removing the previous version's copy)..."
+        rm -rf "$mirror"
+    fi
 }
 
 # --- environment steps (idempotent) ------------------------------------------
@@ -395,21 +385,29 @@ ensure_dsh() {
         fi
         if [[ -z "$expected" ]]; then
             info "dsh already installed (pinned version unknown — see the warning above)"
-        elif [[ "$count" -eq 0 ]]; then
-            warn "could not determine the installed dsh version — dsh --version printed nothing version-like."
-            warn "cannot compare it against the expected $expected (scripts/engine-version.txt); continuing."
         elif printf '%s\n' "$tokens" | grep -qxF "$expected"; then
             # The expected version is one of the tokens (it need not be the
             # first: `dsh --version` may print a banner with other versions).
             info "dsh already installed ($expected — matches scripts/engine-version.txt)"
-        elif [[ "$count" -eq 1 ]]; then
-            engine_version_mismatch_warning "$tokens" "$expected"
         else
-            warn "could not determine the installed dsh version — dsh --version printed several versions ($(printf '%s' "$tokens" | tr '\n' ' '))."
-            warn "cannot compare them against the expected $expected (scripts/engine-version.txt); continuing."
+            # One-command update: re-running this installer upgrades the engine
+            # too. sudo is only spent on a mismatch, never on a matching run.
+            if [[ "$count" -eq 0 ]]; then
+                warn "could not determine the installed dsh version — dsh --version printed nothing version-like."
+            else
+                info "dsh version mismatch (installed: $(printf '%s' "$tokens" | tr '\n' ' ')) — updating to the pinned $expected ..."
+            fi
+            run_priv npm install -g "@deepseek-ai/dsh@$expected"
+            hash -r
+            refresh_engine_mirror
+            tokens="$(dsh_version_tokens)"
+            if printf '%s\n' "$tokens" | grep -qxF "$expected"; then
+                info "dsh updated to $expected"
+            else
+                warn "dsh still does not report $expected after the update (dsh --version: $(printf '%s' "$tokens" | tr '\n' ' '))."
+                warn "the workspace build may fail — install the pinned engine manually and re-run."
+            fi
         fi
-        # Never reinstall here: the owner may have pinned a version on this host
-        # on purpose, and a reinstall would require sudo on ordinary runs.
         return 0
     fi
     if [[ -z "$expected" ]]; then
