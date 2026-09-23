@@ -877,3 +877,10 @@ describe("balbes-telegram session catalog wiring", () => {
   });
 });
 
+describe("balbes-telegram approval wiring", () => {
+  it("wires the approval gate into the chat machine", () => {
+    apply(makeCtx(), { dshHome: home });
+    expect(captured.chatDeps.at(-1)!.approvals).toBeDefined();
+  });
+});
+

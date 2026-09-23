@@ -15,6 +15,7 @@ import {
   type TelegramSettingsSection,
   type TelegramStatus
 } from "./admin.js";
+import { createApprovalGate, type ApprovalAgentCtxLike, type ApprovalGate } from "./approvals.js";
 import {
   createAgentTaskRunner,
   workspaceRefKey,
@@ -25,6 +26,7 @@ import {
 import { createBotClient, type BotClient } from "./bot.js";
 import {
   createChatMachine,
+  refLabel,
   type ChannelSessionRow,
   type ChatDeps,
   type ChatMachine,
@@ -332,9 +334,15 @@ export function apply(ctx: PluginCtx, config: TelegramConfigLike): void {
     {
       onUpdate: async (update) => {
         // Authorization already happened in the poller: classification is the
-        // only step left between a raw update and the chat machine.
+        // only step left between a raw update and its handler.
         const classified = classify(update);
         if (classified === null) return;
+        // Approval callbacks own the `ap:` namespace: the gate decides them and
+        // answers the query itself, so they never reach the chat machine.
+        if (classified.kind === "callback" && gate !== undefined && gate.handles(classified.data)) {
+          await gate.onCallback(classified);
+          return;
+        }
         await (classified.kind === "message" ? chat.onMessage(classified) : chat.onCallback(classified));
       },
       onFatal: (error) => {
@@ -397,6 +405,10 @@ export function apply(ctx: PluginCtx, config: TelegramConfigLike): void {
   // first task.
   const loader = ctx.get("loader") as { await(): Promise<void> } | undefined;
   const defaultModel = ctx.get("agentDefaultModel") as { currentSelection(): { provider: string; model: string } } | undefined;
+  // Declared before the runner so its per-agent setup can reach the gate, then
+  // assigned right after they are both built: the two are mutually recursive
+  // (the gate needs the runner's progress, the runner needs the gate to attach).
+  let gate: ApprovalGate | undefined;
   const runner = createAgentTaskRunner({
     // The runner reads workspaces through its own (looser) slice; the object
     // is the same service the chat machine consumes above.
@@ -405,6 +417,24 @@ export function apply(ctx: PluginCtx, config: TelegramConfigLike): void {
     sessions: ctx.get("sessions") as AgentTaskDeps["sessions"],
     ...(defaultModel !== undefined ? { defaultModel } : {}),
     ...(loader !== undefined ? { loader } : {}),
+    approvals: {
+      attach: (agentCtx, ref) => {
+        gate?.attach(agentCtx as ApprovalAgentCtxLike, ref);
+      }
+    },
+    logger: ctx.logger
+  });
+
+  gate = createApprovalGate({
+    bot: chatBot,
+    // Only a live, allowlisted channel may be asked to approve: a disabled bot
+    // (or one without an allowlist) leaves the request to dsh's own default.
+    ownerChatId: () => {
+      const section = settingsScope.get();
+      return section.enabled ? section.allowedUserId ?? undefined : undefined;
+    },
+    workspaceLabel: refLabel,
+    taskText: (ref) => runner.progress(ref).taskText,
     logger: ctx.logger
   });
 
@@ -616,6 +646,9 @@ export function apply(ctx: PluginCtx, config: TelegramConfigLike): void {
     // The catalog is exposed only when its source (the registry) is composed;
     // absent, the chat falls back to "list unavailable" instead of failing.
     ...(sessionsRegistry !== undefined ? { sessions: channelSessions } : {}),
+    // The gate is always composed, so the live and menu cards can show a
+    // pending request; it never changes which callbacks the chat handles.
+    approvals: gate,
     onActiveChange: (ref) => {
       // An absent key is the only representation of "no workspace": the state
       // store rejects an empty string.
@@ -764,6 +797,10 @@ export function apply(ctx: PluginCtx, config: TelegramConfigLike): void {
   // (bot.ts retries with 60s timeouts, so `stop()` can take minutes on a dead
   // network; ctx.effect's disposer is only awaited while unloading).
   ctx.effect?.(() => () => {
+    // Withdraw every open approval first: disposal settles each pending request
+    // as cancelled and clears its timer, so nothing is left waiting on a
+    // callback that can no longer arrive.
+    gate?.withdrawAll();
     void poller.stop();
   }, "balbes-telegram:poller");
 }
