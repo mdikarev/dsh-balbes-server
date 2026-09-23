@@ -89,7 +89,7 @@ const HOLD_MS = 5000;
  * owner would actually receive, or a refused call) can never be filtered out
  * of a "nothing was delivered" assertion.
  */
-const NON_DELIVERY_METHODS = new Set(["getMe"]);
+const NON_DELIVERY_METHODS = new Set(["getMe", "setMyCommands", "setChatMenuButton"]);
 
 interface StubCall {
   path: string;
@@ -650,27 +650,16 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
   }
 
   /**
-   * The default model the SETTINGS DOCUMENT carries: the `agent-default-model`
-   * section of `$DSH_HOME/settings.yaml`, which is the section
-   * `agentDefaultModel` installs and `saveDefault` rewrites. Read from disk on
-   * purpose — the picker's claim is a persisted selection, not a card's text —
-   * with a block-mapping reader (the file is written by the YAML settings
-   * provider, one indented `key: value` pair per line).
+   * The default model the models service reports (the persisted
+   * `agent-default-model` selection). Read through the API on purpose: dsh
+   * 0.1.7-rc.1 imports the legacy `$DSH_HOME/settings.yaml` into the active
+   * profile patch and renames the file, so the old settings document is no
+   * longer the live store.
    */
-  async function readDefaultModel(): Promise<{ provider?: string; model?: string }> {
-    if (home === undefined) throw new Error("home not initialized");
-    const lines = (await readFile(join(home, "settings.yaml"), "utf8")).split("\n");
-    const start = lines.findIndex((line) => line.trimEnd() === "agent-default-model:");
-    if (start === -1) return {};
-    const values: Record<string, string> = {};
-    for (const line of lines.slice(start + 1)) {
-      if (line.trim() === "" || line.trimStart().startsWith("#")) continue;
-      // The next top-level section ends this one.
-      if (!/^\s/.test(line)) break;
-      const match = /^\s+([A-Za-z0-9_-]+):\s*(.*?)\s*$/.exec(line);
-      if (match !== null) values[match[1]!] = match[2]!.replace(/^["']|["']$/g, "");
-    }
-    return values;
+  async function readDefaultModel(token: string): Promise<{ provider?: string; model?: string }> {
+    const res = await post(`${baseUrl()}/api/models/list`, {}, token);
+    if (res.status !== 200) return {};
+    return (res.json as { default?: { provider?: string; model?: string } } | undefined)?.default ?? {};
   }
 
   /**
@@ -1318,18 +1307,18 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
 
       // (e) the press writes the GLOBAL default: the persisted setting, not the
       // card's text, is what this asserts.
-      const before = await readDefaultModel();
+      const before = await readDefaultModel(token);
       expect(before).toEqual({ provider: "deepseek-official", model: "deepseek-v4-flash" });
       expect(chosen).not.toBe(before.model);
       pressButton(models.messageId, target!.callback_data);
       const after = await waitFor(async () => {
-        const current = await readDefaultModel();
+        const current = await readDefaultModel(token);
         return current.model === chosen ? current : undefined;
       }, `the persisted default model to become ${chosen}`);
       expect(after).toEqual({ provider: "deepseek-official", model: chosen });
       // The section replace touched ONLY its own section: the stub's endpoint the
       // composed agent runs against survived the write.
-      expect(await readFile(join(home, "settings.yaml"), "utf8")).toContain(
+      expect(await readFile(join(home, "profiles", PROFILE, "cordis.patch.yml"), "utf8")).toContain(
         `baseURL: http://127.0.0.1:${llm.port}`
       );
 
