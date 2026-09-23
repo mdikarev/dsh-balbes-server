@@ -1784,124 +1784,136 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
   it("asks the owner before a gated escalation and runs it on the allow press", async () => {
     const server = requireApi();
     const llm = requireStub();
+    server.reset();
     const token = await bootServer();
-    await tgPost("/api/telegram/save", { token: BOT_TOKEN, allowedUserId: OWNER_USER_ID, enabled: true }, token);
-    await waitForConnected(token, true);
+    try {
+      await tgPost("/api/telegram/save", { token: BOT_TOKEN, allowedUserId: OWNER_USER_ID, enabled: true }, token);
+      await waitForConnected(token, true);
 
-    const from = server.outbound.length;
-    const menu = await openMenu(from);
-    const menuId = sentMessageId(menu);
-    pressButton(menuId, "ws");
-    await waitForMessage((text) => text.startsWith("Выберите воркспейс"), "the workspace list", from);
-    pressButton(menuId, "ws:pick:0");
-    await waitForOutbound(
-      (e) => e.method === "sendMessage" && e.body.text === "Выбран: Дом агента",
-      "the home selection",
-      from
-    );
+      const from = server.outbound.length;
+      const menu = await openMenu(from);
+      const menuId = sentMessageId(menu);
+      pressButton(menuId, "ws");
+      await waitForMessage((text) => text.startsWith("Выберите воркспейс"), "the workspace list", from);
+      pressButton(menuId, "ws:pick:0");
+      await waitForOutbound(
+        (e) => e.method === "sendMessage" && e.body.text === "Выбран: Дом агента",
+        "the home selection",
+        from
+      );
 
-    const callsBefore = llm.calls.length;
-    llm.setScript([
-      {
-        toolCalls: [
-          {
-            name: "bash",
-            arguments: JSON.stringify({
-              command: "echo approval-ok",
-              sandbox_permissions: "danger-full-access",
-              justification: "нужно записать отчёт вне песочницы"
-            })
-          }
-        ]
-      },
-      { text: APPROVAL_ALLOW_REPLY }
-    ]);
+      const callsBefore = llm.calls.length;
+      llm.setScript([
+        {
+          toolCalls: [
+            {
+              name: "bash",
+              arguments: JSON.stringify({
+                command: "echo approval-$((21*2))",
+                sandbox_permissions: "danger-full-access",
+                justification: "нужно записать отчёт вне песочницы"
+              })
+            }
+          ]
+        },
+        { text: APPROVAL_ALLOW_REPLY }
+      ]);
 
-    const approvalFrom = server.outbound.length;
-    server.enqueueMessage({ fromId: OWNER_USER_ID, text: APPROVAL_PROMPT });
-    const request = await waitForMessage(
-      (text) => text.startsWith("🔐 Запрос подтверждения"),
-      "the approval request",
-      approvalFrom,
-      60_000
-    );
-    expect(request.text).toContain("Инструмент: bash");
-    expect(request.text).toContain("escalate sandbox to danger-full-access");
-    const buttons = buttonsOf(request.entry);
-    expect(buttons.map((b) => b.text)).toEqual(["✅ Разрешить один раз", "⛔ Отклонить"]);
-    const allow = buttons.find((b) => b.callback_data.endsWith(":y"));
-    expect(allow).toBeDefined();
-    expect(allow!.callback_data.startsWith("ap:")).toBe(true);
+      const approvalFrom = server.outbound.length;
+      server.enqueueMessage({ fromId: OWNER_USER_ID, text: APPROVAL_PROMPT });
+      const request = await waitForMessage(
+        (text) => text.startsWith("🔐 Запрос подтверждения"),
+        "the approval request",
+        approvalFrom,
+        60_000
+      );
+      expect(request.text).toContain("Инструмент: bash");
+      expect(request.text).toContain("escalate sandbox to danger-full-access");
+      const buttons = buttonsOf(request.entry);
+      expect(buttons.map((b) => b.text)).toEqual(["✅ Разрешить один раз", "⛔ Отклонить"]);
+      const allow = buttons.find((b) => b.callback_data.endsWith(":y"));
+      expect(allow).toBeDefined();
+      expect(allow!.callback_data.startsWith("ap:")).toBe(true);
 
-    pressButton(request.messageId, allow!.callback_data);
-    await waitForMessage((text) => text.startsWith("✅ Разрешено"), "the resolved request", approvalFrom, 60_000);
-    await waitForOutbound(
-      (e) => e.method === "sendMessage" && e.body.text === APPROVAL_ALLOW_REPLY,
-      "the agent reply after the allowance",
-      approvalFrom,
-      180_000
-    );
-    expect(llm.calls.length - callsBefore).toBeGreaterThanOrEqual(2);
-    expect(JSON.stringify(llm.calls.at(-1)?.body ?? {})).toContain("approval-ok");
+      pressButton(request.messageId, allow!.callback_data);
+      await waitForMessage((text) => text.startsWith("✅ Разрешено"), "the resolved request", approvalFrom, 60_000);
+      await waitForOutbound(
+        (e) => e.method === "sendMessage" && e.body.text === APPROVAL_ALLOW_REPLY,
+        "the agent reply after the allowance",
+        approvalFrom,
+        180_000
+      );
+      expect(llm.calls.length - callsBefore).toBeGreaterThanOrEqual(2);
+      // "approval-42" cannot be a substring of the command "echo approval-$((21*2))",
+      // so its presence proves the tool really executed.
+      expect(JSON.stringify(llm.calls.at(-1)?.body ?? {})).toContain("approval-42");
+    } finally {
+      await stopServer();
+    }
   }, 300_000);
 
   it("refuses the gated escalation on the reject press and the tool does not run", async () => {
     const server = requireApi();
     const llm = requireStub();
+    server.reset();
     const token = await bootServer();
-    await tgPost("/api/telegram/save", { token: BOT_TOKEN, allowedUserId: OWNER_USER_ID, enabled: true }, token);
-    await waitForConnected(token, true);
+    try {
+      await tgPost("/api/telegram/save", { token: BOT_TOKEN, allowedUserId: OWNER_USER_ID, enabled: true }, token);
+      await waitForConnected(token, true);
 
-    const from = server.outbound.length;
-    const menu = await openMenu(from);
-    const menuId = sentMessageId(menu);
-    pressButton(menuId, "ws");
-    await waitForMessage((text) => text.startsWith("Выберите воркспейс"), "the workspace list", from);
-    pressButton(menuId, "ws:pick:0");
-    await waitForOutbound(
-      (e) => e.method === "sendMessage" && e.body.text === "Выбран: Дом агента",
-      "the home selection",
-      from
-    );
+      const from = server.outbound.length;
+      const menu = await openMenu(from);
+      const menuId = sentMessageId(menu);
+      pressButton(menuId, "ws");
+      await waitForMessage((text) => text.startsWith("Выберите воркспейс"), "the workspace list", from);
+      pressButton(menuId, "ws:pick:0");
+      await waitForOutbound(
+        (e) => e.method === "sendMessage" && e.body.text === "Выбран: Дом агента",
+        "the home selection",
+        from
+      );
 
-    llm.setScript([
-      {
-        toolCalls: [
-          {
-            name: "bash",
-            arguments: JSON.stringify({
-              command: "echo should-not-run",
-              sandbox_permissions: "danger-full-access",
-              justification: "нужно записать отчёт"
-            })
-          }
-        ]
-      },
-      { text: APPROVAL_DENY_REPLY }
-    ]);
+      llm.setScript([
+        {
+          toolCalls: [
+            {
+              name: "bash",
+              arguments: JSON.stringify({
+                command: "echo should-not-run",
+                sandbox_permissions: "danger-full-access",
+                justification: "нужно записать отчёт"
+              })
+            }
+          ]
+        },
+        { text: APPROVAL_DENY_REPLY }
+      ]);
 
-    const approvalFrom = server.outbound.length;
-    server.enqueueMessage({ fromId: OWNER_USER_ID, text: APPROVAL_PROMPT });
-    const request = await waitForMessage(
-      (text) => text.startsWith("🔐 Запрос подтверждения"),
-      "the approval request",
-      approvalFrom,
-      60_000
-    );
-    const reject = buttonsOf(request.entry).find((b) => b.callback_data.endsWith(":n"));
-    expect(reject).toBeDefined();
+      const approvalFrom = server.outbound.length;
+      server.enqueueMessage({ fromId: OWNER_USER_ID, text: APPROVAL_PROMPT });
+      const request = await waitForMessage(
+        (text) => text.startsWith("🔐 Запрос подтверждения"),
+        "the approval request",
+        approvalFrom,
+        60_000
+      );
+      const reject = buttonsOf(request.entry).find((b) => b.callback_data.endsWith(":n"));
+      expect(reject).toBeDefined();
 
-    pressButton(request.messageId, reject!.callback_data);
-    await waitForMessage((text) => text.startsWith("⛔ Отклонено"), "the rejection", approvalFrom, 60_000);
-    await waitForOutbound(
-      (e) => e.method === "sendMessage" && e.body.text === APPROVAL_DENY_REPLY,
-      "the agent reply after the rejection",
-      approvalFrom,
-      180_000
-    );
-    // The rejection reaches the model as the tool's isError result; the raw
-    // command string still rides the assistant tool_use in conversation history,
-    // so assert on the rejection text, not on the absent command.
-    expect(JSON.stringify(llm.calls.at(-1)?.body ?? {})).toContain("rejected");
+      pressButton(request.messageId, reject!.callback_data);
+      await waitForMessage((text) => text.startsWith("⛔ Отклонено"), "the rejection", approvalFrom, 60_000);
+      await waitForOutbound(
+        (e) => e.method === "sendMessage" && e.body.text === APPROVAL_DENY_REPLY,
+        "the agent reply after the rejection",
+        approvalFrom,
+        180_000
+      );
+      // The rejection reaches the model as the tool's isError result; the raw
+      // command string still rides the assistant tool_use in conversation history,
+      // so assert on the rejection text, not on the absent command.
+      expect(JSON.stringify(llm.calls.at(-1)?.body ?? {})).toContain("rejected");
+    } finally {
+      await stopServer();
+    }
   }, 300_000);
 });
