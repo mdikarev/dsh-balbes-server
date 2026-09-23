@@ -1,7 +1,8 @@
 # Апрувы из Telegram: канал запрашивает, владелец даёт
 
-- Status: implementing
+- Status: absorbed
 - Design: docs/superpowers/specs/2026-09-24-telegram-approvals-design.md
+- Plan: docs/superpowers/plans/2026-09-24-telegram-approvals.md
 
 ## Intent
 
