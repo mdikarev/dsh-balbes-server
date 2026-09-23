@@ -203,6 +203,20 @@ async function bootSeams(home: string, stubPort: number): Promise<{ fiber: Fiber
   // entry — not a physical profiles/node_modules mirror (see host seams.test.ts).
   const installAnchor = join(dirname(realpathSync(requireFromHere.resolve("@deepseek-ai/dsh/package.json"))), "package.json");
   const resolution = await createRuntimeResolution({ installAnchor, home });
+  // dsh 0.1.7-rc.1: base disables `settings` unless `profileContext` is present,
+  // and the llm-deepseek baseURL comes from settings (see host seams.test.ts).
+  const profileDir = join(home, "profiles", "balbes-min");
+  const profileContext = {
+    name: "balbes-min",
+    dir: profileDir,
+    patchPath: join(profileDir, "cordis.patch.yml"),
+    installAnchor,
+    cwd: process.cwd(),
+    home,
+    startedBundles: [] as string[],
+    overlays: [] as never[],
+    telemetryDisabledEnv: process.env.DSH_TELEMETRY_DISABLED
+  };
   await writeFile(
     join(home, "settings.yaml"),
     `agent-default-model:\n  provider: deepseek-official\n  model: deepseek-v4-flash\nllm-deepseek:\n  baseURL: http://127.0.0.1:${stubPort}\n`
@@ -220,6 +234,7 @@ async function bootSeams(home: string, stubPort: number): Promise<{ fiber: Fiber
       { id: "session-title-llm", disabled: true }
     ],
     async (hostCtx) => {
+      hostCtx.provide("profileContext", profileContext);
       await hostCtx.plugin(PluginPackages, { resolution });
     }
   );

@@ -120,9 +120,9 @@ function isAgentRequest(call: StubCall): boolean {
 function summarize(
   session: SessionLike,
   firstSeq: number
-): { text: string; reason?: { kind?: string } } {
+): { text: string; reason?: { kind?: string; error?: { code?: string; message?: string } } } {
   let text = "";
-  let reason: { kind?: string } | undefined;
+  let reason: { kind?: string; error?: { code?: string; message?: string } } | undefined;
   let started = false;
   const length = session.seq;
   for (let seq = firstSeq; seq < length; seq++) {
@@ -143,10 +143,10 @@ function summarize(
       if (joined !== "") text = joined;
     }
     if (event.type === "turn/end") {
-      reason = (event.data as { reason?: { kind?: string } }).reason;
+      reason = (event.data as { reason?: { kind?: string; error?: { code?: string; message?: string } } }).reason;
     }
   }
-  const outcome: { text: string; reason?: { kind?: string } } = { text };
+  const outcome: { text: string; reason?: { kind?: string; error?: { code?: string; message?: string } } } = { text };
   if (reason !== undefined) outcome.reason = reason;
   return outcome;
 }
@@ -200,6 +200,21 @@ async function bootSeams(home: string, stubPort: number): Promise<{ fiber: Fiber
   // @deepseek-ai/dsh/profile-boot runProfile does.
   const installAnchor = join(dirname(realpathSync(requireFromHere.resolve("@deepseek-ai/dsh/package.json"))), "package.json");
   const resolution = await createRuntimeResolution({ installAnchor, home });
+  // dsh 0.1.7-rc.1: the base tree disables `settings` (and `config-editor`) unless
+  // `profileContext` is provided, so the `llm-deepseek.baseURL` setting below is
+  // ignored without it (see base cordis.patch.yml "disabled: !ctx.get('profileContext')").
+  const profileDir = join(home, "profiles", "balbes-min");
+  const profileContext = {
+    name: "balbes-min",
+    dir: profileDir,
+    patchPath: join(profileDir, "cordis.patch.yml"),
+    installAnchor,
+    cwd: process.cwd(),
+    home,
+    startedBundles: [] as string[],
+    overlays: [] as never[],
+    telemetryDisabledEnv: process.env.DSH_TELEMETRY_DISABLED
+  };
   await writeFile(
     join(home, "settings.yaml"),
     `agent-default-model:\n  provider: deepseek-official\n  model: deepseek-v4-flash\nllm-deepseek:\n  baseURL: http://127.0.0.1:${stubPort}\n`
@@ -216,6 +231,7 @@ async function bootSeams(home: string, stubPort: number): Promise<{ fiber: Fiber
       { id: "session-title-llm", disabled: true }
     ],
     async (hostCtx) => {
+      hostCtx.provide("profileContext", profileContext);
       await hostCtx.plugin(PluginPackages, { resolution });
     }
   );
@@ -386,7 +402,7 @@ describe.skipIf(!realEnabled)("REAL seams probe: session cwd, fs tool containmen
     // dsh 0.1.2-rc.1 seam fact: agents.create({ meta: { cwd } }) seeds the
     // session header cwd; the fs tools resolve relative paths against it
     // (@deepseek-ai/dsh-tool-fs/session-cwd reads exec.agent.session.header.cwd).
-    expect(result.reason?.kind).toBe("completed");
+    expect(result.reason?.kind, JSON.stringify(result.reason)).toBe("completed");
     expect(result.text).toBe("read ok");
     // The script drove TWO model requests; the second one carries the real
     // tool result back as an OpenAI role "tool" message — proof the tool
@@ -411,7 +427,7 @@ describe.skipIf(!realEnabled)("REAL seams probe: session cwd, fs tool containmen
     // meta.cwd seeds path resolution, NOT read containment: the fs sandbox
     // fences only the mutating tools (see the absolute-write probe below),
     // reads pass through in every mode.
-    expect(result.reason?.kind).toBe("completed");
+    expect(result.reason?.kind, JSON.stringify(result.reason)).toBe("completed");
     const results = toolResults(result.calls);
     expect(results.join("\n")).toContain(OUTSIDE_CONTENT.trim());
   }, 120_000);
@@ -432,7 +448,7 @@ describe.skipIf(!realEnabled)("REAL seams probe: session cwd, fs tool containmen
     // setup: the Telegram channel ships the full process surface and relies on
     // the engine sandbox directly, so reads may reach any host-readable path
     // while writes stay fenced.
-    expect(result.reason?.kind).toBe("completed");
+    expect(result.reason?.kind, JSON.stringify(result.reason)).toBe("completed");
     const results = toolResults(result.calls);
     expect(results.join("\n")).toContain("localhost");
   }, 120_000);
@@ -455,7 +471,7 @@ describe.skipIf(!realEnabled)("REAL seams probe: session cwd, fs tool containmen
     // files under $DSH_HOME (here a FAKE admin-auth.json stand-in). Contained
     // only by OS read permissions of the server process — the session
     // workspace provides no read boundary.
-    expect(result.reason?.kind).toBe("completed");
+    expect(result.reason?.kind, JSON.stringify(result.reason)).toBe("completed");
     const results = toolResults(result.calls);
     expect(results.join("\n")).toContain(FAKE_AUTH_CONTENT.trim());
   }, 120_000);
@@ -483,8 +499,8 @@ describe.skipIf(!realEnabled)("REAL seams probe: session cwd, fs tool containmen
     // workspace — an in-ws symlink whose target is /etc/hosts (or ../outside)
     // is followed and its content returned. The model sees the content; the
     // path envelope still renders the requested in-ws spelling.
-    expect(absLink.reason?.kind).toBe("completed");
-    expect(relLink.reason?.kind).toBe("completed");
+    expect(absLink.reason?.kind, JSON.stringify(absLink.reason)).toBe("completed");
+    expect(relLink.reason?.kind, JSON.stringify(relLink.reason)).toBe("completed");
     const absResults = toolResults(absLink.calls);
     expect(absResults.join("\n")).toContain("localhost");
     const relResults = toolResults(relLink.calls);
@@ -525,7 +541,7 @@ describe.skipIf(!realEnabled)("REAL seams probe: session cwd, fs tool containmen
     // engine sandbox is the boundary, and it is deliberately relied upon
     // rather than compensated for. Reads and the shell may reach any
     // host-readable path; writes stay fenced by the sandbox policy.
-    expect(result.reason?.kind).toBe("completed");
+    expect(result.reason?.kind, JSON.stringify(result.reason)).toBe("completed");
     const joined = toolResults(result.calls).join("\n");
     const failedClosed = joined.includes("no sandbox backend is usable");
     const ranConfined = joined.includes("localhost");
@@ -560,7 +576,7 @@ describe.skipIf(!realEnabled)("REAL seams probe: session cwd, fs tool containmen
         { text: "write-in result" }
       ]
     });
-    expect(inside.reason?.kind).toBe("completed");
+    expect(inside.reason?.kind, JSON.stringify(inside.reason)).toBe("completed");
     expect(existsSync(join(ws, "inside.txt"))).toBe(true);
 
     // ../ out of ws but into <home> — home lives under os.tmpdir() and the
@@ -579,7 +595,7 @@ describe.skipIf(!realEnabled)("REAL seams probe: session cwd, fs tool containmen
         { text: "write-out result" }
       ]
     });
-    expect(relOut.reason?.kind).toBe("completed");
+    expect(relOut.reason?.kind, JSON.stringify(relOut.reason)).toBe("completed");
     expect(existsSync(join(home!, "pwned.txt"))).toBe(true);
 
     // Absolute write outside ws AND outside the temp area: denied with the
@@ -599,7 +615,7 @@ describe.skipIf(!realEnabled)("REAL seams probe: session cwd, fs tool containmen
         { text: "write-abs result" }
       ]
     });
-    expect(absOut.reason?.kind).toBe("completed");
+    expect(absOut.reason?.kind, JSON.stringify(absOut.reason)).toBe("completed");
     const results = toolResults(absOut.calls);
     expect(results.join("\n")).toContain("[sandbox: file access denied under workspace-write mode]");
     expect(existsSync(target)).toBe(false);

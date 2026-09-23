@@ -234,6 +234,19 @@ describe.skipIf(!realEnabled)("REAL composition (dsh CLI + LLM stub)", () => {
     const installAnchor = join(dirname(realpathSync(requireFromHere.resolve("@deepseek-ai/dsh/package.json"))), "package.json");
     const resolution = await createRuntimeResolution({ installAnchor, home });
     const minDir = join(home, "profiles", "balbes-test-min");
+    // dsh 0.1.7-rc.1: base disables `settings` unless `profileContext` is present,
+    // and the llm-deepseek baseURL below comes from settings (see seams.test.ts).
+    const profileContext = {
+      name: "balbes-test-min",
+      dir: minDir,
+      patchPath: join(minDir, "cordis.patch.yml"),
+      installAnchor,
+      cwd: process.cwd(),
+      home,
+      startedBundles: [] as string[],
+      overlays: [] as never[],
+      telemetryDisabledEnv: process.env.DSH_TELEMETRY_DISABLED
+    };
     await mkdir(minDir, { recursive: true });
     await writeFile(join(minDir, "cordis.yml"), "# in-process REAL test root\n[]\n");
 
@@ -252,6 +265,7 @@ describe.skipIf(!realEnabled)("REAL composition (dsh CLI + LLM stub)", () => {
           { id: "session-telemetry-otel", disabled: true }
         ],
         async (hostCtx) => {
+          hostCtx.provide("profileContext", profileContext);
           await hostCtx.plugin(PluginPackages, { resolution });
         }
       );
@@ -264,13 +278,13 @@ describe.skipIf(!realEnabled)("REAL composition (dsh CLI + LLM stub)", () => {
       expect(agents?.list()).toEqual([]);
 
       const first = await runPrompt(probeCtx as { get(key: string): unknown }, "Reply with exactly: ok from stub");
-      expect(first.text).toBe(CANNED_TEXT);
+      expect(first.text, JSON.stringify(first.reason)).toBe(CANNED_TEXT);
       // The agent that served the prompt must be gone after the run.
       expect(agents?.list()).toEqual([]);
 
       const callsBefore = stub.calls.length;
       const second = await runPrompt(probeCtx as { get(key: string): unknown }, "Reply with exactly: ok from stub");
-      expect(second.text).toBe(CANNED_TEXT);
+      expect(second.text, JSON.stringify(second.reason)).toBe(CANNED_TEXT);
       expect(stub.calls.length).toBeGreaterThan(callsBefore);
       // Two sequential runs leave no accumulation in the registry.
       expect(agents?.list()).toEqual([]);
