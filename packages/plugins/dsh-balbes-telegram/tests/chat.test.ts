@@ -2297,7 +2297,7 @@ describe("chat machine: model picker", () => {
 
     await h.machine.onCallback(callback("mdl:m:0", listId));
 
-    expect(h.bot.answers.at(-1)!.text).toBe("Не удалось сменить модель — обновите список");
+    expect(h.bot.answers.at(-1)!.text).toContain("Не удалось сменить модель — обновите список");
     // A rejected write leaves the card exactly as it was.
     expect(h.bot.edits).toHaveLength(editsBefore);
     expect(h.warns.at(-1)).toContain("saving the default model failed");

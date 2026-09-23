@@ -1565,7 +1565,7 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
         await deps.models.saveDefault(snapshot.routeId, model);
       } catch (error) {
         warn(`saving the default model failed (${codeOf(error)})`);
-        return `${MODEL_SAVE_FAILED} [${codeOf(error)}; ${snapshot.routeId}/${model}]`;
+        return `${MODEL_SAVE_FAILED} [${codeOf(error)}; ${String(error)}; ${snapshot.routeId}/${model}]`;
       }
       // The card the picker was opened from becomes the menu again, so the new
       // model shows in its «Модель:» line and no separate confirmation is sent.
