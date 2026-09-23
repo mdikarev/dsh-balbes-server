@@ -1085,9 +1085,11 @@ const APPROVAL_DENY_REPLY = "запись отменена";
   it("asks the owner before a gated escalation and runs it on the allow press", async () => {
     const server = requireApi();
     const llm = requireStub();
+    server.reset();
     const token = await bootServer();
-    await tgPost("/api/telegram/save", { token: BOT_TOKEN, allowedUserId: OWNER_USER_ID, enabled: true }, token);
-    await waitForConnected(token, true);
+    try {
+      await tgPost("/api/telegram/save", { token: BOT_TOKEN, allowedUserId: OWNER_USER_ID, enabled: true }, token);
+      await waitForConnected(token, true);
 
     const from = server.outbound.length;
     const menu = await openMenu(from);
@@ -1108,7 +1110,7 @@ const APPROVAL_DENY_REPLY = "запись отменена";
           {
             name: "bash",
             arguments: JSON.stringify({
-              command: "echo approval-ok",
+              command: "echo approval-$((21*2))",
               sandbox_permissions: "danger-full-access",
               justification: "нужно записать отчёт вне песочницы"
             })
@@ -1143,7 +1145,12 @@ const APPROVAL_DENY_REPLY = "запись отменена";
       180_000
     );
     expect(llm.calls.length - callsBefore).toBeGreaterThanOrEqual(2);
-    expect(JSON.stringify(llm.calls.at(-1)?.body ?? {})).toContain("approval-ok");
+    // "approval-42" cannot be a substring of the command "echo approval-$((21*2))",
+    // so its presence proves the tool really executed.
+    expect(JSON.stringify(llm.calls.at(-1)?.body ?? {})).toContain("approval-42");
+    } finally {
+      await stopServer();
+    }
   });
 ~~~
 
@@ -1153,9 +1160,11 @@ const APPROVAL_DENY_REPLY = "запись отменена";
   it("refuses the gated escalation on the reject press and the tool does not run", async () => {
     const server = requireApi();
     const llm = requireStub();
+    server.reset();
     const token = await bootServer();
-    await tgPost("/api/telegram/save", { token: BOT_TOKEN, allowedUserId: OWNER_USER_ID, enabled: true }, token);
-    await waitForConnected(token, true);
+    try {
+      await tgPost("/api/telegram/save", { token: BOT_TOKEN, allowedUserId: OWNER_USER_ID, enabled: true }, token);
+      await waitForConnected(token, true);
 
     const from = server.outbound.length;
     const menu = await openMenu(from);
@@ -1208,6 +1217,9 @@ const APPROVAL_DENY_REPLY = "запись отменена";
     // command string still rides the assistant tool_use in conversation history,
     // so assert on the rejection text, not on the absent command.
     expect(JSON.stringify(llm.calls.at(-1)?.body ?? {})).toContain("rejected");
+    } finally {
+      await stopServer();
+    }
   });
 ~~~
 
