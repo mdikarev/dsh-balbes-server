@@ -6,7 +6,7 @@ import {
   ModelCatalogReader, createEngineCatalogReader, catalogKeyForRoute, isCatalogProvider
 } from "./models.js";
 import {
-  LLM_PI_AI_NS, ModelsServiceError, createModelsService, readConnections, routeProviders,
+  LLM_PI_AI_NS, ModelsServiceError, createModelsService, readConnections, routeProviders, readModelsSection,
   type ModelsCredentialsLike, type ModelsDefaultLike, type ModelsSettingsLike
 } from "./service.js";
 
@@ -47,7 +47,7 @@ function fail(res: ResLike, status: number, code: string, message: string): void
  *  a removed baseURL override and replacing the models list. Write the whole
  *  llm-pi-ai section via settings.replace like the delete handler does. */
 async function writeRouteConfig(settings: ModelsSettingsLike, route: string, routeConfig: Record<string, unknown>): Promise<void> {
-  const section = settings.get(LLM_PI_AI_NS) as Record<string, unknown> | undefined;
+  const section = readModelsSection(settings, LLM_PI_AI_NS);
   const providers = { ...((section?.providers ?? {}) as Record<string, unknown>) };
   await settings.replace(LLM_PI_AI_NS, { ...(section ?? {}), providers: { ...providers, [route]: routeConfig } });
 }
@@ -190,7 +190,7 @@ export function apply(ctx: {
       if (selection.provider === route) return fail(res, 409, "default-in-use", "change the default model first");
       const next: Record<string, unknown> = { ...providers };
       delete next[route];
-      const section = settings.get(LLM_PI_AI_NS) as Record<string, unknown> | undefined;
+      const section = readModelsSection(settings, LLM_PI_AI_NS);
       await settings.replace(LLM_PI_AI_NS, { ...(section ?? {}), providers: next });
       await credentials.unset(refNameForRoute(route));
       send(res, 200, {});

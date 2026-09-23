@@ -11,6 +11,7 @@ import {
   type TelegramAdminDeps,
   type TelegramCredentialsLike,
   type TelegramSettingsScopeLike,
+  type TelegramSettingsSection,
   type TelegramStatus
 } from "./admin.js";
 import {
@@ -88,7 +89,13 @@ export { TELEGRAM_BOT_TOKEN_REF, type TelegramStatus };
 export const Config = z.object({
   dshHome: z.string(),
   apiBase: z.string().default(process.env.BALBES_TELEGRAM_API_BASE ?? "https://api.telegram.org"),
-  maxFileBytes: z.number().default(256 * 1024)
+  maxFileBytes: z.number().default(256 * 1024),
+  // dsh 0.1.7-rc.1 settings: an entry's form is projected from the Volatile
+  // fields of its Config, and settings.update(entryId, patch) writes them. These
+  // two ARE the `balbes-telegram` settings section the admin page edits; the
+  // `telegramSettingsSchema` below mirrors them for the older register seam.
+  enabled: z.boolean().default(false).volatile(),
+  allowedUserId: z.union([z.natural().min(1), z.const(null)]).default(null).volatile()
 });
 
 /**
@@ -109,8 +116,68 @@ export const telegramSettingsSchema = z.object({
 /** Fallback display cut for one file; mirrors the Config schema default. */
 const DEFAULT_MAX_FILE_BYTES = 256 * 1024;
 
+/**
+ * The settings seam across the engine versions this plugin supports:
+ *  - dsh <= 0.1.5: `register(ns, schema)` returned a per-namespace scope;
+ *  - dsh 0.1.7-rc.1: namespaces are profile entry ids and the methods are
+ *    `update(ns, patch)`; the live values live in this plugin's own Config.
+ * `createSettingsScope` prefers `register` when present (unit fakes, older
+ * engine) and otherwise binds the `balbes-telegram` entry's Config references.
+ */
 interface SettingsLike {
-  register(namespace: string, schema: unknown): TelegramSettingsScopeLike;
+  register?(namespace: string, schema: unknown): TelegramSettingsScopeLike;
+  update?(namespace: string, patch: object, expectedRevision?: number): Promise<void>;
+}
+
+/** The Config reference slice the 0.1.7 settings scope reads. */
+interface TelegramConfigLike {
+  dshHome?: string;
+  apiBase?: string;
+  maxFileBytes?: number;
+  enabled?: { get(): boolean };
+  allowedUserId?: { get(): number | null | undefined };
+}
+
+const SETTINGS_ENTRY_ID = "balbes-telegram";
+
+/** Read a live Volatile reference, tolerating a plain/absent value (unit fakes). */
+function configRefValue<T>(ref: { get(): T } | undefined, fallback: T): T {
+  return ref !== undefined && typeof ref.get === "function" ? ref.get() : fallback;
+}
+
+/**
+ * Bind the `balbes-telegram` settings entry. dsh 0.1.7-rc.1 replaced the
+ * per-namespace `register` with entry-id addressing, so the scope reads this
+ * plugin's live Config references and writes through `settings.update`.
+ */
+function createSettingsScope(ctx: PluginCtx, settings: SettingsLike, config: TelegramConfigLike): TelegramSettingsScopeLike {
+  if (typeof settings.register === "function") return settings.register(SETTINGS_ENTRY_ID, telegramSettingsSchema);
+  const read = (): TelegramSettingsSection => ({
+    enabled: configRefValue(config.enabled, false),
+    allowedUserId: configRefValue(config.allowedUserId, null) ?? null
+  });
+  const update = settings.update?.bind(settings);
+  if (update === undefined) {
+    ctx.logger.warn("balbes-telegram: settings service has neither register nor update; settings are inert");
+    return { get: read, update: async () => {}, watch: () => () => {} };
+  }
+  return {
+    get: read,
+    update: (patch: object) => update(SETTINGS_ENTRY_ID, patch),
+    watch: (callback) => {
+      let previous = read();
+      const listener = (): void => {
+        const next = read();
+        const before = previous;
+        previous = next;
+        void callback(next, before);
+      };
+      ctx.on?.("app-boot/config-reload", listener);
+      return () => {
+        ctx.off?.("app-boot/config-reload", listener);
+      };
+    }
+  };
 }
 
 /**
@@ -138,6 +205,8 @@ interface PluginCtx {
   get(key: string): unknown;
   logger: { warn(message: string): void };
   effect?(execute: () => () => void, label?: string): unknown;
+  on?(event: string, listener: (...args: unknown[]) => void): unknown;
+  off?(event: string, listener: (...args: unknown[]) => void): unknown;
 }
 
 /**
@@ -182,7 +251,7 @@ function refFromStateKey(key: string): WorkspaceRef | undefined {
   return undefined;
 }
 
-export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: string; maxFileBytes?: number }): void {
+export function apply(ctx: PluginCtx, config: TelegramConfigLike): void {
   const http = ctx.get("balbesHttp") as HttpSeatLike | undefined;
   if (http === undefined) {
     ctx.logger.warn("balbes-telegram: balbesHttp service missing; routes not registered");
@@ -209,7 +278,7 @@ export function apply(ctx: PluginCtx, config: { dshHome?: string; apiBase?: stri
 
   // Registering the namespace is an effect: it makes the stored section
   // schema-valid and reachable by the settings UI from boot onward.
-  const settingsScope = settings.register("balbes-telegram", telegramSettingsSchema);
+  const settingsScope = createSettingsScope(ctx, settings, config);
 
   // Data home resolution matches auth/static/workspaces: config wins, then
   // $DSH_HOME, then the per-user default.

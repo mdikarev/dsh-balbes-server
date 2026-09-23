@@ -11,11 +11,30 @@ import {
  *  this module owns the read side of the section, index.ts the write side. */
 export const LLM_PI_AI_NS = "llm-pi-ai";
 
-/** The engine services the connection reader needs. Declared structurally so a
- *  unit test can pass plain fakes instead of real engine instances. */
+/**
+ * The settings seam across engine versions: dsh <= 0.1.5 exposed `get(ns)`;
+ * dsh 0.1.7-rc.1 dropped it in favour of `describe()` over profile entry ids
+ * (the `llm-pi-ai` row id IS the namespace). readModelsSection prefers the new
+ * reader and falls back to the old accessor (unit fakes). Declared structurally
+ * so a unit test can pass plain fakes instead of real engine instances.
+ */
 export interface ModelsSettingsLike {
-  get(ns: string): unknown;
+  get?(ns: string): unknown;
+  describe?(options?: unknown): Array<{ ns: string; value: unknown }>;
   replace(ns: string, section: object): Promise<void>;
+}
+
+function asSection(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+/** Read one settings section by its profile entry id across engine versions. */
+export function readModelsSection(settings: ModelsSettingsLike, ns: string): Record<string, unknown> | undefined {
+  if (typeof settings.describe === "function") {
+    const descriptor = settings.describe().find((item) => item.ns === ns);
+    return asSection(descriptor?.value);
+  }
+  return asSection(typeof settings.get === "function" ? settings.get(ns) : undefined);
 }
 export interface ModelsCredentialsLike {
   describe(ref: string): Promise<{ configured: boolean; writable: boolean }>;
@@ -50,8 +69,8 @@ export interface BalbesModelsService {
 }
 
 export function routeProviders(settings: ModelsSettingsLike): Record<string, unknown> {
-  const section = settings.get(LLM_PI_AI_NS) as { providers?: Record<string, unknown> } | undefined;
-  return section?.providers ?? {};
+  const section = readModelsSection(settings, LLM_PI_AI_NS);
+  return (section?.providers as Record<string, unknown> | undefined) ?? {};
 }
 
 function modelIdsOf(entry: unknown): string[] {

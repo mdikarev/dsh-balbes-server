@@ -47,7 +47,7 @@ const CANCEL_FOLLOW_UP_PROMPT = "Какое кодовое число ты за�
 const CANCEL_HOLD_MS = 3000;
 
 /**
- * The tool registry of the dsh 0.1.5-rc.2 base composition this suite boots:
+ * The tool registry of the dsh 0.1.7-rc.1 base composition this suite boots:
  * the base patches + the runprobe row, on a POSIX host (`bash` is mounted,
  * `pwsh` is not). Pinned against the live registry instead of described in
  * prose, because this is the parity target: the agent surface must equal what
@@ -56,7 +56,9 @@ const CANCEL_HOLD_MS = 3000;
  *
  * `str_replace_editor` is absent since 0.1.5: the
  * `dsh-tool-str-replace-editor` package still ships, but the base composition
- * no longer mounts a row for it (0.1.2-rc.1 did).
+ * no longer mounts a row for it (0.1.2-rc.1 did). `ralph` is absent since
+ * 0.1.7-rc.1: its `tool-ralph` base row ships `disabled: true` and only an
+ * explicit overlay re-enables it.
  */
 const DEPLOYMENT_TOOLS = [
   "bash",
@@ -71,7 +73,6 @@ const DEPLOYMENT_TOOLS = [
   "job_list",
   "job_output",
   "list_agents",
-  "ralph",
   "read",
   "read_image",
   "send_message",

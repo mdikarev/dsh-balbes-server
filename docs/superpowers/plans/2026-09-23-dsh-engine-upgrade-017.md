@@ -73,6 +73,23 @@
   system-prompt в тестах читаются из формата Messages (`tool_result`-блоки,
   верхнеуровневый `system`).
 
+## Найдено после CI run #55 (settings-API миграция)
+
+- **`settings.register` удалён.** В 0.1.7 `SettingsForms` — это forms-сервис по
+  профильным entry id (`update`/`replace`/`mutate`/`describe`), а настройки
+  плагина — это Volatile-поля его Config; legacy `settings.yaml` лишь
+  асинхронно импортируется. Наш telegram-плагин падал на `register` и не
+  регистрировал роуты (404 на `/api/telegram/*`). Мигрировано: в Config
+  добавлены `enabled`/`allowedUserId` как `.volatile()`, а `createSettingsScope`
+  читает живые Config-ссылки и пишет через `settings.update("balbes-telegram", patch)`;
+  путь с `register` сохранён только для юнит-фейков (переходный совместимый
+  слой, помечен в коде).
+- **`settings.get(ns)` удалён.** `dsh-balbes-models` читал секцию `llm-pi-ai`
+  через `get`; добавлен `readModelsSection` (предпочитает `describe()`, фолбэк на
+  `get` для фейков) — иначе страница «Модели» сломалась бы на сервере.
+- **`tool-ralph` теперь `disabled: true`** в базовом патче 0.1.7, поэтому в
+  поверхности деплоя нет `ralph`; ожидание `DEPLOYMENT_TOOLS` обновлено.
+
 ## Проверка на сервере (владелец)
 
 1. Дождаться зелёного CI на `main` (job `validate` и job `real` —
