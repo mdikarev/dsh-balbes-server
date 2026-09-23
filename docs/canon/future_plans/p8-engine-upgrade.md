@@ -1,6 +1,9 @@
 # Обновление движка dsh до актуальной версии
 
-- Status: implementing
+- Status: absorbed
+- Outcome: пин поднят до `0.1.7-rc.1`; `install.sh` при расхождении
+  версии сам ставит пинованную и чистит устаревшее зеркало; абсорбировано
+  в `ARCHITECTURE.md`, `OVERVIEW.md` и runbook'и.
 - Target: `0.1.7-rc.1` (канал `next`); решение зафиксировано 2026-09-23
   (см. docs/superpowers/plans/2026-09-23-dsh-engine-upgrade-017.md).
 - Focus: единый пин `scripts/engine-version.txt` и явный подъём глобального
