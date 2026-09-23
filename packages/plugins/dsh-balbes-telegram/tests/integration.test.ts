@@ -1791,6 +1791,8 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
     const from = server.outbound.length;
     const menu = await openMenu(from);
     const menuId = sentMessageId(menu);
+    pressButton(menuId, "ws");
+    await waitForMessage((text) => text.startsWith("Выберите воркспейс"), "the workspace list", from);
     pressButton(menuId, "ws:pick:0");
     await waitForOutbound(
       (e) => e.method === "sendMessage" && e.body.text === "Выбран: Дом агента",
@@ -1853,6 +1855,8 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
     const from = server.outbound.length;
     const menu = await openMenu(from);
     const menuId = sentMessageId(menu);
+    pressButton(menuId, "ws");
+    await waitForMessage((text) => text.startsWith("Выберите воркспейс"), "the workspace list", from);
     pressButton(menuId, "ws:pick:0");
     await waitForOutbound(
       (e) => e.method === "sendMessage" && e.body.text === "Выбран: Дом агента",
