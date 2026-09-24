@@ -447,11 +447,29 @@ ensure_repo() {
     fi
 }
 
+# extract_profile_settings — print the top-level "- id:" sequence entries of a
+# profile patch. dsh 0.1.7 persists admin-managed settings (model connections,
+# Telegram, default model, ...) as such entries appended to the profile patch;
+# the repository composition is the single "- insert:" item, so every top-level
+# entry carrying an id is a settings override.
+extract_profile_settings() {
+    awk '
+        /^- id:/ { keep = 1 }
+        /^- / && $0 !~ /^- id:/ { keep = 0 }
+        /^[^[:space:]-]/ { keep = 0 }
+        keep { print }
+    ' "$1"
+}
+
 # sync_profile — repository profile is the source of truth: the installed copy
-# is replaced wholesale (rm + cp) so a stale local copy cannot survive.
+# is replaced wholesale (rm + cp) so a stale local copy cannot survive. The one
+# exception is the profile patch's SETTINGS OVERRIDES: dsh 0.1.7 stores them as
+# top-level "- id:" entries inside cordis.patch.yml, so a wholesale copy would
+# wipe every admin-managed setting on each update. Extract them first and
+# re-append them to the freshly copied patch.
 sync_profile() {
     local src="$REPO_DIR/profiles/$PROFILE_NAME"
-    local profiles_dir dst
+    local profiles_dir dst preserved=""
     if [[ ! -f "$src/package.json" ]]; then
         die "profile '$PROFILE_NAME' not found at $src (is the repo up to date?)"
     fi
@@ -461,9 +479,16 @@ sync_profile() {
         die "refusing to operate on '$profiles_dir' (DSH_HOME resolves to filesystem root)"
     fi
     dst="$profiles_dir/$PROFILE_NAME"
+    if [[ -f "$dst/cordis.patch.yml" ]]; then
+        preserved="$(extract_profile_settings "$dst/cordis.patch.yml")"
+    fi
     info "Syncing profile $src -> $dst ..."
     rm -rf "$dst"
     cp -R "$src" "$dst"
+    if [[ -n "$preserved" ]]; then
+        printf '\n%s\n' "$preserved" >>"$dst/cordis.patch.yml"
+        info "Preserved $(printf '%s\n' "$preserved" | grep -c '^- id:' || true) profile setting entry(ies)."
+    fi
     info "Profile synced."
 }
 
