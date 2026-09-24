@@ -2,7 +2,7 @@ import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, mkdir, cp, rm, readFile, readdir, stat, writeFile } from "node:fs/promises";
-import type { Dirent } from "node:fs";
+import { existsSync, type Dirent } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1774,18 +1774,23 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
   }, 420_000);
 
   /**
-   * Task 7: the REAL approval round-trip. A gated escalation (bash with
-   * sandbox_permissions + justification) makes the stock approval waterfall ask
-   * the owner through the composed gate, the owner presses the ap:<id>:y button
-   * and the tool really runs; the deny case proves the press REACHES the model
-   * as the tool's rejected result. Each case boots the shared real profile and
-   * works in the agent home.
+   * Task 7: the REAL approval round-trip. A gated escalation (write outside the
+   * workspace with sandbox_permissions + justification) makes the stock approval
+   * waterfall ask the owner through the composed gate, the owner presses the
+   * ap:<id>:y button and the write really runs; the deny case proves the press
+   * REACHES the model as the tool's rejected result AND that the refused write
+   * left no file. The in-process filesystem fence is used deliberately: the OS
+   * bash sandbox (bwrap/landlock) is not available on every CI runner, while the
+   * fence confines everywhere, so this trigger is deterministic. Each case boots
+   * the shared real profile and works in the agent home.
    */
   it("asks the owner before a gated escalation and runs it on the allow press", async () => {
     const server = requireApi();
     const llm = requireStub();
     server.reset();
     const token = await bootServer();
+    const probe = join(pkgRoot, ".approval-allow-probe.txt");
+    await rm(probe, { force: true }).catch(() => undefined);
     try {
       await tgPost("/api/telegram/save", { token: BOT_TOKEN, allowedUserId: OWNER_USER_ID, enabled: true }, token);
       await waitForConnected(token, true);
@@ -1807,9 +1812,10 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
         {
           toolCalls: [
             {
-              name: "bash",
+              name: "write",
               arguments: JSON.stringify({
-                command: "echo approval-$((21*2))",
+                file_path: probe,
+                content: "approved\n",
                 sandbox_permissions: "danger-full-access",
                 justification: "нужно записать отчёт вне песочницы"
               })
@@ -1827,7 +1833,7 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
         approvalFrom,
         60_000
       );
-      expect(request.text).toContain("Инструмент: bash");
+      expect(request.text).toContain("Инструмент: write");
       expect(request.text).toContain("escalate sandbox to danger-full-access");
       const buttons = buttonsOf(request.entry);
       expect(buttons.map((b) => b.text)).toEqual(["✅ Разрешить один раз", "⛔ Отклонить"]);
@@ -1844,10 +1850,11 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
         180_000
       );
       expect(llm.calls.length - callsBefore).toBeGreaterThanOrEqual(2);
-      // "approval-42" cannot be a substring of the command "echo approval-$((21*2))",
-      // so its presence proves the tool really executed.
-      expect(JSON.stringify(llm.calls.at(-1)?.body ?? {})).toContain("approval-42");
+      // The approved write really ran: the probe is on disk with the sent content.
+      expect(existsSync(probe), "the approved write did not create the probe").toBe(true);
+      expect(await readFile(probe, "utf8")).toBe("approved\n");
     } finally {
+      await rm(probe, { force: true }).catch(() => undefined);
       await stopServer();
     }
   }, 300_000);
@@ -1857,6 +1864,8 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
     const llm = requireStub();
     server.reset();
     const token = await bootServer();
+    const probe = join(pkgRoot, ".approval-deny-probe.txt");
+    await rm(probe, { force: true }).catch(() => undefined);
     try {
       await tgPost("/api/telegram/save", { token: BOT_TOKEN, allowedUserId: OWNER_USER_ID, enabled: true }, token);
       await waitForConnected(token, true);
@@ -1877,9 +1886,10 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
         {
           toolCalls: [
             {
-              name: "bash",
+              name: "write",
               arguments: JSON.stringify({
-                command: "echo should-not-run",
+                file_path: probe,
+                content: "should-not-run\n",
                 sandbox_permissions: "danger-full-access",
                 justification: "нужно записать отчёт"
               })
@@ -1908,11 +1918,12 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
         approvalFrom,
         180_000
       );
-      // The rejection reaches the model as the tool's isError result; the raw
-      // command string still rides the assistant tool_use in conversation history,
-      // so assert on the rejection text, not on the absent command.
+      // The rejection reaches the model as the tool's isError result, and the
+      // refused write left no file behind.
       expect(JSON.stringify(llm.calls.at(-1)?.body ?? {})).toContain("rejected");
+      expect(existsSync(probe), "the rejected write created the probe").toBe(false);
     } finally {
+      await rm(probe, { force: true }).catch(() => undefined);
       await stopServer();
     }
   }, 300_000);
