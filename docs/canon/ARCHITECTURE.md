@@ -194,6 +194,140 @@ GitHub-репозиторий — источник проекта: плагин 
 - `docs/runbooks/stage1-vps.md`, `docs/runbooks/stage2-vps.md` —
   эксплуатационные runbook'и (установка, smoke, обновление, DoD, неполадки).
 
+## Memory layer
+
+Долговременная память Балбеса (инициатива p10; фундамент — p10a) — host-side
+слой знания: durable-источник правды о том, что агент «знает» между сессиями и
+воркспейсами, и сервис `balbesMemory` для остальных слоёв. Слой невидим
+модели: он не подмешивается в контекст (p10c), не имеет инструментов и секций
+системного промпта и не наполняется автоматически (p10d). Сессионную память
+держит движок dsh — она не переизобретается и не затрагивается.
+
+### Носитель и схема
+
+- Источник правды — SQLite через `node:sqlite` (`DatabaseSync`), файл
+  `$DSH_HOME/storages/memory.sqlite` (плюс `-wal`/`-shm` при WAL). Node ≥ 22
+  (в контуре 24.x); с json-бэкендом dsh в `$DSH_HOME/storages` не конфликтует —
+  у него другие имена.
+- При открытии: `journal_mode=WAL`, `foreign_keys=ON`,
+  `busy_timeout=5000`. Все запросы — подготовленные выражения;
+  единственный writer — сервис.
+- Схема v1: таблица `memories` (запись памяти), нормализованная
+  `memory_tags`, внешнеконтентный FTS5-индекс `memory_fts`
+  (`content='memories'`, `tokenize='unicode61 remove_diacritics 2'`),
+  синхронизируемый триггерами `AFTER INSERT / AFTER UPDATE OF text / AFTER
+  DELETE`. Теги в полнотекст не входят: фильтр по тегу — точный join с
+  `memory_tags`, второй источник правды не заводится. В схеме зарезервирована
+  колонка `embedding` (BLOB) — в p10a не заполняется.
+
+### Запись памяти и уровни (scope)
+
+- Запись: `id` — `crypto.randomUUID()`; `type` — `fact |
+  preference | decision | note`; `text` — содержательный текст;
+  `tags` — массив слагов; `pinned` — булев; `createdAt`/`updatedAt` —
+  ISO-8601; `embedding` — зарезервировано.
+- Провенанс: `origin` — `owner | agent`, `originRef` — необязательная
+  ссылка ≤ 512 символов (для агента — откуда знание).
+- Два уровня: `global` — дом, действует во всех воркспейсах
+  (`scope_name` IS NULL); `project` — проект по слагу `[A-Za-z0-9._-]`
+  ≤ 64 (`scope_name = <слаг>`). Уровни изолированы.
+- Scope неизменяем: `update` его не принимает, смена scope — delete + save.
+- Валидация (без новых runtime-зависимостей): `text` непустой, обрезается по
+  краям, ≤ 8 КиБ; `tags` — слаги `[a-z0-9._-]` ≤ 32, каждый ≤ 32 символов,
+  без дублей, сохраняются в нижнем регистре; `originRef` — строка ≤ 512 или
+  `null`.
+
+### Сервис `balbesMemory`
+
+Сервис — единственный способ записи в хранилище:
+
+```ts
+interface BalbesMemoryService {
+  save(draft: MemoryDraft): Promise<MemoryRecord>;
+  get(id: string): Promise<MemoryRecord | undefined>;
+  update(id: string, patch: MemoryPatch): Promise<MemoryRecord>;
+  delete(id: string): Promise<boolean>;
+  list(filter?: MemoryFilter): Promise<MemoryRecord[]>;
+  search(request: { query: string; filter?: MemoryFilter; limit?: number }): Promise<SearchHit[]>;
+  count(filter?: MemoryFilter): Promise<number>;
+}
+```
+
+- Методы `async` (Promise), хотя `DatabaseSync` синхронен: стабильный шов на
+  случай смены backend'а и единообразие с `balbesWorkspaces`/`balbesSessions`.
+- Фильтры: `scope`/`scopes` (глобальный и текущий проект одним запросом),
+  `type`, `tag`, `pinned`, `limit`, `offset`. `list` — порядок
+  `pinned DESC, updated_at DESC`, лимит по умолчанию 100, максимум 500;
+  `count` игнорирует `limit`/`offset`.
+- Поиск — FTS5: `memory_fts MATCH ?` с ранжированием `bm25()`, порядок
+  `pinned DESC, rank ASC`, лимит по умолчанию 20, максимум 100; пустой или
+  пробельный `query` → `invalid-query`. Векторный retrieval — аддитивный
+  слой позже.
+- Ошибки со стабильными кодами: `secret-detected`, `invalid-record`,
+  `invalid-scope`, `invalid-query`, `not-found` (тип `MemoryError`).
+- Дедупликации, TTL и разрешения конфликтов нет — это p10d; `update` не меняет
+  `origin` и не трекает «кто последний правил».
+
+### Приватность
+
+- На `save` и на `update` с непустым `text` текст проходит детектор
+  секретов. Совпадение → `secret-detected`, ничего не пишется (fail loud).
+- Зафиксированные паттерны: префиксы провайдерских ключей (`sk-`, `ghp_`,
+  `github_pat_`, `xoxb-`, `xoxp-`, `AKIA[0-9A-Z]{16}`), Telegram
+  bot token (`\d{8,10}:[A-Za-z0-9_-]{35}`), PEM private key
+  (`-----BEGIN[^-]*PRIVATE KEY-----`), присваивания
+  (`(password|passwd|api[_-]?key|secret|token)\s*[:=]\s*\S+`), connection
+  string с паролем (`://[^/:\s]+:[^/\s]+@`) и
+  `Bearer\s+[A-Za-z0-9._-]{16,}`.
+- Это «защитный забор», а не доказательство: слова вида «password policy» без
+  значения не срабатывают. Инвариант: плагин не читает
+  `$DSH_HOME/.credentials.yaml`, а `originRef` не может ссылаться на
+  credential-ref.
+
+### Миграции и жизненный цикл
+
+- Миграции живут в коде плагина упорядоченным списком `{version, up(db)}[]`;
+  прогон при `apply()` на каждом старте: открыть БД и выставить pragmas →
+  `PRAGMA user_version` → `0` применить v1 → `< LATEST` сделать бэкап
+  (WAL-безопасный `backup()`) в `memory.sqlite.bak-v<текущая>` (хранится
+  один предыдущий срез), применить недостающие миграции одной транзакцией и
+  выставить `user_version = LATEST` внутри неё → `> LATEST` отказать (не
+  открывать на запись, логировать, не предоставлять сервис) → `== LATEST`
+  no-op. DDL SQLite транзакционен: ошибка → rollback, БД остаётся на старой
+  версии.
+- Политика отказа: ошибка миграции/открытия не бросается наружу — плагин
+  логирует `balbes-memory: ...` и не предоставляет `balbesMemory`. Сервер
+  остаётся живым, потребители деградируют как при отсутствии сервиса,
+  `Restart=on-failure` не уходит в цикл; данные целы (rollback и `.bak-vN`).
+- Восстановление — заменой `memory.sqlite` на `memory.sqlite.bak-vN` при
+  остановленном сервисе; переносимость памяти — вместе с `$DSH_HOME`.
+
+### Композиция
+
+- Отдельный пакет `packages/plugins/dsh-balbes-memory` — функциональный
+  Cordis-плагин: `name = "balbes-memory"`, `Config` с опциональными
+  `dshHome` и `memoryPath`; `inject` не объявляется, сервисы dsh не
+  нужны. Дом резолвится как всеми плагинами
+  (`config.dshHome ?? $DSH_HOME ?? ~/.dsh`), путь БД —
+  `config.memoryPath ?? <home>/storages/memory.sqlite`.
+- `apply(ctx, config)`: обеспечить каталог, открыть БД, прогнать миграции,
+  `ctx.provide("balbesMemory", service)`, `ctx.effect(() => () => db.close())`
+  (HMR-safe, освобождение хэндла). Регистрация — insert-строка `balbes-memory`
+  в `profiles/balbes/cordis.patch.yml`; собранный пакет копируется в
+  `node_modules` профиля установщиком и CI.
+- Типы сервиса пока локальны; перенос в `dsh-balbes-contracts` — вместе с
+  HTTP-контрактом в p10b.
+
+### Границы и успех
+
+- Не входят: HTTP-ручки и UI (p10b), подмешивание в контекст и инструменты
+  (p10c), автоизвлечение/дедуп/TTL/ревью (p10d), векторный backend, заполнение
+  `embedding`, мультиюзерность. Сессионная память движка не затрагивается.
+- Успех: файл `$DSH_HOME/storages/memory.sqlite` создан, `PRAGMA
+  user_version` = `LATEST`, сервис `balbesMemory` предоставлен, CRUD и
+  FTS-поиск работают, секрет отклоняется с `secret-detected`, после
+  close/reopen записи на месте.
+
 ## Key flows
 
 - Установка одной командой: `curl -fsSL <raw install.sh> | bash` → окружение →
@@ -378,7 +512,8 @@ GitHub-репозиторий — источник проекта: плагин 
   раздел «Модели»), HTTPS/TLS и домен, потоковая доставка ответов модели
   (SSE/WS; живая карточка прогресса — индикатор хода задачи, а не она),
   скачивание бинарных файлов через Telegram, другие каналы (A2A),
-  память (Qdrant), самообучение, мультиюзерность, замена драйвера цикла,
+  память (направление Qdrant; слой p10a — SQLite — описан в Memory layer),
+  самообучение, мультиюзерность, замена драйвера цикла,
   граф-конфиг. В самом Telegram-канале не входят: модель на воркспейс или на
   одну задачу (выбирается глобальный дефолт), промежуточные итоги, написанные
   агентом, подтверждения вызова инструментов через чат сверх штатного approval
