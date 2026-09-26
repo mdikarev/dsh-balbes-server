@@ -151,3 +151,9 @@ jobs:
         env:
           RUN_REAL: "1"
         run: bash node_modules/.bin/vitest run tests/integration.test.ts
+
+      - name: REAL suites — memory store (create + migrate on startup)
+        working-directory: packages/plugins/dsh-balbes-memory
+        env:
+          RUN_REAL: "1"
+        run: bash node_modules/.bin/vitest run tests/integration.test.ts
