@@ -264,7 +264,8 @@ interface BalbesMemoryService {
   пробельный `query` → `invalid-query`. Векторный retrieval — аддитивный
   слой позже.
 - Ошибки со стабильными кодами: `secret-detected`, `invalid-record`,
-  `invalid-scope`, `invalid-query`, `not-found` (тип `MemoryError`).
+  `invalid-scope`, `invalid-filter`, `invalid-query`, `not-found`
+  (тип `MemoryError`).
 - Дедупликации, TTL и разрешения конфликтов нет — это p10d; `update` не меняет
   `origin` и не трекает «кто последний правил».
 

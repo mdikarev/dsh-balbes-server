@@ -10,7 +10,26 @@ canon. Запись заводится при обнаружении расхо�
 
 ## Open
 
-На данный момент открытых расхождений нет.
+### D-006: Canon заявляет неисполняемый инвариант про `originRef` и credential-ref
+- **status:** open
+- **decision:** pending
+- **canon_paths:** docs/canon/ARCHITECTURE.md
+- **code_paths:** packages/plugins/dsh-balbes-memory/src/validate.ts
+- **evidence:** ARCHITECTURE.md (Memory layer, «Приватность») и утверждённый дизайн
+  (`docs/superpowers/specs/2026-09-26-memory-store-design.md` L223-224) заявляют инвариант
+  «`originRef` не может ссылаться на credential-ref». Реализация проверяет `originRef` только как
+  строку ≤ 512 символов (`normalizeOriginRef`, validate.ts L85-90); проверки на credential-ref нет
+  ни в коде, ни в тестах, а сам термин «credential-ref» нигде в репозитории не определён. Нужно
+  решение владельца: переформулировать пункт в canon (docs_stale) или ввести определённый синтаксис
+  и guard в коде (code_stale).
+- **finding_ids:** F-006
+- **coding_agent_prompt:** |
+  Study ARCHITECTURE.md (Memory layer → Приватность), the design spec L223-224 and
+  packages/plugins/dsh-balbes-memory/src/validate.ts (normalizeOriginRef). Decide with the owner
+  which side is stale: (a) docs_stale — drop or reword the credential-ref clause to what the code
+  guarantees (originRef is opaque provenance text, never resolved; the plugin never reads
+  .credentials.yaml); or (b) code_stale — define the credential-ref syntax and add a validation rule
+  plus tests rejecting it. No code change is safe until that syntax is defined.
 
 ## Resolved
 
@@ -67,6 +86,20 @@ canon. Запись заводится при обнаружении расхо�
   API_CONTRACTS.md L334–356 — ручку `sessions.read` и форму `TranscriptEntry`, а код (`api/client.ts:196`, `SessionsTab.tsx:93`, `WorkspaceRightPane.tsx:202`, `SessionTranscript.tsx`) это реализует.
   Canon был stale-стороной; OVERVIEW.md приведён к ARCHITECTURE/ADMIN_UI/API_CONTRACTS в этой сессии и пере-валидирован (`doc-canon validate`: ok).
 - **finding_ids:** F-004
+
+### D-005: ARCHITECTURE.md перечислял не все стабильные коды ошибок сервиса `balbesMemory`
+- **status:** resolved
+- **decision:** docs_stale
+- **canon_paths:** docs/canon/ARCHITECTURE.md
+- **code_paths:** packages/plugins/dsh-balbes-memory/src/errors.ts, packages/plugins/dsh-balbes-memory/src/validate.ts
+- **evidence:** ARCHITECTURE.md (Memory layer, «Сервис `balbesMemory`») перечислял пять кодов:
+  `secret-detected`, `invalid-record`, `invalid-scope`, `invalid-query`, `not-found`, тогда как
+  `MemoryErrorCode` (errors.ts L1-7) содержит шестой — `invalid-filter`, который `normalizeFilter`
+  (validate.ts L151-184) бросает на некорректные scope/scopes/type/tag/pinned/limit/offset; путь покрыт
+  `tests/validate.test.ts` («rejects a negative limit»). Canon был неполной стороной; список
+  дополнен и пере-валидирован. Владельца спрашивать не требовалось: удаление кода сломало бы
+  проверенный контракт (по brief Задачи 9 `invalid-filter` — часть стабильного набора).
+- **finding_ids:** F-005
 
 ## Template for new entries
 
