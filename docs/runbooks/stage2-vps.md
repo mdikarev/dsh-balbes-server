@@ -121,7 +121,8 @@ curl -fsSL https://raw.githubusercontent.com/mdikarev/dsh-balbes-server/main/scr
    выкидываются `src/`, `tests/`, `lib/types`, `tsconfig.json`). Тем же
    способом туда копируются собранные плагины `dsh-balbes-workspaces`,
    `dsh-balbes-git`, `dsh-balbes-models`, `dsh-balbes-sessions`,
-   `dsh-balbes-telegram` и `dsh-balbes-home`. Импорты
+   `dsh-balbes-telegram`, `dsh-balbes-home` и `dsh-balbes-memory`.
+   Импорты
    `@deepseek-ai/*` резолвятся подъёмом к зеркалу
    `$DSH_HOME/profiles/node_modules` (механика Этапа 1).
 7. **SPA.** Собранный дистрибутив админки копируется в
@@ -1440,7 +1441,9 @@ Web-агента: `bash`, `web_fetch`, `skill`, субагенты и остал
 Симптом: в `journalctl -u dsh-balbes` строка `balbes-memory: failed to open ...`.
 Сервер при этом живой.
 
-Восстановление из предмиграционного бэкапа:
+Восстановление из предмиграционного бэкапа (файл `memory.sqlite.bak-v<версия>`
+появляется только после первой фактически применённой миграции: на свежей
+БД переход 0→1 идёт без бэкапа):
 
 ```bash
 sudo systemctl stop dsh-balbes
@@ -1460,8 +1463,9 @@ sudo systemctl start dsh-balbes
   `dsh-balbes-git/` (плагин git-доступа),
   `dsh-balbes-models/` (плагин моделей),
   `dsh-balbes-sessions/` (плагин сессий воркспейсов),
-  `dsh-balbes-telegram/` (плагин Telegram) и
-  `dsh-balbes-home/` (плагин глобального контекста дома);
+  `dsh-balbes-telegram/` (плагин Telegram),
+  `dsh-balbes-home/` (плагин глобального контекста дома) и
+  `dsh-balbes-memory/` (плагин памяти);
 - `profiles/node_modules/` — зеркало-симлинки на установку dsh
   (`@deepseek-ai/*`), откуда резолвятся базовые бандлы;
 - `admin-auth.json` — учётка администратора: логин, scrypt-хэш пароля,
@@ -1498,6 +1502,11 @@ sudo systemctl start dsh-balbes
   хранится** — он лежит в `.credentials.yaml`. Повреждённый файл не
   сбрасывается молча: сервер поднимается с пустым состоянием и пишет
   предупреждение в лог юнита, файл остаётся как был до первой успешной записи;
+- `storages/memory.sqlite` — долговременная память: SQLite-БД плагина
+  `dsh-balbes-memory` (WAL-режим). Перед миграцией схемы рядом создаётся
+  предмиграционный бэкап `storages/memory.sqlite.bak-v<прежняя версия>`;
+  на свежей БД первая миграция (0→1) применяется без бэкапа, поэтому
+  `bak-v1` появляется только после первой реально применённой миграции;
 - `balbes/ui/` — собранный SPA админки, который раздаёт сервер;
 - `profiles/balbes/cordis.patch.yml` — **настройки dsh на 0.1.7**: базовый
   список плагинов профиля плюс верхнеуровневые записи `- id: …` с
