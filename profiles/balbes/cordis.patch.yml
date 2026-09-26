@@ -19,5 +19,8 @@
     - id: balbes-home
       name: 'dsh-balbes-home'
 
+    - id: balbes-memory
+      name: 'dsh-balbes-memory'
+
     - id: balbes-telegram
       name: 'dsh-balbes-telegram'

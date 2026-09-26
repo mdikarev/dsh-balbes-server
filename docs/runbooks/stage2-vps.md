@@ -616,6 +616,15 @@ curl -sS -X POST http://127.0.0.1:8080/api/workspaces/create \
 Соединение сервер не закрывает: heartbeat `: ping` — каждые 25 с. Получив кадр,
 остановите поток в соседнем терминале (Ctrl-C).
 
+Память (в p10a серверного API нет — проверяется артефакт):
+
+```bash
+# память: файл БД создан и схема на v1 (серверного API в p10a нет)
+ls -l "$HOME/.dsh/storages/memory.sqlite"
+node --no-warnings -e 'const{DatabaseSync}=require("node:sqlite");const db=new DatabaseSync(process.env.HOME+"/.dsh/storages/memory.sqlite");console.log("user_version:",db.prepare("PRAGMA user_version").get().user_version)'
+# ожидается: файл существует, user_version: 1
+```
+
 ### Git-доступ и создание проекта из GitHub
 
 Владелец задаёт GitHub-токен в секции «Git-доступ» страницы «Проекты» (для
@@ -1053,6 +1062,16 @@ curl -fsS -X POST http://127.0.0.1:8080/api/health   # {"ok":true,...}
 только если меняли что-то руками (конфигурацию юнита, файлы окружения и т.п.),
 см. «Устранение неполадок».
 
+### Миграции памяти
+
+Плагин `balbes-memory` прогоняет миграции схемы при открытии БД на старте
+сервиса, поэтому отдельного шага обновления не требует: `install.sh`
+перезапускает юнит, плагин применяет недостающие миграции и выставляет
+`PRAGMA user_version`. Перед миграцией создаётся WAL-безопасный бэкап
+`$DSH_HOME/storages/memory.sqlite.bak-v<прежняя версия>`. Если открытие или
+миграция падает, плагин пишет ошибку в журнал и **не** предоставляет сервис
+`balbesMemory`, но сервер продолжает работать.
+
 ## Сброс пароля
 
 Пароль хранится только в виде scrypt-хэша — восстановить его нельзя, только
@@ -1415,6 +1434,20 @@ Web-агента: `bash`, `web_fetch`, `skill`, субагенты и остал
 Ожидаемое поведение: статус читается из настроек и меняется сразу, а цикл
 опроса докатывает уже начатый `getUpdates` — до ~50 с на живой сети и до
 ~180 с при недоступном Telegram. Новые пачки после остановки не забираются.
+
+### Память не открылась / миграция не применилась
+
+Симптом: в `journalctl -u dsh-balbes` строка `balbes-memory: failed to open ...`.
+Сервер при этом живой.
+
+Восстановление из предмиграционного бэкапа:
+
+```bash
+sudo systemctl stop dsh-balbes
+cp "$HOME/.dsh/storages/memory.sqlite.bak-v1" "$HOME/.dsh/storages/memory.sqlite"
+rm -f "$HOME/.dsh/storages/memory.sqlite-wal" "$HOME/.dsh/storages/memory.sqlite-shm"
+sudo systemctl start dsh-balbes
+```
 
 ## Где лежат данные
 
