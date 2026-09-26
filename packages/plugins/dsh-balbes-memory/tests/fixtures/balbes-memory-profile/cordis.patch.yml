@@ -1,0 +1,6 @@
+# Test composition for the memory plugin: dsh-base + the balbes host bundle
+# (so the server has /api/health) + the plugin under test. The plugin resolves
+# $DSH_HOME from the environment and creates $DSH_HOME/storages/memory.sqlite.
+- insert:
+    - id: balbes-memory
+      name: 'dsh-balbes-memory'
