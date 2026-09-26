@@ -68,6 +68,22 @@ function userVersion(path: string): number {
   return Number(row?.user_version ?? 0);
 }
 
+function schemaObjects(path: string): { tables: string[]; triggers: string[] } {
+  const db = new DatabaseSync(path);
+  try {
+    const rows = db.prepare("SELECT type, name FROM sqlite_master").all();
+    const tables: string[] = [];
+    const triggers: string[] = [];
+    for (const row of rows) {
+      if (row.type === "table") tables.push(String(row.name));
+      else if (row.type === "trigger") triggers.push(String(row.name));
+    }
+    return { tables, triggers };
+  } finally {
+    db.close();
+  }
+}
+
 const realEnabled = (process.env.RUN_REAL ?? "").trim() !== "" ? await hasDsh() : false;
 
 describe.skipIf(!realEnabled)("REAL composition (balbes-memory)", () => {
@@ -111,5 +127,8 @@ describe.skipIf(!realEnabled)("REAL composition (balbes-memory)", () => {
     const info = await stat(dbPath);
     expect(info.isFile()).toBe(true);
     expect(userVersion(dbPath)).toBe(1);
+    const { tables, triggers } = schemaObjects(dbPath);
+    expect(tables).toEqual(expect.arrayContaining(["memories", "memory_tags", "memory_fts"]));
+    expect(triggers).toEqual(expect.arrayContaining(["memories_ai", "memories_ad", "memories_au"]));
   });
 });

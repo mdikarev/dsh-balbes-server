@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 import { MemoryError } from "./errors.js";
@@ -92,6 +92,52 @@ export function migrate(db: DatabaseSync, migrations: readonly Migration[] = MIG
   return target;
 }
 
+const REQUIRED_SCHEMA_OBJECTS: ReadonlyArray<{ type: string; name: string }> = [
+  { type: "table", name: "memories" },
+  { type: "table", name: "memory_tags" },
+  { type: "table", name: "memory_fts" },
+  { type: "trigger", name: "memories_ai" },
+  { type: "trigger", name: "memories_ad" },
+  { type: "trigger", name: "memories_au" }
+];
+
+/**
+ * Refuse a database that claims to be at the target version but does not carry
+ * the tables/triggers this build requires (foreign or corrupt schema). This is
+ * how a file with user_version=1 but no memories table is detected instead of
+ * failing later inside createMemoryService.
+ */
+export function validateMemorySchema(db: DatabaseSync): void {
+  const rows = db.prepare("SELECT type, name FROM sqlite_master WHERE type IN ('table','trigger')").all();
+  const present = new Set(rows.map((row) => String(row.type) + ":" + String(row.name)));
+  const missing = REQUIRED_SCHEMA_OBJECTS.filter((object) => !present.has(object.type + ":" + object.name));
+  if (missing.length > 0) {
+    throw new MemoryError(
+      "invalid-record",
+      "database is missing required schema objects: " +
+        missing.map((object) => object.type + " " + object.name).join(", ")
+    );
+  }
+}
+
+/**
+ * Read the stored version through a read-only handle so the newer-schema gate
+ * never opens the file for writing. Returns null when the probe cannot read
+ * (the caller then gates on the read-write handle, still before any write).
+ */
+function probeUserVersion(path: string): number | null {
+  try {
+    const probe = new DatabaseSync(path, { readOnly: true });
+    try {
+      return readUserVersion(probe);
+    } finally {
+      probe.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
 /** Open the database, back up before any pending migration, then migrate. */
 export async function openMemoryDatabase(
   path: string,
@@ -100,24 +146,45 @@ export async function openMemoryDatabase(
   const migrations = options?.migrations ?? MIGRATIONS;
   const target = latestVersion(migrations);
   mkdirSync(dirname(path), { recursive: true });
+
+  // Spec migration step 5: a database newer than this build must be refused
+  // before ANY write (WAL pragma, backup, or migration). Probe read-only first
+  // so a refused file stays byte-identical and keeps its journal mode.
+  if (existsSync(path)) {
+    const probed = probeUserVersion(path);
+    if (probed !== null && probed > target) {
+      throw new MemoryError(
+        "invalid-record",
+        "database schema v" + probed + " is newer than supported v" + target
+      );
+    }
+  }
+
   const db = new DatabaseSync(path, { enableForeignKeyConstraints: true, timeout: 5000 });
-  db.exec("PRAGMA journal_mode=WAL");
-  const current = readUserVersion(db);
-  if (current > target) {
-    db.close();
-    throw new MemoryError(
-      "invalid-record",
-      "database schema v" + current + " is newer than supported v" + target
-    );
-  }
-  if (current > 0 && current < target) {
-    await backup(db, path + ".bak-v" + current);
-  }
   try {
-    migrate(db, migrations);
+    // Re-read on the live handle (a read, never a write) to cover a failed probe.
+    const current = readUserVersion(db);
+    if (current > target) {
+      throw new MemoryError(
+        "invalid-record",
+        "database schema v" + current + " is newer than supported v" + target
+      );
+    }
+    if (current === target && target > 0) {
+      // Validate before switching journal mode so a foreign schema is not written.
+      validateMemorySchema(db);
+    }
+    db.exec("PRAGMA journal_mode=WAL");
+    if (current < target) {
+      if (current > 0) {
+        await backup(db, path + ".bak-v" + current);
+      }
+      migrate(db, migrations);
+      if (target > 0) validateMemorySchema(db);
+    }
+    return db;
   } catch (error) {
     db.close();
     throw error;
   }
-  return db;
 }

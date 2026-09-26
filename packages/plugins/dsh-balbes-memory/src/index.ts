@@ -37,8 +37,19 @@ export async function apply(ctx: CtxLike, config: MemoryConfig): Promise<void> {
     ctx.logger.warn("balbes-memory: failed to open " + dbPath + ": " + message);
     return;
   }
-  ctx.provide("balbesMemory", createMemoryService(db));
-  ctx.effect(() => () => {
-    db.close();
-  }, "balbesMemory.close");
+  try {
+    const service = createMemoryService(db);
+    ctx.provide("balbesMemory", service);
+    ctx.effect(() => () => {
+      db.close();
+    }, "balbesMemory.close");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    ctx.logger.warn("balbes-memory: failed to initialize service for " + dbPath + ": " + message);
+    try {
+      db.close();
+    } catch {
+      // The handle may already be closed; failure policy is to keep running.
+    }
+  }
 }

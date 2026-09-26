@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { apply, Config, name } from "../src/index.js";
 import type { BalbesMemoryService } from "../src/types.js";
 
@@ -68,6 +69,23 @@ describe("balbes-memory plugin", () => {
     const { ctx, h } = harness();
     await apply(ctx as never, { dshHome: dir, memoryPath: join(dir, "not-a-dir", "memory.sqlite") });
     expect(h.provided.has("balbesMemory")).toBe(false);
+    expect(h.warnings.join(" ")).toContain("balbes-memory");
+  });
+
+  it("warns and provides nothing on a foreign schema with a valid user_version", async () => {
+    const path = join(dir, "memory.sqlite");
+    // A real SQLite database that claims v1 but has no memories table. Before
+    // the fix this threw out of apply() and leaked the handle.
+    const foreign = new DatabaseSync(path);
+    foreign.exec("PRAGMA user_version = 1");
+    foreign.close();
+
+    const { ctx, h } = harness();
+    await expect(
+      apply(ctx as never, { dshHome: dir, memoryPath: path })
+    ).resolves.toBeUndefined();
+    expect(h.provided.has("balbesMemory")).toBe(false);
+    expect(h.effects.length).toBe(0);
     expect(h.warnings.join(" ")).toContain("balbes-memory");
   });
 });
