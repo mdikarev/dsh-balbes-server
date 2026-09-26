@@ -277,7 +277,7 @@ interface BalbesMemoryService {
   bot token (`\d{8,10}:[A-Za-z0-9_-]{35}`), PEM private key
   (`-----BEGIN[^-]*PRIVATE KEY-----`), присваивания
   (`(password|passwd|api[_-]?key|secret|token)\s*[:=]\s*\S+`), connection
-  string с паролем (`://[^/:\s]+:[^/\s]+@`) и
+  string с паролем (`://[^/:\s]+:[^/@\s]+@`) и
   `Bearer\s+[A-Za-z0-9._-]{16,}`.
 - Это «защитный забор», а не доказательство: слова вида «password policy» без
   значения не срабатывают. Инвариант: плагин не читает
