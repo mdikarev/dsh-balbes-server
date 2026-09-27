@@ -123,6 +123,21 @@ importers:
         specifier: ^2.1.0
         version: 2.1.9(@types/node@22.20.1)(jsdom@25.0.1)
 
+  packages/plugins/dsh-balbes-memory-admin:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.1
+      dsh-balbes-contracts:
+        specifier: workspace:*
+        version: link:../../contracts
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.20.1)(jsdom@25.0.1)
+
   packages/plugins/dsh-balbes-models:
     devDependencies:
       '@types/node':
