@@ -1164,7 +1164,7 @@ export function buildRecallTool(memory: BalbesMemoryReadSlice, scopes: MemorySco
             required: true,
             items: {
               type: "object",
-              additionalProperties: true,
+              additionalProperties: false,
               properties: {
                 id: { type: "string", required: true },
                 type: { type: "string", required: true },
