@@ -16,11 +16,11 @@
 # (dsh-balbes-host,
 # dsh-balbes-contracts, dsh-balbes-workspaces, dsh-balbes-git,
 # dsh-balbes-models, dsh-balbes-sessions, dsh-balbes-telegram,
-# dsh-balbes-memory, the admin SPA),
+# dsh-balbes-memory, dsh-balbes-memory-admin, the admin SPA),
 # syncs
 # profiles/balbes from the repository into $DSH_HOME/profiles, copies the
-# built host and the workspaces, git, models, sessions, telegram and memory
-# plugins into
+# built host and the workspaces, git, models, sessions, telegram, memory
+# and memory admin plugins into
 # the profile, deploys the built
 # admin UI, stores the DeepSeek API key in
 # $DSH_HOME/.credentials.yaml only when DEEPSEEK_API_KEY is set (normally the
@@ -668,6 +668,24 @@ copy_memory_into_profile() {
     info "Memory plugin copied into $dst"
 }
 
+# copy_memory_admin_into_profile — зеркало copy_memory_into_profile: собранный
+# плагин админ-поверхности памяти копируется в node_modules профиля.
+copy_memory_admin_into_profile() {
+    local profile_dir="$DSH_HOME/profiles/$PROFILE_NAME"
+    local src="$REPO_DIR/packages/plugins/dsh-balbes-memory-admin"
+    local dst="$profile_dir/node_modules/dsh-balbes-memory-admin"
+    if [[ ! -d "$src/lib" ]]; then
+        die "memory admin plugin not built at $src/lib — build step failed"
+    fi
+    mkdir -p "$profile_dir/node_modules"
+    rm -rf "$dst"
+    cp -R "$src" "$dst"
+    rm -f "$dst/tsconfig.json" "$dst/tsconfig.build.json"
+    rm -rf "$dst/tests" "$dst/src" "$dst/lib/types"
+    chmod -R u+rwX,go-w "$dst"
+    info "Memory admin plugin copied into $dst"
+}
+
 # deploy_ui — собрать dist SPA в $DSH_HOME/balbes/ui (без старых файлов).
 deploy_ui() {
     local src="$REPO_DIR/packages/frontend/dsh-balbes-admin/dist"
@@ -850,6 +868,7 @@ main() {
     copy_sessions_into_profile
     copy_home_into_profile
     copy_memory_into_profile
+    copy_memory_admin_into_profile
     deploy_ui
     configure_api_key
     verify_composition

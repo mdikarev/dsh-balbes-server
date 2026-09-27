@@ -157,3 +157,9 @@ jobs:
         env:
           RUN_REAL: "1"
         run: bash node_modules/.bin/vitest run tests/integration.test.ts
+
+      - name: REAL suites — memory admin (memory routes over HTTP)
+        working-directory: packages/plugins/dsh-balbes-memory-admin
+        env:
+          RUN_REAL: "1"
+        run: bash node_modules/.bin/vitest run tests/integration.test.ts

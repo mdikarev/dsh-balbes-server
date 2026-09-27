@@ -22,5 +22,8 @@
     - id: balbes-memory
       name: 'dsh-balbes-memory'
 
+    - id: balbes-memory-admin
+      name: 'dsh-balbes-memory-admin'
+
     - id: balbes-telegram
       name: 'dsh-balbes-telegram'

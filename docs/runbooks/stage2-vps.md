@@ -121,7 +121,8 @@ curl -fsSL https://raw.githubusercontent.com/mdikarev/dsh-balbes-server/main/scr
    выкидываются `src/`, `tests/`, `lib/types`, `tsconfig.json`). Тем же
    способом туда копируются собранные плагины `dsh-balbes-workspaces`,
    `dsh-balbes-git`, `dsh-balbes-models`, `dsh-balbes-sessions`,
-   `dsh-balbes-telegram`, `dsh-balbes-home` и `dsh-balbes-memory`.
+   `dsh-balbes-telegram`, `dsh-balbes-home`, `dsh-balbes-memory` и
+   `dsh-balbes-memory-admin`.
    Импорты
    `@deepseek-ai/*` резолвятся подъёмом к зеркалу
    `$DSH_HOME/profiles/node_modules` (механика Этапа 1).
@@ -617,10 +618,31 @@ curl -sS -X POST http://127.0.0.1:8080/api/workspaces/create \
 Соединение сервер не закрывает: heartbeat `: ping` — каждые 25 с. Получив кадр,
 остановите поток в соседнем терминале (Ctrl-C).
 
-Память (в p10a серверного API нет — проверяется артефакт):
+Память — ручки `POST /api/memory/list|save|delete` (bearer, JSON; ответы
+`{records}`, `{record}`, `{deleted}`). Полный smoke — REAL-тест пакета
+`dsh-balbes-memory-admin`
+(`RUN_REAL=1 pnpm --filter dsh-balbes-memory-admin test`, `integration.test.ts`).
 
 ```bash
-# память: файл БД создан и схема на v1 (серверного API в p10a нет)
+TOKEN=... # POST /api/auth/login
+curl -fsS -X POST http://127.0.0.1:8080/api/memory/list \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{}'
+# ожидается: {"records":[]} (или непустой список)
+
+curl -fsS -X POST http://127.0.0.1:8080/api/memory/save \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"scope":{"kind":"global"},"type":"note","text":"smoke note","tags":["smoke"]}'
+# ожидается: {"record":{...,"origin":"owner",...}}; id берётся из ответа
+
+curl -fsS -X POST http://127.0.0.1:8080/api/memory/delete \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{"id":"<id>"}'
+# ожидается: {"deleted":true}
+```
+
+Артефакт БД (та же память на диске):
+
+```bash
+# память: файл БД создан и схема на v1
 ls -l "$HOME/.dsh/storages/memory.sqlite"
 node --no-warnings -e 'const{DatabaseSync}=require("node:sqlite");const db=new DatabaseSync(process.env.HOME+"/.dsh/storages/memory.sqlite");console.log("user_version:",db.prepare("PRAGMA user_version").get().user_version)'
 # ожидается: файл существует, user_version: 1
@@ -1464,8 +1486,9 @@ sudo systemctl start dsh-balbes
   `dsh-balbes-models/` (плагин моделей),
   `dsh-balbes-sessions/` (плагин сессий воркспейсов),
   `dsh-balbes-telegram/` (плагин Telegram),
-  `dsh-balbes-home/` (плагин глобального контекста дома) и
-  `dsh-balbes-memory/` (плагин памяти);
+  `dsh-balbes-home/` (плагин глобального контекста дома),
+  `dsh-balbes-memory/` (плагин памяти) и
+  `dsh-balbes-memory-admin/` (ручки управления памятью);
 - `profiles/node_modules/` — зеркало-симлинки на установку dsh
   (`@deepseek-ai/*`), откуда резолвятся базовые бандлы;
 - `admin-auth.json` — учётка администратора: логин, scrypt-хэш пароля,
