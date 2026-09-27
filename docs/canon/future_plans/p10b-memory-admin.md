@@ -1,6 +1,6 @@
 # Управление памятью из админки
 
-- Status: implementing
+- Status: absorbed
 - Depends: p10a
 - Focus: контроль владельца — просмотр, правка, удаление
 - Design: docs/superpowers/specs/2026-09-27-memory-admin-design.md

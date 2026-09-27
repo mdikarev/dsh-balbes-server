@@ -23,7 +23,7 @@
 | 9 | Апрувы из Telegram: канал запрашивает, владелец даёт | absorbed | p9-telegram-approvals.md |
 | 10 | Система памяти Балбеса | implementing | p10-memory-system.md |
 | 10a | Хранилище и модель памяти | absorbed | p10a-memory-store.md |
-| 10b | Управление памятью из админки | implementing | p10b-memory-admin.md |
+| 10b | Управление памятью из админки | absorbed | p10b-memory-admin.md |
 | 10c | Доставка памяти в контекст | draft | p10c-memory-context.md |
 | 10d | Умное наполнение и компактизация памяти | draft | p10d-memory-lifecycle.md |
 | 11 | Потоковая доставка ответа модели (streaming) | draft | p11-answer-streaming.md |
