@@ -70,10 +70,12 @@ export function renderCore(records: readonly MemoryRecord[]): RenderedBlock {
     }
     if (index === 0 && shown.length === 0) {
       const overhead = bullet({ ...record, text: "", tags: [] }).length;
-      const room = CORE_BUDGET - used - overhead - 1;
-      if (room > 20) {
-        lines.push(bullet({ ...record, text: collapse(record.text).slice(0, room) + "…", tags: [] }));
+      const maxText = CORE_BUDGET - used - overhead - 1;
+      if (maxText > 20) {
+        const truncated = bullet({ ...record, text: collapse(record.text).slice(0, maxText - 1) + "…", tags: [] });
+        lines.push(truncated);
         shown.push(record.id);
+        used += truncated.length + 1;
       }
     }
   }

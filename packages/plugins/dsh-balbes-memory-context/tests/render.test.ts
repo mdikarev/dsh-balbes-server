@@ -44,6 +44,16 @@ describe("renderCore", () => {
     expect(result.shown).toEqual(["small"]);
     expect(result.text).toContain("ещё 1 закреплённых записей не поместились");
   });
+
+  it("truncates the first oversized record and renders no later record", () => {
+    const result = renderCore([
+      record({ id: "huge", text: "y".repeat(CORE_BUDGET * 2), pinned: true }),
+      record({ id: "next", text: "must not appear", pinned: true })
+    ]);
+    expect(result.shown).toEqual(["huge"]);
+    expect(result.text).not.toContain("must not appear");
+    expect(result.text).toContain("…");
+  });
 });
 
 describe("renderMap", () => {
