@@ -67,4 +67,14 @@ describe("Sidebar", () => {
     expect(telegram.getAttribute("aria-current")).toBe("page");
     expect(screen.getAllByText("скоро")).toHaveLength(4);
   });
+
+  it("Память is a live item in the Управление group", () => {
+    const onNavigate = vi.fn();
+    render(<Sidebar active="memory" onNavigate={onNavigate} />);
+    const memory = screen.getByRole("button", { name: "Память" });
+    expect(memory.className).not.toContain("ghost");
+    expect(memory.getAttribute("aria-current")).toBe("page");
+    fireEvent.click(memory);
+    expect(onNavigate).toHaveBeenCalledWith("memory");
+  });
 });

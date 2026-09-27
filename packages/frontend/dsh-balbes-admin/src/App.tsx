@@ -7,15 +7,17 @@ import TestPage from "./pages/TestPage";
 import WorkspacesPage from "./pages/WorkspacesPage";
 import ModelsPage from "./pages/ModelsPage";
 import TelegramPage from "./pages/TelegramPage";
+import MemoryPage from "./pages/MemoryPage";
 
 type View = "loading" | "login" | "main";
-type Page = "test" | "workspaces" | "models" | "telegram";
+type Page = "test" | "workspaces" | "models" | "telegram" | "memory";
 
 const PAGE_TITLES: Record<Page, string> = {
   test: "Тестовая страница",
   workspaces: "Проекты",
   models: "Модели",
-  telegram: "Telegram"
+  telegram: "Telegram",
+  memory: "Память"
 };
 
 export default function App({ api }: { api: AdminApi }) {
@@ -56,8 +58,10 @@ export default function App({ api }: { api: AdminApi }) {
           <WorkspacesPage api={api} />
         ) : page === "models" ? (
           <ModelsPage api={api} />
-        ) : (
+        ) : page === "telegram" ? (
           <TelegramPage api={api} />
+        ) : (
+          <MemoryPage api={api} />
         )}
       </main>
     </div>

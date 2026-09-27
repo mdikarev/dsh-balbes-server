@@ -131,4 +131,19 @@ describe("App", () => {
     const crumb = screen.getByText("balbes /");
     expect(crumb.querySelector("b")?.textContent).toBe("Telegram");
   });
+
+  it("переходит на страницу памяти по клику в сайдбаре", async () => {
+    vi.stubGlobal("fetch", mockFetchSequence(
+      { status: 200, body: { login: "balbes-x" } },
+      { status: 200, body: { home: { path: "/h/agent" }, projects: [] } },
+      { status: 200, body: { records: [] } }
+    ));
+    localStorage.setItem("balbes.authToken", "t");
+    render(<App api={createApiClient()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Память" }));
+    expect(await screen.findByTestId("memory-page")).toBeTruthy();
+    expect(await screen.findByTestId("memory-empty")).toBeTruthy();
+    const crumb = screen.getByText("balbes /");
+    expect(crumb.querySelector("b")?.textContent).toBe("Память");
+  });
 });

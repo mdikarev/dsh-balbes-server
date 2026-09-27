@@ -25,6 +25,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { id: "models", label: "Модели", soon: false },
       { id: "telegram", label: "Telegram", soon: false },
+      { id: "memory", label: "Память", soon: false },
       { label: "Скиллы", soon: true },
       { label: "Агенты", soon: true },
       { label: "Команды", soon: true }
