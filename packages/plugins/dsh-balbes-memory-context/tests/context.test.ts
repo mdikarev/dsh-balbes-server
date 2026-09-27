@@ -94,11 +94,12 @@ type HarnessWithAttach = Harness & {
 };
 
 describe("createMemoryContext", () => {
-  it("registers the section and the push context", () => {
+  it("registers the section, the push context and the recall tool", () => {
     const h = harness([record({ id: "a", text: "hello" })]) as HarnessWithAttach;
     const attachment = h.attach(h.agentCtx, { kind: "global" });
     expect(h.sections.map((s) => [s.name, s.order])).toEqual([[MEMORY_SECTION_NAME, MEMORY_SECTION_ORDER]]);
     expect(h.contexts.map((c) => [c.name, c.order])).toEqual([[MEMORY_CONTEXT_NAME, MEMORY_CONTEXT_ORDER]]);
+    expect(h.tools).toHaveLength(1);
     expect(typeof attachment.prepare).toBe("function");
   });
 

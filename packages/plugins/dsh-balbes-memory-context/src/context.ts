@@ -1,6 +1,7 @@
 import type { MemoryRecord, MemoryScope } from "dsh-balbes-contracts";
 import { buildFtsQuery } from "./query.js";
 import { escapeInterpolation, renderCore, renderMap, renderPush } from "./render.js";
+import { buildRecallTool } from "./recall.js";
 import type {
   BalbesMemoryContextService,
   BalbesMemoryReadSlice,
@@ -53,6 +54,7 @@ export function createMemoryContext(logger: MemoryContextLogger): BalbesMemoryCo
       const state = { coreMap: "", push: "" };
       systemPrompt.section({ name: MEMORY_SECTION_NAME, order: MEMORY_SECTION_ORDER, text: () => state.coreMap });
       systemPrompt.context({ name: MEMORY_CONTEXT_NAME, order: MEMORY_CONTEXT_ORDER, text: () => state.push });
+      tools.register(buildRecallTool(memory, scopes));
       return {
         async prepare(taskText: string): Promise<void> {
           try {
