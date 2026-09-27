@@ -49,6 +49,10 @@ interface AgentsService {
   }): Promise<AgentHandleLike>;
 }
 
+interface MemoryContextServiceLike {
+  attach(agentCtx: unknown, scope: { kind: "global" }): { prepare(taskText: string): Promise<void> };
+}
+
 interface DefaultModelService {
   currentSelection(): { provider: string; model: string };
 }
@@ -89,6 +93,7 @@ export async function runPrompt(ctx: { get(key: string): unknown }, prompt: stri
   const agents = ctx.get("agents") as AgentsService | undefined;
   const defaultModel = ctx.get("agentDefaultModel") as DefaultModelService | undefined;
   const sessions = ctx.get("sessions") as SessionsService | undefined;
+  const memory = ctx.get("balbesMemoryContext") as MemoryContextServiceLike | undefined;
   const logger = (ctx as { logger?: { warn(m: string): void } }).logger;
   if (agents === undefined || defaultModel === undefined || sessions === undefined) {
     return { text: "", reason: errorReason("core-unavailable", "agent core services missing") };
@@ -98,6 +103,7 @@ export async function runPrompt(ctx: { get(key: string): unknown }, prompt: stri
   let text = "";
   let reason: NonNullable<PromptOutcome["reason"]> | undefined;
   let handle: AgentHandleLike | undefined;
+  let memoryAttachment: { prepare(taskText: string): Promise<void> } | undefined;
   try {
     handle = await agents.create({
       sessionId: brandString(`session-${randomUUID()}`),
@@ -105,10 +111,12 @@ export async function runPrompt(ctx: { get(key: string): unknown }, prompt: stri
       agentOptions: { provider: selection.provider, model: selection.model },
       setup: (agentCtx) => {
         installModelSelection(agentCtx as never, { current: selection, assembled: undefined });
+        memoryAttachment = memory?.attach(agentCtx, { kind: "global" });
       }
     });
     const agent = handle.agent;
     await agent.whenIdle();
+    await memoryAttachment?.prepare(prompt);
     const firstSeq = agent.session.seq;
     agent.followup(
       createUserMessage({
