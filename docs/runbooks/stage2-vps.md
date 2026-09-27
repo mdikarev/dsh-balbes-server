@@ -121,8 +121,8 @@ curl -fsSL https://raw.githubusercontent.com/mdikarev/dsh-balbes-server/main/scr
    выкидываются `src/`, `tests/`, `lib/types`, `tsconfig.json`). Тем же
    способом туда копируются собранные плагины `dsh-balbes-workspaces`,
    `dsh-balbes-git`, `dsh-balbes-models`, `dsh-balbes-sessions`,
-   `dsh-balbes-telegram`, `dsh-balbes-home`, `dsh-balbes-memory` и
-   `dsh-balbes-memory-admin`.
+   `dsh-balbes-telegram`, `dsh-balbes-home`, `dsh-balbes-memory`,
+   `dsh-balbes-memory-admin` и `dsh-balbes-memory-context`.
    Импорты
    `@deepseek-ai/*` резолвятся подъёмом к зеркалу
    `$DSH_HOME/profiles/node_modules` (механика Этапа 1).
@@ -1535,8 +1535,9 @@ ls -l "$HOME/.dsh/storages/memory.sqlite"*
   `dsh-balbes-sessions/` (плагин сессий воркспейсов),
   `dsh-balbes-telegram/` (плагин Telegram),
   `dsh-balbes-home/` (плагин глобального контекста дома),
-  `dsh-balbes-memory/` (плагин памяти) и
-  `dsh-balbes-memory-admin/` (ручки управления памятью);
+  `dsh-balbes-memory/` (плагин памяти),
+  `dsh-balbes-memory-admin/` (ручки управления памятью) и
+  `dsh-balbes-memory-context/` (доставка памяти в модель);
 - `profiles/node_modules/` — зеркало-симлинки на установку dsh
   (`@deepseek-ai/*`), откуда резолвятся базовые бандлы;
 - `admin-auth.json` — учётка администратора: логин, scrypt-хэш пароля,
