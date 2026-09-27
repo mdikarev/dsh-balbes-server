@@ -1061,6 +1061,20 @@ describe("buildRecallTool", () => {
     expect(value.records).toEqual([]);
   });
 
+  it("surfaces a service failure as a stable tool error", async () => {
+    const memory: BalbesMemoryReadSlice = {
+      list: async () => [],
+      count: async () => 0,
+      search: async () => {
+        throw new Error("db exploded");
+      }
+    };
+    const tool = buildRecallTool(memory, [{ kind: "global" }]);
+    await expect(tool.execute({ query: "deploy" }, {} as never)).rejects.toThrow(
+      new Error("recall failed: memory search is unavailable")
+    );
+  });
+
   it("passes type/tag/pinned filters through", async () => {
     let seen: unknown;
     const memory: BalbesMemoryReadSlice = {
@@ -1215,8 +1229,12 @@ export function buildRecallTool(memory: BalbesMemoryReadSlice, scopes: MemorySco
       if (args.type !== undefined) filter.type = args.type;
       if (args.tag !== undefined) filter.tag = args.tag;
       if (args.pinned !== undefined) filter.pinned = args.pinned;
-      const hits = await memory.search({ query, filter, limit: clampRecallLimit(args.limit) });
-      return { records: hits.map((hit) => hit.record) };
+      try {
+        const hits = await memory.search({ query, filter, limit: clampRecallLimit(args.limit) });
+        return { records: hits.map((hit) => hit.record) };
+      } catch {
+        throw new Error("recall failed: memory search is unavailable");
+      }
     }
   });
 }
