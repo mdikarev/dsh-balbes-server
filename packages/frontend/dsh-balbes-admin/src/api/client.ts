@@ -41,7 +41,13 @@ import type {
   SessionsListRequest,
   SessionsListResponse,
   SessionsReadRequest,
-  SessionsReadResponse
+  SessionsReadResponse,
+  MemoryListRequest,
+  MemoryListResponse,
+  MemorySaveRequest,
+  MemorySaveResponse,
+  MemoryDeleteRequest,
+  MemoryDeleteResponse
 } from "dsh-balbes-contracts";
 import { createSseParser } from "./sse";
 
@@ -82,6 +88,9 @@ export interface AdminApi {
   readWorkspaceFile(scope: WorkspaceScope, name: string | undefined, path: string): Promise<WorkspaceFileResponse>;
   listSessions(scope: WorkspaceScope, name?: string): Promise<SessionsListResponse>;
   readSession(scope: WorkspaceScope, name: string | undefined, sessionId: string): Promise<SessionsReadResponse>;
+  listMemory(req: MemoryListRequest): Promise<MemoryListResponse>;
+  saveMemory(req: MemorySaveRequest): Promise<MemorySaveResponse>;
+  deleteMemory(id: string): Promise<MemoryDeleteResponse>;
   listModels(): Promise<ModelsListResponse>;
   saveModel(req: ModelsSaveRequest): Promise<ModelsSaveResponse>;
   deleteModel(routeId: string): Promise<ModelsDeleteResponse>;
@@ -210,6 +219,9 @@ export function createApiClient(): AdminApi {
       const body: SessionsReadRequest = name === undefined ? { scope, sessionId } : { scope, name, sessionId };
       return guard(request<SessionsReadResponse>("/api/sessions/read", body));
     },
+    listMemory: (req) => guard(request<MemoryListResponse>("/api/memory/list", req satisfies MemoryListRequest)),
+    saveMemory: (req) => guard(request<MemorySaveResponse>("/api/memory/save", req satisfies MemorySaveRequest)),
+    deleteMemory: (id) => guard(request<MemoryDeleteResponse>("/api/memory/delete", { id } satisfies MemoryDeleteRequest)),
     listModels: () => guard(request<ModelsListResponse>("/api/models/list", {})),
     saveModel: (req) => guard(request<ModelsSaveResponse>("/api/models/save", req satisfies ModelsSaveRequest)),
     deleteModel: (routeId) => guard(request<ModelsDeleteResponse>("/api/models/delete", { routeId } satisfies ModelsDeleteRequest)),

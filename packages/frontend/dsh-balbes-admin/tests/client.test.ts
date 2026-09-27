@@ -371,4 +371,22 @@ describe("api client", () => {
     expect(seen[3]?.body).toEqual({ url: "https://github.com/acme/api.git", name: "api" });
     vi.unstubAllGlobals();
   });
+
+  it("memory methods POST to their endpoints", async () => {
+    localStorage.setItem(TOKEN_KEY, "tok-1");
+    const seen: Array<{ path: string; body: unknown }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
+      seen.push({ path: url, body: JSON.parse(String(init.body)) as unknown });
+      return { ok: true, status: 200, statusText: "200", json: async () => ({ records: [], record: {}, deleted: false }) };
+    }));
+    const api = createApiClient();
+    await api.listMemory({ scope: { kind: "global" } });
+    await api.saveMemory({ scope: { kind: "global" }, type: "note", text: "x" });
+    await api.deleteMemory("m-1");
+    expect(seen).toEqual([
+      { path: "/api/memory/list", body: { scope: { kind: "global" } } },
+      { path: "/api/memory/save", body: { scope: { kind: "global" }, type: "note", text: "x" } },
+      { path: "/api/memory/delete", body: { id: "m-1" } }
+    ]);
+  });
 });
