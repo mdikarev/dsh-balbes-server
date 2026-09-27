@@ -405,6 +405,9 @@ export function apply(ctx: PluginCtx, config: TelegramConfigLike): void {
   // first task.
   const loader = ctx.get("loader") as { await(): Promise<void> } | undefined;
   const defaultModel = ctx.get("agentDefaultModel") as { currentSelection(): { provider: string; model: string } } | undefined;
+  // Optional (p10c): the memory-context plugin is not a required inject, so a
+  // profile without it keeps working and the runner simply delivers no memory.
+  const memoryContext = ctx.get("balbesMemoryContext") as AgentTaskDeps["memory"];
   // Declared before the runner so its per-agent setup can reach the gate, then
   // assigned right after they are both built: the two are mutually recursive
   // (the gate needs the runner's progress, the runner needs the gate to attach).
@@ -417,6 +420,7 @@ export function apply(ctx: PluginCtx, config: TelegramConfigLike): void {
     sessions: ctx.get("sessions") as AgentTaskDeps["sessions"],
     ...(defaultModel !== undefined ? { defaultModel } : {}),
     ...(loader !== undefined ? { loader } : {}),
+    ...(memoryContext !== undefined ? { memory: memoryContext } : {}),
     approvals: {
       attach: (agentCtx, ref) => {
         gate?.attach(agentCtx as ApprovalAgentCtxLike, ref);

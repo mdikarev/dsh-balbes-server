@@ -105,6 +105,13 @@ export interface ApprovalAttachment {
   attach(agentCtx: unknown, ref: WorkspaceRef): void;
 }
 
+export interface MemoryContextAttachmentLike {
+  prepare(taskText: string): Promise<void>;
+}
+export interface MemoryContextServiceLike {
+  attach(agentCtx: unknown, scope: { kind: "global" } | { kind: "project"; name: string }): MemoryContextAttachmentLike;
+}
+
 export interface AgentTaskDeps {
   loader?: { await(): Promise<void> };
   /** Structural slices of the dsh agent services (see runner.ts + Task 1 facts). */
@@ -126,6 +133,12 @@ export interface AgentTaskDeps {
    * Absent when the channel runs without approvals.
    */
   approvals?: ApprovalAttachment;
+  /**
+   * Доставка долговременной памяти (p10c). Прикрепляется к агенту в общем
+   * setup; prepare выполняется перед каждым followup. Отсутствует, когда
+   * профиль не композирует плагин memory-context.
+   */
+  memory?: MemoryContextServiceLike;
   logger?: { warn(m: string): void };
 }
 
@@ -244,6 +257,7 @@ interface PendingTask {
 interface KeyedEntry {
   handle: AgentHandleLike | undefined;
   sessionId: string | undefined;
+  memory: MemoryContextAttachmentLike | undefined;
   busy: boolean;
   /** The text of the task currently being executed (for dedupe). */
   activeText: string | undefined;
@@ -505,11 +519,16 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
     root: string,
     ref: WorkspaceRef,
     opts: { sessionId?: string } | undefined
-  ): Promise<{ handle: AgentHandleLike; sessionId: string }> {
+  ): Promise<{ handle: AgentHandleLike; sessionId: string; memory: MemoryContextAttachmentLike | undefined }> {
     const selection = liveSelection(deps.defaultModel);
+    let memory: MemoryContextAttachmentLike | undefined;
     const setup = (agentCtx: unknown): void => {
       composeAgentSetup(agentCtx, { selection: selection.ref });
       deps.approvals?.attach(agentCtx, ref);
+      memory = deps.memory?.attach(
+        agentCtx,
+        ref.scope === "home" ? { kind: "global" } : { kind: "project", name: ref.name }
+      );
     };
     if (opts?.sessionId !== undefined) {
       try {
@@ -518,7 +537,7 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
           agentOptions: selection.initial,
           setup
         });
-        return { handle, sessionId: opts.sessionId };
+        return { handle, sessionId: opts.sessionId, memory };
       } catch (error) {
         // Session missing/corrupt on disk: warn and fall back to a fresh
         // session; the mapping is reset so the plugin repersists the new id.
@@ -534,7 +553,7 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
       agentOptions: selection.initial,
       setup
     });
-    return { handle, sessionId };
+    return { handle, sessionId, memory };
   }
 
   /**
@@ -585,6 +604,7 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
         }
         entry.handle = handle;
         entry.sessionId = sessionId;
+        entry.memory = acquired.memory;
         // A cancel may have landed while create/resume was still resolving:
         // there was no handle to abort yet, only the entry flag. Keep the handle
         // (unlike the retired path above) so the session survives the stop.
@@ -612,6 +632,7 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
         entry.cancelled = false;
         return { ok: false, code: "cancelled", message: CANCELLED_MESSAGE };
       }
+      await entry.memory?.prepare(text);
       const firstSeq = agent.session.seq;
       // The progress read of THIS turn starts here (progress() reads the pair
       // back); `agent.followup` below is what puts its first event into the log.
@@ -677,6 +698,7 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
         const doomed = entry.handle;
         entry.handle = undefined;
         entry.sessionId = undefined;
+        entry.memory = undefined;
         await disposeQuietly(doomed, "disposing the wedged task agent failed");
       }
       return { ok: false, code: "agent-error", message: errorMessage(error, AGENT_ERROR_MESSAGE) };
@@ -725,6 +747,7 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
         entry = {
           handle: undefined,
           sessionId: undefined,
+          memory: undefined,
           busy: false,
           activeText: undefined,
           queue: [],
