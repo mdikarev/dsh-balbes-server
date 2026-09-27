@@ -10,28 +10,24 @@ canon. Запись заводится при обнаружении расхо�
 
 ## Open
 
-### D-006: Canon заявляет неисполняемый инвариант про `originRef` и credential-ref
-- **status:** open
-- **decision:** pending
+_(нет открытых расхождений)_
+
+## Resolved
+
+### D-006: Canon заявлял неисполняемый инвариант про `originRef` и credential-ref
+- **status:** resolved
+- **decision:** docs_stale
 - **canon_paths:** docs/canon/ARCHITECTURE.md
 - **code_paths:** packages/plugins/dsh-balbes-memory/src/validate.ts
 - **evidence:** ARCHITECTURE.md (Memory layer, «Приватность») и утверждённый дизайн
-  (`docs/superpowers/specs/2026-09-26-memory-store-design.md` L223-224) заявляют инвариант
-  «`originRef` не может ссылаться на credential-ref». Реализация проверяет `originRef` только как
-  строку ≤ 512 символов (`normalizeOriginRef`, validate.ts L85-90); проверки на credential-ref нет
-  ни в коде, ни в тестах, а сам термин «credential-ref» нигде в репозитории не определён. Нужно
-  решение владельца: переформулировать пункт в canon (docs_stale) или ввести определённый синтаксис
-  и guard в коде (code_stale).
+  (`docs/superpowers/specs/2026-09-26-memory-store-design.md` L223-224) заявляли инвариант
+  «`originRef` не может ссылаться на credential-ref», тогда как `normalizeOriginRef`
+  (validate.ts L85-90) проверяет `originRef` только как строку ≤ 512, а сам термин
+  «credential-ref» нигде в репозитории не определён. Решением владельца сторона canon признана
+  stale: пункт переформулирован под фактическую гарантию — `originRef` это непрозрачный текст
+  провенанса, он не резолвится и отдельно от `text` на секреты не проверяется, а плагин не читает
+  `$DSH_HOME/.credentials.yaml`.
 - **finding_ids:** F-006
-- **coding_agent_prompt:** |
-  Study ARCHITECTURE.md (Memory layer → Приватность), the design spec L223-224 and
-  packages/plugins/dsh-balbes-memory/src/validate.ts (normalizeOriginRef). Decide with the owner
-  which side is stale: (a) docs_stale — drop or reword the credential-ref clause to what the code
-  guarantees (originRef is opaque provenance text, never resolved; the plugin never reads
-  .credentials.yaml); or (b) code_stale — define the credential-ref syntax and add a validation rule
-  plus tests rejecting it. No code change is safe until that syntax is defined.
-
-## Resolved
 
 ### D-001: ARCHITECTURE.md утверждал пустой cordis.patch.yml профиля (фактически — insert balbes-workspaces)
 - **status:** resolved

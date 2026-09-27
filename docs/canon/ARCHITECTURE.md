@@ -282,8 +282,9 @@ interface BalbesMemoryService {
   `Bearer\s+[A-Za-z0-9._-]{16,}`.
 - Это «защитный забор», а не доказательство: слова вида «password policy» без
   значения не срабатывают. Инвариант: плагин не читает
-  `$DSH_HOME/.credentials.yaml`, а `originRef` не может ссылаться на
-  credential-ref.
+  `$DSH_HOME/.credentials.yaml`; `originRef` — непрозрачный текст провенанса
+  (идентификатор сессии, путь, URL), он не резолвится и отдельно от `text` на
+  секреты не проверяется.
 
 ### Миграции и жизненный цикл
 

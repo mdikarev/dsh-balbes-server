@@ -1,6 +1,6 @@
 # Хранилище и модель памяти
 
-- Status: implementing
+- Status: absorbed
 - Focus: фундамент памяти — запись, уровни, персистентность, сервис
 - Design: docs/superpowers/specs/2026-09-26-memory-store-design.md
 - Unblocks: p10b, p10c, p10d, p13
