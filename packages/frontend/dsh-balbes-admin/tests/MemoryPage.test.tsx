@@ -66,7 +66,7 @@ describe("MemoryPage", () => {
     expect(await screen.findByTestId("memory-row:m-new")).toBeTruthy();
   });
 
-  it("shows the secret-detected error inline and keeps the editor open", async () => {
+  it("shows the Russian secret-detected copy with the rule and keeps the editor open", async () => {
     const api = makeApi([], {
       saveMemory: vi.fn(async () => { throw new ApiError(400, "secret-detected", 'text matches secret rule "ghp_"'); })
     });
@@ -75,7 +75,30 @@ describe("MemoryPage", () => {
     fireEvent.change(screen.getByTestId("memory-form-text"), { target: { value: "ghp_secret" } });
     fireEvent.click(screen.getByTestId("memory-form-save"));
     expect(await screen.findByTestId("memory-form-error")).toBeTruthy();
-    expect(screen.getByTestId("memory-form-error").textContent).toContain("secret-detected");
+    expect(screen.getByTestId("memory-form-error").textContent).toBe("текст похож на секрет (ghp_) — запись отклонена");
+    expect(screen.queryByTestId("memory-form-text")).not.toBeNull();
+  });
+
+  it("renders the plain server message for an invalid-record error", async () => {
+    const api = makeApi([], {
+      saveMemory: vi.fn(async () => { throw new ApiError(400, "invalid-record", "text must not be empty"); })
+    });
+    render(<MemoryPage api={api} />);
+    fireEvent.click(await screen.findByTestId("memory-add"));
+    fireEvent.change(screen.getByTestId("memory-form-text"), { target: { value: "x" } });
+    fireEvent.click(screen.getByTestId("memory-form-save"));
+    expect((await screen.findByTestId("memory-form-error")).textContent).toBe("text must not be empty");
+  });
+
+  it("falls back to the raw message when the secret error has no quoted rule", async () => {
+    const api = makeApi([], {
+      saveMemory: vi.fn(async () => { throw new ApiError(400, "secret-detected", "looks secret"); })
+    });
+    render(<MemoryPage api={api} />);
+    fireEvent.click(await screen.findByTestId("memory-add"));
+    fireEvent.change(screen.getByTestId("memory-form-text"), { target: { value: "x" } });
+    fireEvent.click(screen.getByTestId("memory-form-save"));
+    expect((await screen.findByTestId("memory-form-error")).textContent).toBe("текст похож на секрет (looks secret) — запись отклонена");
   });
 
   it("deletes through the confirmation modal", async () => {
@@ -85,6 +108,21 @@ describe("MemoryPage", () => {
     fireEvent.click(screen.getByTestId("memory-delete-confirm"));
     await waitFor(() => expect(api.deleteMemory).toHaveBeenCalledWith("m-1"));
     expect(await screen.findByTestId("memory-empty")).toBeTruthy();
+  });
+
+  it("shows a failed delete inside the modal and keeps it open", async () => {
+    const api = makeApi([record()], {
+      deleteMemory: vi.fn(async () => { throw new ApiError(500, "internal", "delete failed"); })
+    });
+    render(<MemoryPage api={api} />);
+    fireEvent.click(await screen.findByTestId("memory-delete:m-1"));
+    fireEvent.click(screen.getByTestId("memory-delete-confirm"));
+    expect((await screen.findByTestId("memory-delete-error")).textContent).toBe("delete failed");
+    expect(screen.getByTestId("memory-delete-confirm")).toBeTruthy();
+    expect(screen.queryByTestId("memory-action-error")).toBeNull();
+    fireEvent.click(screen.getByTestId("memory-delete-cancel"));
+    fireEvent.click(screen.getByTestId("memory-delete:m-1"));
+    expect(screen.queryByTestId("memory-delete-error")).toBeNull();
   });
 
   it("shows the no-results state when an active filter matches nothing", async () => {

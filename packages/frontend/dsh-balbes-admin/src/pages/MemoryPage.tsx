@@ -28,8 +28,18 @@ function parseTags(raw: string): string[] {
   return raw.split(/[\s,]+/).map((tag) => tag.trim()).filter((tag) => tag !== "");
 }
 
+function secretRule(message: string): string {
+  const match = /"([^"]*)"\s*$/.exec(message);
+  return match?.[1] ?? message;
+}
+
 function messageOf(error: unknown): string {
-  if (error instanceof ApiError) return error.code + ": " + error.message;
+  if (error instanceof ApiError) {
+    if (error.code === "secret-detected") {
+      return `текст похож на секрет (${secretRule(error.message)}) — запись отклонена`;
+    }
+    return error.message;
+  }
   return error instanceof Error ? error.message : "неизвестная ошибка";
 }
 
@@ -44,7 +54,7 @@ export default function MemoryPage({ api }: { api: AdminApi }) {
   const [level, setLevel] = useState<Level>({ kind: "global" });
   const [records, setRecords] = useState<MemoryRecord[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
   const [type, setType] = useState<MemoryType | "all">("all");
@@ -113,6 +123,16 @@ export default function MemoryPage({ api }: { api: AdminApi }) {
     setEditor({ mode: "edit", record });
   }
 
+  function openDelete(record: MemoryRecord): void {
+    setDeleteError(null);
+    setToDelete(record);
+  }
+
+  function closeDelete(): void {
+    setDeleteError(null);
+    setToDelete(null);
+  }
+
   async function saveEditor(): Promise<void> {
     if (editor === null || busy) return;
     if (formText.trim() === "") {
@@ -145,18 +165,18 @@ export default function MemoryPage({ api }: { api: AdminApi }) {
   async function confirmDelete(): Promise<void> {
     if (toDelete === null || busy) return;
     setBusy(true);
-    setActionError(null);
+    setDeleteError(null);
     try {
       await api.deleteMemory(toDelete.id);
-      setToDelete(null);
+      closeDelete();
       await load();
     } catch (error) {
       if (error instanceof ApiError && error.status === 404) {
         // the record was deleted by another actor: close the modal and refresh
-        setToDelete(null);
+        closeDelete();
         await load();
       } else {
-        setActionError(messageOf(error));
+        setDeleteError(messageOf(error));
       }
     } finally {
       setBusy(false);
@@ -167,10 +187,6 @@ export default function MemoryPage({ api }: { api: AdminApi }) {
 
   return (
     <div className="memory-page" data-testid="memory-page">
-      {actionError !== null && (
-        <p className="form-error memory-banner" role="alert" data-testid="memory-action-error">{actionError}</p>
-      )}
-
       <div className="memory-toolbar">
         <select
           className="memory-level"
@@ -265,7 +281,7 @@ export default function MemoryPage({ api }: { api: AdminApi }) {
                 <span className="memory-provenance">{ORIGIN_LABELS[record.origin]} · {formatTime(record.updatedAt)}</span>
                 <span className="memory-row-actions">
                   <button type="button" className="btn-ghost" onClick={() => openEdit(record)} data-testid={"memory-edit:" + record.id}>Изменить</button>
-                  <button type="button" className="btn-danger" onClick={() => setToDelete(record)} data-testid={"memory-delete:" + record.id}>Удалить</button>
+                  <button type="button" className="btn-danger" onClick={() => openDelete(record)} data-testid={"memory-delete:" + record.id}>Удалить</button>
                 </span>
               </div>
               <p className="memory-row-text">{record.text}</p>
@@ -328,10 +344,13 @@ export default function MemoryPage({ api }: { api: AdminApi }) {
       )}
 
       {toDelete !== null && (
-        <Modal title="Удалить запись" onClose={() => setToDelete(null)}>
+        <Modal title="Удалить запись" onClose={closeDelete}>
           <p className="ws-modal-text">Удалить запись «{toDelete.text.slice(0, 80)}» безвозвратно?</p>
+          {deleteError !== null && (
+            <p className="form-error" role="alert" data-testid="memory-delete-error">{deleteError}</p>
+          )}
           <div className="modal-actions">
-            <button type="button" className="btn-ghost" onClick={() => setToDelete(null)} data-testid="memory-delete-cancel">Отмена</button>
+            <button type="button" className="btn-ghost" onClick={closeDelete} data-testid="memory-delete-cancel">Отмена</button>
             <button type="button" className="btn-danger" disabled={busy} onClick={() => void confirmDelete()} data-testid="memory-delete-confirm">{busy ? "Удаляется..." : "Удалить"}</button>
           </div>
         </Modal>
