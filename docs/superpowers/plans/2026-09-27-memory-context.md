@@ -1954,7 +1954,9 @@ describe.skipIf(!realEnabled)("REAL composition (memory delivery)", () => {
       expect(coreSave.status, coreSave.raw).toBe(200);
       const pushSave = await postJson(
         base + "/api/memory/save",
-        { scope: { kind: "global" }, type: "decision", text: "deploy " + pushMarker + " rollback procedure", pinned: false },
+        // Маркер стоит за пределами MAP_PREVIEW (100 символов), поэтому его может нести только
+        // push-блок: preview карты обрывается раньше, и ассерт доказывает именно push-доставку.
+        { scope: { kind: "global" }, type: "decision", text: "deploy " + "a".repeat(120) + " " + pushMarker, pinned: false },
         token
       );
       expect(pushSave.status, pushSave.raw).toBe(200);
