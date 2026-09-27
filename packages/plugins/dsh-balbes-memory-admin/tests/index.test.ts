@@ -41,6 +41,7 @@ interface FakeService extends MemoryServiceLike {
   updated: Array<{ id: string; patch: MemoryPatchLike }>;
   deleted: string[];
   searched: Array<{ query: string; filter?: MemoryFilterLike }>;
+  listed: MemoryFilterLike[];
 }
 
 function fakeService(overrides: Partial<MemoryServiceLike> = {}): FakeService {
@@ -48,14 +49,15 @@ function fakeService(overrides: Partial<MemoryServiceLike> = {}): FakeService {
   const updated: Array<{ id: string; patch: MemoryPatchLike }> = [];
   const deleted: string[] = [];
   const searched: Array<{ query: string; filter?: MemoryFilterLike }> = [];
+  const listed: MemoryFilterLike[] = [];
   const base: MemoryServiceLike = {
     async save(draft) { saved.push(draft); return record({ scope: draft.scope, type: draft.type, text: draft.text, origin: draft.origin }); },
     async update(id, patch) { updated.push({ id, patch }); return record({ id, text: patch.text ?? "updated" }); },
     async delete(id) { deleted.push(id); return true; },
-    async list() { return [record()]; },
+    async list(filter) { if (filter !== undefined) listed.push(filter); return [record()]; },
     async search(request) { searched.push({ query: request.query, ...(request.filter === undefined ? {} : { filter: request.filter }) }); return [{ record: record({ text: "hit" }), rank: 1 }]; }
   };
-  return Object.assign(base, overrides, { saved, updated, deleted, searched });
+  return Object.assign(base, overrides, { saved, updated, deleted, searched, listed });
 }
 
 interface HarnessOptions { service?: MemoryServiceLike | undefined; omitHttp?: boolean; }
@@ -124,6 +126,7 @@ describe("balbes-memory-admin plugin", () => {
     expect(res.status).toBe(200);
     expect(res.json).toEqual({ records: [record()] });
     expect(service.searched).toEqual([]);
+    expect(service.listed).toEqual([{ scope: { kind: "global" }, type: "note", tag: "x", pinned: true }]);
   });
 
   it("uses FTS search when query is non-blank", async () => {
