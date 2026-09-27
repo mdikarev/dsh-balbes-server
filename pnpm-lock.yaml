@@ -113,6 +113,9 @@ importers:
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.1
+      dsh-balbes-contracts:
+        specifier: workspace:*
+        version: link:../../contracts
       typescript:
         specifier: ^5.6.0
         version: 5.9.3

@@ -343,3 +343,55 @@ export interface SessionsReadResponse {
   messages: TranscriptEntry[];
 }
 
+// Memory surface - owner-facing long-term memory (store is p10a, admin is p10b)
+export type MemoryType = "fact" | "preference" | "decision" | "note";
+export type MemoryScope = { kind: "global" } | { kind: "project"; name: string };
+export type MemoryOrigin = "owner" | "agent";
+
+export interface MemoryRecord {
+  id: string;
+  scope: MemoryScope;
+  type: MemoryType;
+  text: string;
+  tags: string[];
+  pinned: boolean;
+  origin: MemoryOrigin;
+  originRef: string | null;
+  createdAt: string; // ISO 8601
+  updatedAt: string; // ISO 8601
+}
+
+export interface MemoryListRequest {
+  scope?: MemoryScope;
+  type?: MemoryType;
+  tag?: string;
+  pinned?: boolean;
+  /** Non-blank value switches the server to FTS search. */
+  query?: string;
+  limit?: number;
+  offset?: number;
+}
+export interface MemoryListResponse {
+  records: MemoryRecord[];
+}
+
+export interface MemorySaveRequest {
+  /** Present = update; absent = create. */
+  id?: string;
+  /** Required on create; rejected on update (scope is immutable). */
+  scope?: MemoryScope;
+  type: MemoryType;
+  text: string;
+  tags?: string[];
+  pinned?: boolean;
+}
+export interface MemorySaveResponse {
+  record: MemoryRecord;
+}
+
+export interface MemoryDeleteRequest {
+  id: string;
+}
+export interface MemoryDeleteResponse {
+  deleted: boolean;
+}

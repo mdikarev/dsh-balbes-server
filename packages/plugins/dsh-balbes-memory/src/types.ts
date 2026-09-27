@@ -1,19 +1,6 @@
-export type MemoryType = "fact" | "preference" | "decision" | "note";
-export type MemoryScope = { kind: "global" } | { kind: "project"; name: string };
-export type MemoryOrigin = "owner" | "agent";
+import type { MemoryOrigin, MemoryRecord, MemoryScope, MemoryType } from "dsh-balbes-contracts";
 
-export interface MemoryRecord {
-  id: string;
-  scope: MemoryScope;
-  type: MemoryType;
-  text: string;
-  tags: string[];
-  pinned: boolean;
-  origin: MemoryOrigin;
-  originRef: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
+export type { MemoryOrigin, MemoryRecord, MemoryScope, MemoryType } from "dsh-balbes-contracts";
 
 export interface MemoryDraft {
   scope: MemoryScope;
