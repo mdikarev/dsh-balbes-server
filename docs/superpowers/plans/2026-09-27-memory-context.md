@@ -556,7 +556,7 @@ describe("renderPush", () => {
 
 describe("escapeInterpolation", () => {
   it("escapes strict prompt interpolation to a fixed point", () => {
-    expect(escapeInterpolation("{{{x}}}")).toBe("{ {{x}}}");
+    expect(escapeInterpolation("{{{x}}}")).toBe("{ { {x}}}");
     expect(escapeInterpolation("plain")).toBe("plain");
   });
 });
