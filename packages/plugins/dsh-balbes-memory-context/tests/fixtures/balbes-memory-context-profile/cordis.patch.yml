@@ -1,0 +1,11 @@
+# Test composition for the memory-context plugin: dsh-base + the balbes host
+# bundle + the memory store + the memory admin routes + the plugin under test.
+- insert:
+    - id: balbes-memory
+      name: 'dsh-balbes-memory'
+
+    - id: balbes-memory-context
+      name: 'dsh-balbes-memory-context'
+
+    - id: balbes-memory-admin
+      name: 'dsh-balbes-memory-admin'
