@@ -17,7 +17,7 @@
   `models.catalog`, `models.save`, `models.delete`, `models.default`,
   `telegram.status`,
   `telegram.save`, `telegram.test`, `telegram.disable`, `telegram.clear-token`,
-  `sessions.list`, `sessions.read`.
+  `sessions.list`, `sessions.read`, `memory.list`, `memory.save`, `memory.delete`.
 - Вне scope: статика SPA (не API), внутренние сервисные интерфейсы Cordis
   (в т.ч. сервис `balbesModels` и командная поверхность Telegram-канала),
   streaming-доставка ответов модели (Telegram отправляет финальные сообщения и
@@ -403,6 +403,35 @@
 - обязательные: `seq: number`, `time: string(ISO)`, `role: TranscriptRole`, `kind: TranscriptKind`, `text: string` (видимое тело; `""` для строк, у которых тело в `detail`), `inContext: boolean`;
 - опциональные: `detail?: string` (техническое тело свёрнутой строки), `toolName?: string` (`kind: "tool-call"`), `form?: string` (`kind: "context"`: plugin `ContextForm`, когда объявлен), `isError?: boolean` (`kind: "tool-result"`);
 - компиляторный SoT — `packages/contracts/src/index.ts` (типы `TranscriptEntry`, `SessionsReadRequest`, `SessionsReadResponse`).
+
+### memory.list — записи памяти (список или FTS-поиск)
+- method: POST
+- path: /api/memory/list
+- auth: bearer
+- request: `{scope?: {kind: "global"} | {kind: "project", name: string}, type?: "fact"|"preference"|"decision"|"note", tag?: string, pinned?: boolean, query?: string, limit?: number, offset?: number}`
+- response: `{records: MemoryRecord[]}`
+- errors: 400 (`bad-request`: форма тела/scope/фильтров), 401, 400 (`invalid-record`/`invalid-scope`/`invalid-filter` при неверном значении), 500 (`internal`), 503 (`memory-unavailable`: сервис `balbesMemory` не предоставлен)
+- notes: непустой (после trim) `query` переключает на FTS-поиск (`bm25`), иначе — обычный список; порядок — `pinned DESC`, затем для поиска релевантность, для списка `updated_at DESC`; дефолты/максимумы лимитов сервисные (list 100/500, search 20/100). Без `scope` фильтр по scope не применяется.
+
+### memory.save — создать или изменить запись памяти
+- method: POST
+- path: /api/memory/save
+- auth: bearer
+- request: без `id` — создание: `{scope: {...}, type, text, tags?: string[], pinned?: boolean}`; с `id` — правка: `{id, type, text, tags?, pinned?}` (`scope` при правке запрещён)
+- response: `{record: MemoryRecord}`
+- errors: 400 (`bad-request`: форма тела, нет `scope` при создании, передан `scope` при правке, пустой `id`), 400 (`secret-detected`: текст похож на секрет — ничего не пишется; `invalid-record`/`invalid-scope` — значение не прошло валидацию сервиса), 401, 404 (`not-found`: правка несуществующего `id`), 500, 503 (`memory-unavailable`)
+- notes: `scope` неизменяем — смена уровня только delete + save; сервер принудительно пишет `origin: "owner"` при создании и никогда не меняет `origin` при правке; значение `origin` из тела игнорируется; ответ не содержит секретов.
+
+### memory.delete — удалить запись памяти
+- method: POST
+- path: /api/memory/delete
+- auth: bearer
+- request: `{id: string (непустой)}`
+- response: `{deleted: boolean}`
+- errors: 400 (`bad-request`: нет/пустой `id`), 401, 500, 503 (`memory-unavailable`)
+- notes: идемпотентна: повторное удаление отвечает `{deleted: false}`; других побочных эффектов нет.
+
+`MemoryRecord`: `id`, `scope`, `type`, `tags`, `pinned`, `origin` (`"owner"|"agent"`), `originRef: string | null`, `createdAt`/`updatedAt` (ISO). Компиляторный SoT — `packages/contracts/src/index.ts`.
 
 ## Rules & invariants
 
