@@ -56,6 +56,20 @@ describe("buildRecallTool", () => {
     expect(value.records).toEqual([]);
   });
 
+  it("surfaces a service failure as a stable tool error", async () => {
+    const memory: BalbesMemoryReadSlice = {
+      list: async () => [],
+      count: async () => 0,
+      search: async () => {
+        throw new Error("db exploded");
+      }
+    };
+    const tool = buildRecallTool(memory, [{ kind: "global" }]);
+    await expect(tool.execute({ query: "deploy" }, {} as never)).rejects.toThrow(
+      new Error("recall failed: memory search is unavailable")
+    );
+  });
+
   it("passes type/tag/pinned filters through", async () => {
     let seen: unknown;
     const memory: BalbesMemoryReadSlice = {

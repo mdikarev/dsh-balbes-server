@@ -103,8 +103,12 @@ export function buildRecallTool(memory: BalbesMemoryReadSlice, scopes: MemorySco
       if (args.type !== undefined) filter.type = args.type;
       if (args.tag !== undefined) filter.tag = args.tag;
       if (args.pinned !== undefined) filter.pinned = args.pinned;
-      const hits = await memory.search({ query, filter, limit: clampRecallLimit(args.limit) });
-      return { records: hits.map((hit) => hit.record) };
+      try {
+        const hits = await memory.search({ query, filter, limit: clampRecallLimit(args.limit) });
+        return { records: hits.map((hit) => hit.record) };
+      } catch {
+        throw new Error("recall failed: memory search is unavailable");
+      }
     }
   });
 }
