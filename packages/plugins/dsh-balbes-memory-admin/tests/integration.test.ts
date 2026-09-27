@@ -14,6 +14,7 @@ const here = fileURLToPath(new URL(".", import.meta.url));
 const pkgRoot = join(here, "..");
 const hostPkgRoot = join(pkgRoot, "..", "..", "bundles", "dsh-balbes-host");
 const memoryPkgRoot = join(pkgRoot, "..", "dsh-balbes-memory");
+const contractsPkgRoot = join(pkgRoot, "..", "..", "contracts");
 const fixtureProfile = join(here, "fixtures", "balbes-memory-admin-profile");
 const PROFILE = "balbes-memory-admin-test";
 
@@ -31,6 +32,33 @@ async function freePort(): Promise<number> {
       probe.close(() => resolve(port));
     });
   });
+}
+
+/**
+ * The REAL suite copies the BUILT host/memory/memory-admin bundles (lib/,
+ * package.json[, cordis.patch.yml]) into a temp profile's node_modules —
+ * install.sh in miniature. Always compile src -> lib first so the copy is
+ * fresh (a stale lib would silently validate old code). contracts is built
+ * first because memory resolves its type-only imports from contracts/lib.
+ * tsc runs straight from each package's node_modules through node (no pnpm
+ * shell shim on PATH). Mirrors dsh-balbes-host/tests/integration.test.ts
+ * (buildHost) and dsh-balbes-sessions/tests/integration.test.ts
+ * (buildPackages).
+ */
+async function buildPackages(): Promise<void> {
+  const configs: Array<[string, string]> = [
+    [contractsPkgRoot, "tsconfig.build.json"],
+    [memoryPkgRoot, "tsconfig.build.json"],
+    [pkgRoot, "tsconfig.build.json"],
+    [hostPkgRoot, "tsconfig.json"]
+  ];
+  for (const [root, cfg] of configs) {
+    const tsc = join(root, "node_modules", "typescript", "bin", "tsc");
+    await execFileP(process.execPath, [tsc, "-p", join(root, cfg)], {
+      cwd: root,
+      maxBuffer: 16 * 1024 * 1024
+    });
+  }
 }
 
 async function waitForHealth(port: number, child: ReturnType<typeof spawn>, timeoutMs = 90_000): Promise<void> {
@@ -112,10 +140,11 @@ describe.skipIf(!realEnabled)("REAL composition (memory admin API)", () => {
     postJson("http://127.0.0.1:" + port + path, body, token);
 
   beforeAll(async () => {
+    await buildPackages();
     home = await prepareHome();
     port = await freePort();
     await boot(home);
-  }, 120_000);
+  }, 240_000);
 
   afterAll(async () => {
     await stop();
@@ -183,5 +212,5 @@ describe.skipIf(!realEnabled)("REAL composition (memory admin API)", () => {
     await boot(home);
     const listed = await api("/api/memory/list", { scope: { kind: "global" } });
     expect((listed.json as { records: Array<{ id: string }> }).records.some((r) => r.id === id)).toBe(true);
-  });
+  }, 60_000);
 });
