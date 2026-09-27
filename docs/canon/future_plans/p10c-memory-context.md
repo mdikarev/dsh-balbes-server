@@ -1,6 +1,6 @@
 # Доставка памяти в контекст
 
-- Status: implementing
+- Status: absorbed
 - Depends: p10a
 - Design: docs/superpowers/specs/2026-09-27-memory-context-design.md
 - Focus: ядро памяти, карта, инструмент `recall`, push top-K
