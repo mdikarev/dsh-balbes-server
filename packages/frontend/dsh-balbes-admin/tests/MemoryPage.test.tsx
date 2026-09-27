@@ -86,4 +86,26 @@ describe("MemoryPage", () => {
     await waitFor(() => expect(api.deleteMemory).toHaveBeenCalledWith("m-1"));
     expect(await screen.findByTestId("memory-empty")).toBeTruthy();
   });
+
+  it("shows the no-results state when an active filter matches nothing", async () => {
+    render(<MemoryPage api={makeApi([])} />);
+    expect(await screen.findByTestId("memory-empty")).toBeTruthy();
+    fireEvent.change(screen.getByTestId("memory-search"), { target: { value: "zzz" } });
+    expect(await screen.findByTestId("memory-no-results")).toBeTruthy();
+    expect(screen.getByTestId("memory-no-results").textContent).toContain("Ничего не найдено");
+    expect(screen.queryByTestId("memory-empty")).toBeNull();
+  });
+
+  it("closes the editor and refreshes the list when an edit save hits a stale 404", async () => {
+    const api = makeApi([record()], {
+      saveMemory: vi.fn(async () => { throw new ApiError(404, "not-found", "memory record not found"); })
+    });
+    render(<MemoryPage api={api} />);
+    fireEvent.click(await screen.findByTestId("memory-edit:m-1"));
+    expect(screen.getByTestId("memory-form-text")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("memory-form-save"));
+    await waitFor(() => expect(screen.queryByTestId("memory-form-text")).toBeNull());
+    expect(screen.queryByTestId("memory-form-error")).toBeNull();
+    await waitFor(() => expect(api.listMemory).toHaveBeenCalledTimes(2));
+  });
 });

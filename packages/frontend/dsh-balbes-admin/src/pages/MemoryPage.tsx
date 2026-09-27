@@ -130,7 +130,13 @@ export default function MemoryPage({ api }: { api: AdminApi }) {
       setEditor(null);
       await load();
     } catch (error) {
-      setFormError(messageOf(error));
+      if (error instanceof ApiError && error.status === 404) {
+        // the record was deleted by another actor: close the editor and refresh
+        setEditor(null);
+        await load();
+      } else {
+        setFormError(messageOf(error));
+      }
     } finally {
       setBusy(false);
     }
@@ -145,11 +151,19 @@ export default function MemoryPage({ api }: { api: AdminApi }) {
       setToDelete(null);
       await load();
     } catch (error) {
-      setActionError(messageOf(error));
+      if (error instanceof ApiError && error.status === 404) {
+        // the record was deleted by another actor: close the modal and refresh
+        setToDelete(null);
+        await load();
+      } else {
+        setActionError(messageOf(error));
+      }
     } finally {
       setBusy(false);
     }
   }
+
+  const filtersActive = query.trim() !== "" || type !== "all" || tag.trim() !== "" || pinnedOnly;
 
   return (
     <div className="memory-page" data-testid="memory-page">
@@ -236,7 +250,11 @@ export default function MemoryPage({ api }: { api: AdminApi }) {
           <button type="button" className="btn" onClick={() => void load()} data-testid="memory-load-retry">Повторить</button>
         </div>
       ) : records.length === 0 ? (
-        <p className="ws-placeholder" data-testid="memory-empty">Память пуста - добавьте первую запись</p>
+        filtersActive ? (
+          <p className="ws-placeholder" data-testid="memory-no-results">Ничего не найдено</p>
+        ) : (
+          <p className="ws-placeholder" data-testid="memory-empty">Память пуста - добавьте первую запись</p>
+        )
       ) : (
         <ul className="memory-list" data-testid="memory-list">
           {records.map((record) => (
