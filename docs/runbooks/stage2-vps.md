@@ -648,6 +648,25 @@ node --no-warnings -e 'const{DatabaseSync}=require("node:sqlite");const db=new D
 # ожидается: файл существует, user_version: 1
 ```
 
+Доставка памяти в модель (плагин `balbes-memory-context`):
+
+```bash
+# плагин доставки загрузился; после первого промпта — counts-строка
+journalctl -u dsh-balbes -n 200 | grep balbes-memory-context
+# ожидается: строка вида "balbes-memory-context: scope=global core=... map=... push=...";
+# "missing" и "prepare failed" означают деградацию — см. «Устранение неполадок».
+
+# память доезжает до модели
+TOKEN=... # из POST /api/auth/login
+curl -fsS -X POST http://127.0.0.1:8080/api/memory/save \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"scope":{"kind":"global"},"type":"fact","text":"smoke-marker: код запуска Балбеса — dsh-balbes","pinned":true}'
+curl -fsS -X POST http://127.0.0.1:8080/api/prompt \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"prompt":"Повтори дословно код запуска Балбеса"}'
+# ожидается: ответ содержит smoke-marker и «dsh-balbes»
+```
+
 ### Git-доступ и создание проекта из GitHub
 
 Владелец задаёт GitHub-токен в секции «Git-доступ» страницы «Проекты» (для
@@ -1085,6 +1104,12 @@ curl -fsS -X POST http://127.0.0.1:8080/api/health   # {"ok":true,...}
 только если меняли что-то руками (конфигурацию юнита, файлы окружения и т.п.),
 см. «Устранение неполадок».
 
+Доставка памяти включается строкой `balbes-memory-context` в
+`profiles/balbes/cordis.patch.yml`: обновление — тот же повторный `install.sh`
+(`git pull --ff-only` → сборка → `sync_profile` →
+`copy_memory_context_into_profile()` → рестарт `dsh-balbes`). Миграций БД нет —
+схема памяти не меняется, поэтому отдельного шага у `balbes-memory-context` нет.
+
 ### Миграции памяти
 
 Плагин `balbes-memory` прогоняет миграции схемы при открытии БД на старте
@@ -1472,6 +1497,29 @@ sudo systemctl stop dsh-balbes
 cp "$HOME/.dsh/storages/memory.sqlite.bak-v1" "$HOME/.dsh/storages/memory.sqlite"
 rm -f "$HOME/.dsh/storages/memory.sqlite-wal" "$HOME/.dsh/storages/memory.sqlite-shm"
 sudo systemctl start dsh-balbes
+```
+
+### Память не доезжает до модели (`balbes-memory-context`)
+
+Симптом: в `journalctl -u dsh-balbes` строка
+`balbes-memory-context: balbesMemory/systemPrompt/tools missing ...` — плагин
+загрузился, но сервис `balbesMemory` не найден, поэтому доставка памяти в
+модель выключена. Проверьте композицию профиля и наличие `balbes-memory`:
+
+```bash
+dsh --profile balbes --dump-config | grep -E 'balbes-memory'
+# ожидается: и balbes-memory, и balbes-memory-context; если context есть, а
+# memory нет — пересинхронизируйте профиль повторным install.sh.
+```
+
+`balbes-memory-context: prepare failed: ...` — плагин загрузился, но чтение
+памяти упало на первом промпте (доставка на этот промпт пустая). Проверьте
+файл `$DSH_HOME/storages/memory.sqlite` и права пользователя сервиса:
+
+```bash
+ls -l "$HOME/.dsh/storages/memory.sqlite"*
+# ожидается: файл существует, владелец — пользователь сервиса; см. также
+# «Память не открылась / миграция не применилась».
 ```
 
 ## Где лежат данные

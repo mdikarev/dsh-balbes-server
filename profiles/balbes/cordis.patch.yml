@@ -22,6 +22,9 @@
     - id: balbes-memory
       name: 'dsh-balbes-memory'
 
+    - id: balbes-memory-context
+      name: 'dsh-balbes-memory-context'
+
     - id: balbes-memory-admin
       name: 'dsh-balbes-memory-admin'
 

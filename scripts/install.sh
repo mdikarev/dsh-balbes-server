@@ -16,11 +16,12 @@
 # (dsh-balbes-host,
 # dsh-balbes-contracts, dsh-balbes-workspaces, dsh-balbes-git,
 # dsh-balbes-models, dsh-balbes-sessions, dsh-balbes-telegram,
-# dsh-balbes-memory, dsh-balbes-memory-admin, the admin SPA),
+# dsh-balbes-memory, dsh-balbes-memory-context, dsh-balbes-memory-admin,
+# the admin SPA),
 # syncs
 # profiles/balbes from the repository into $DSH_HOME/profiles, copies the
-# built host and the workspaces, git, models, sessions, telegram, memory
-# and memory admin plugins into
+# built host and the workspaces, git, models, sessions, telegram, memory,
+# memory context and memory admin plugins into
 # the profile, deploys the built
 # admin UI, stores the DeepSeek API key in
 # $DSH_HOME/.credentials.yaml only when DEEPSEEK_API_KEY is set (normally the
@@ -522,7 +523,7 @@ verify_composition() {
 # Сборка идёт ДО рестарта сервиса: при падении install.sh выходит с ошибкой,
 # работающий сервис не трогается.
 build_workspace() {
-    info "Building workspace packages (host, workspaces, models, sessions, telegram, memory, home, contracts, admin SPA)..."
+    info "Building workspace packages (host, workspaces, models, sessions, telegram, memory, memory context, home, contracts, admin SPA)..."
     ( cd "$REPO_DIR" && pnpm install --frozen-lockfile=false && node scripts/link-core.mjs && pnpm -r --if-present run build ) || die "workspace build failed"
     info "Workspace build OK."
 }
@@ -666,6 +667,24 @@ copy_memory_into_profile() {
     rm -rf "$dst/tests" "$dst/src" "$dst/lib/types"
     chmod -R u+rwX,go-w "$dst"
     info "Memory plugin copied into $dst"
+}
+
+# copy_memory_context_into_profile — зеркало copy_memory_into_profile: собранный
+# плагин доставки памяти копируется в node_modules профиля.
+copy_memory_context_into_profile() {
+    local profile_dir="$DSH_HOME/profiles/$PROFILE_NAME"
+    local src="$REPO_DIR/packages/plugins/dsh-balbes-memory-context"
+    local dst="$profile_dir/node_modules/dsh-balbes-memory-context"
+    if [[ ! -d "$src/lib" ]]; then
+        die "memory context plugin not built at $src/lib — build step failed"
+    fi
+    mkdir -p "$profile_dir/node_modules"
+    rm -rf "$dst"
+    cp -R "$src" "$dst"
+    rm -f "$dst/tsconfig.json" "$dst/tsconfig.build.json"
+    rm -rf "$dst/tests" "$dst/src" "$dst/lib/types"
+    chmod -R u+rwX,go-w "$dst"
+    info "Memory context plugin copied into $dst"
 }
 
 # copy_memory_admin_into_profile — зеркало copy_memory_into_profile: собранный
@@ -868,6 +887,7 @@ main() {
     copy_sessions_into_profile
     copy_home_into_profile
     copy_memory_into_profile
+    copy_memory_context_into_profile
     copy_memory_admin_into_profile
     deploy_ui
     configure_api_key
