@@ -1,0 +1,8 @@
+# Test composition for the memory admin plugin: dsh-base + the balbes host
+# bundle (server + auth + /api/health) + the memory store + the admin routes.
+- insert:
+    - id: balbes-memory
+      name: 'dsh-balbes-memory'
+
+    - id: balbes-memory-admin
+      name: 'dsh-balbes-memory-admin'
