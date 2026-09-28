@@ -650,21 +650,35 @@ node --no-warnings -e 'const{DatabaseSync}=require("node:sqlite");const db=new D
 
 Доставка памяти в модель (плагин `balbes-memory-context`):
 
-```bash
-# плагин доставки загрузился; после первого промпта — counts-строка
-journalctl -u dsh-balbes -n 200 | grep balbes-memory-context
-# ожидается: строка вида "balbes-memory-context: scope=global core=... map=... push=...";
-# "missing" и "prepare failed" означают деградацию — см. «Устранение неполадок».
+Доставка не имеет HTTP-ручки, поэтому единственная надёжная проверка — попросить
+модель воспроизвести факт, которого она не может знать иначе. Плагин пишет
+счётчики доставки (`scope=… core=… map=… push=…`) уровнем `info`, а демон по
+умолчанию журналирует только `warn`/`error`: отсутствие этой строки в
+`journalctl` — норма, а не сбой. Ищите в журнале только предупреждения
+`balbes-memory-context: ... missing` и `prepare failed` (см. «Устранение
+неполадок»).
 
-# память доезжает до модели
+```bash
 TOKEN=... # из POST /api/auth/login
+
+# уникальный факт, который модель не может угадать. Текст — без пометок вида
+# «smoke-marker»: иначе модель вправе счесть запись тестовой и ответить по догадке.
 curl -fsS -X POST http://127.0.0.1:8080/api/memory/save \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d '{"scope":{"kind":"global"},"type":"fact","text":"smoke-marker: код запуска Балбеса — dsh-balbes","pinned":true}'
+  -d '{"scope":{"kind":"global"},"type":"fact","text":"Внутренний код сборки Балбеса — MARS-7Q3X-9F","pinned":true}'
+# сохраните id из ответа: {"record":{...,"id":"<id>",...}}
+
+# прямой вопрос про тот же факт: ответ должен содержать ровно значение
 curl -fsS -X POST http://127.0.0.1:8080/api/prompt \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d '{"prompt":"Повтори дословно код запуска Балбеса"}'
-# ожидается: ответ содержит smoke-marker и «dsh-balbes»
+  -d '{"prompt":"Какой внутренний код сборки Балбеса? Ответь только значением."}'
+# ожидается: ответ содержит MARS-7Q3X-9F. Дословного текста записи в ответе не
+# ждите: модель отвечает на вопрос, а не повторяет запись целиком.
+
+# уборка тестовой записи
+curl -fsS -X POST http://127.0.0.1:8080/api/memory/delete \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{"id":"<id>"}'
+# ожидается: {"deleted":true}
 ```
 
 ### Git-доступ и создание проекта из GitHub
