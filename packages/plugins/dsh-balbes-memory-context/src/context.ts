@@ -1,11 +1,15 @@
 import type { MemoryRecord, MemoryScope } from "dsh-balbes-contracts";
+import { createLlmClassifier, type LlmClassifierSeat } from "./classify.js";
 import { buildFtsQuery } from "./query.js";
+import { buildRememberTool } from "./remember.js";
 import { escapeInterpolation, renderCore, renderMap, renderPush } from "./render.js";
 import { buildRecallTool } from "./recall.js";
 import type {
   BalbesMemoryContextService,
   BalbesMemoryReadSlice,
-  MemoryContextScope
+  MemoryContextScope,
+  MemoryWriteContext,
+  MemoryWriteSlice
 } from "./types.js";
 
 export const MEMORY_SECTION_NAME = "balbes:memory";
@@ -41,9 +45,10 @@ function scopeTag(scope: MemoryContextScope): string {
 
 export function createMemoryContext(logger: MemoryContextLogger): BalbesMemoryContextService {
   return {
-    attach(agentCtx: unknown, scope: MemoryContextScope) {
+    attach(agentCtx: unknown, scope: MemoryContextScope, write?: MemoryWriteContext) {
       const ctx = agentCtx as AgentCtxLike;
       const memory = ctx.get("balbesMemory") as BalbesMemoryReadSlice | undefined;
+      const llm = ctx.get("llm") as LlmClassifierSeat | undefined;
       const systemPrompt = ctx.get("systemPrompt") as SystemPromptSeatLike | undefined;
       const tools = ctx.get("tools") as ToolSeatLike | undefined;
       if (memory === undefined || systemPrompt === undefined || tools === undefined) {
@@ -55,6 +60,14 @@ export function createMemoryContext(logger: MemoryContextLogger): BalbesMemoryCo
       systemPrompt.section({ name: MEMORY_SECTION_NAME, order: MEMORY_SECTION_ORDER, text: () => state.coreMap });
       systemPrompt.context({ name: MEMORY_CONTEXT_NAME, order: MEMORY_CONTEXT_ORDER, text: () => state.push });
       tools.register(buildRecallTool(memory, scopes));
+      const writable = memory as BalbesMemoryReadSlice & Partial<MemoryWriteSlice>;
+      if (typeof writable.save === "function" && write !== undefined) {
+        const classify =
+          llm !== undefined && write.selection !== undefined
+            ? createLlmClassifier(llm, write.selection, logger)
+            : undefined;
+        tools.register(buildRememberTool(writable as MemoryWriteSlice, scope, write, classify, logger));
+      }
       return {
         async prepare(taskText: string): Promise<void> {
           try {

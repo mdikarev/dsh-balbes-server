@@ -7,7 +7,8 @@ import {
   MEMORY_SECTION_NAME,
   MEMORY_SECTION_ORDER
 } from "../src/context.js";
-import type { BalbesMemoryReadSlice, MemoryReadFilter } from "../src/types.js";
+import type { LlmClassifierSeat } from "../src/classify.js";
+import type { BalbesMemoryReadSlice, MemoryReadFilter, MemoryWriteContext } from "../src/types.js";
 
 function record(partial: Partial<MemoryRecord> & { id: string; text: string }): MemoryRecord {
   return {
@@ -37,21 +38,31 @@ interface Harness {
   infos: string[];
 }
 
-function harness(records: MemoryRecord[], options: { withoutTools?: boolean } = {}): Harness {
+function harness(
+  records: MemoryRecord[],
+  options: { withoutTools?: boolean; writable?: boolean; llm?: LlmClassifierSeat } = {}
+): Harness {
   const sections: SectionSpec[] = [];
   const contexts: SectionSpec[] = [];
   const tools: unknown[] = [];
   const warnings: string[] = [];
   const infos: string[] = [];
-  const memory: BalbesMemoryReadSlice = {
+  const memory = {
     list: async (_filter?: MemoryReadFilter) => records,
     count: async (_filter?: MemoryReadFilter) => records.length,
     search: async () =>
-      records.filter((r) => r.text.includes("deploy")).map((r) => ({ record: r, rank: -1 }))
+      records.filter((r) => r.text.includes("deploy")).map((r) => ({ record: r, rank: -1 })),
+    ...(options.writable === true
+      ? {
+          save: async (draft: { text: string; scope: MemoryRecord["scope"]; type: MemoryRecord["type"] }) =>
+            record({ id: "saved", text: draft.text, scope: draft.scope, type: draft.type, origin: "agent" })
+        }
+      : {})
   };
   const agentCtx = {
     get(key: string): unknown {
-      if (key === "balbesMemory") return memory;
+      if (key === "balbesMemory") return memory as unknown as BalbesMemoryReadSlice;
+      if (key === "llm") return options.llm;
       if (key === "systemPrompt") {
         return {
           section: (spec: SectionSpec) => {
@@ -88,9 +99,11 @@ function harness(records: MemoryRecord[], options: { withoutTools?: boolean } = 
 }
 
 type HarnessWithAttach = Harness & {
-  attach(agentCtx: unknown, scope: { kind: "global" } | { kind: "project"; name: string }): {
-    prepare(taskText: string): Promise<void>;
-  };
+  attach(
+    agentCtx: unknown,
+    scope: { kind: "global" } | { kind: "project"; name: string },
+    write?: MemoryWriteContext
+  ): { prepare(taskText: string): Promise<void> };
 };
 
 describe("createMemoryContext", () => {
@@ -143,5 +156,23 @@ describe("createMemoryContext", () => {
     const attachment = h.attach(failing, { kind: "global" });
     await expect(attachment.prepare("x")).resolves.toBeUndefined();
     expect(h.warnings.join("\n")).toContain("prepare failed");
+  });
+
+  it("registers remember beside recall when the store is writable and a write context is given", () => {
+    const h = harness([record({ id: "a", text: "hello" })], { writable: true }) as HarnessWithAttach;
+    h.attach(h.agentCtx, { kind: "global" }, { channel: "admin", sessionId: "s1" });
+    expect(h.tools.map((tool) => (tool as { name: string }).name)).toEqual(["recall", "remember"]);
+  });
+
+  it("does not register remember without a write context", () => {
+    const h = harness([record({ id: "a", text: "hello" })], { writable: true }) as HarnessWithAttach;
+    h.attach(h.agentCtx, { kind: "global" });
+    expect(h.tools).toHaveLength(1);
+  });
+
+  it("does not register remember on a read-only store", () => {
+    const h = harness([record({ id: "a", text: "hello" })]) as HarnessWithAttach;
+    h.attach(h.agentCtx, { kind: "global" }, { channel: "admin", sessionId: "s1" });
+    expect(h.tools).toHaveLength(1);
   });
 });
