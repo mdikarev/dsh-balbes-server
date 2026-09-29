@@ -14,6 +14,23 @@ _(нет открытых расхождений)_
 
 ## Resolved
 
+### D-007: ARCHITECTURE.md неверно описывал источник `sessionId` в проводке записи памяти
+- **status:** resolved
+- **decision:** docs_stale
+- **canon_paths:** docs/canon/ARCHITECTURE.md
+- **code_paths:** packages/bundles/dsh-balbes-host/src/runner.ts, packages/plugins/dsh-balbes-telegram/src/agentTask.ts
+- **evidence:** ARCHITECTURE.md (Memory layer, «Запись памяти: инструмент `remember` (p10e)», блок «Проводка») говорил
+  «host `runner.ts` (`channel = "admin"`, sessionId из запроса, selection текущей модели)», тогда как ручка
+  `POST /api/prompt` принимает только `{prompt}` (API_CONTRACTS.md, блок `prompt`), а `runner.ts:112` генерирует
+  свежий `sessionId = session-<uuid>` на каждый промпт и передаёт его и в `agents.create`, и в `attach`
+  (`runner.ts:114`, `runner.ts:121`); тот же блок не упоминал, что Telegram берёт эффективный `sessionId`
+  (возобновлённый при успешном resume, иначе созданный — `agentTask.ts:532-544`). Заодно уточнена формулировка
+  наблюдаемости: код логирует `classified=true/false` как «классификация дала результат», а не «классификация
+  вызывалась» (`remember.ts:120-124`). Canon был stale-стороной; формулировки приведены к коду и пере-валидированы
+  (`doc-canon validate`: ok, exit 0). Владельца спрашивать не требовалось: у `/api/prompt` нет поля `sessionId`,
+  поэтому сторона расхождения однозначна (тот же аргумент, что в D-005).
+- **finding_ids:** F-007
+
 ### D-006: Canon заявлял неисполняемый инвариант про `originRef` и credential-ref
 - **status:** resolved
 - **decision:** docs_stale

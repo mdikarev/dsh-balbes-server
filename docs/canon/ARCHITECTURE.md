@@ -411,10 +411,12 @@ interface BalbesMemoryService {
   видит её со следующего `prepare`; немедленная обратная связь агенту — вывод
   самого инструмента (`id`, `scope`, провенанс).
 - Проводка: оба канала передают в `attach` контекст задачи — host `runner.ts`
-  (`channel = "admin"`, sessionId из запроса, selection текущей модели) и
-  Telegram `agentTask.ts` (`channel = "telegram"`); scope по-прежнему задаёт
+  (`channel = "admin"`, свежий `sessionId` на промпт, selection текущей модели) и
+  Telegram `agentTask.ts` (`channel = "telegram"`, эффективный `sessionId`:
+  возобновлённый при успешном resume, иначе созданный); scope по-прежнему задаёт
   канал (`home → global`, `project → текущий проект`).
 - Наблюдаемость: одна `logger.info`-строка с каналом, выбранным scope и
+  признаком того, что классификация дала результат (`classified=true/false`);
   признаком классификации; текст памяти не логируется. Метрики пользы — p10h.
 
 ### Границы и успех
