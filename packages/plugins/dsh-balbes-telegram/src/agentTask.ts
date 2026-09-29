@@ -109,7 +109,11 @@ export interface MemoryContextAttachmentLike {
   prepare(taskText: string): Promise<void>;
 }
 export interface MemoryContextServiceLike {
-  attach(agentCtx: unknown, scope: { kind: "global" } | { kind: "project"; name: string }): MemoryContextAttachmentLike;
+  attach(
+    agentCtx: unknown,
+    scope: { kind: "global" } | { kind: "project"; name: string },
+    write?: { channel: string; sessionId: string; selection?: { provider: string; model: string } }
+  ): MemoryContextAttachmentLike;
 }
 
 export interface AgentTaskDeps {
@@ -521,13 +525,23 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
     opts: { sessionId?: string } | undefined
   ): Promise<{ handle: AgentHandleLike; sessionId: string; memory: MemoryContextAttachmentLike | undefined }> {
     const selection = liveSelection(deps.defaultModel);
+    const freshSessionId = brandString(`session-${randomUUID()}`);
+    // The id the write context must carry is the session the task actually runs
+    // in: the resumed one while a resume is in play, the fresh one once a failed
+    // resume has abandoned it.
+    let resumedSessionId: string | undefined = opts?.sessionId;
     let memory: MemoryContextAttachmentLike | undefined;
     const setup = (agentCtx: unknown): void => {
       composeAgentSetup(agentCtx, { selection: selection.ref });
       deps.approvals?.attach(agentCtx, ref);
       memory = deps.memory?.attach(
         agentCtx,
-        ref.scope === "home" ? { kind: "global" } : { kind: "project", name: ref.name }
+        ref.scope === "home" ? { kind: "global" } : { kind: "project", name: ref.name },
+        {
+          channel: "telegram",
+          sessionId: resumedSessionId ?? freshSessionId,
+          selection: { provider: selection.initial.provider, model: selection.initial.model }
+        }
       );
     };
     if (opts?.sessionId !== undefined) {
@@ -541,12 +555,13 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
       } catch (error) {
         // Session missing/corrupt on disk: warn and fall back to a fresh
         // session; the mapping is reset so the plugin repersists the new id.
+        resumedSessionId = undefined;
         deps.logger?.warn(
           `dsh-balbes-telegram: resuming session "${opts.sessionId}" failed; creating a fresh session: ${errorMessage(error)}`
         );
       }
     }
-    const sessionId = brandString(`session-${randomUUID()}`);
+    const sessionId = freshSessionId;
     const handle = await deps.agents.create({
       sessionId,
       meta: { cwd: root },
