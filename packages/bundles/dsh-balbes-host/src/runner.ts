@@ -50,7 +50,11 @@ interface AgentsService {
 }
 
 interface MemoryContextServiceLike {
-  attach(agentCtx: unknown, scope: { kind: "global" }): { prepare(taskText: string): Promise<void> };
+  attach(
+    agentCtx: unknown,
+    scope: { kind: "global" },
+    write?: { channel: string; sessionId: string; selection?: { provider: string; model: string } }
+  ): { prepare(taskText: string): Promise<void> };
 }
 
 interface DefaultModelService {
@@ -105,13 +109,18 @@ export async function runPrompt(ctx: { get(key: string): unknown }, prompt: stri
   let handle: AgentHandleLike | undefined;
   let memoryAttachment: { prepare(taskText: string): Promise<void> } | undefined;
   try {
+    const sessionId = brandString(`session-${randomUUID()}`);
     handle = await agents.create({
-      sessionId: brandString(`session-${randomUUID()}`),
+      sessionId,
       meta: { cwd: process.cwd() },
       agentOptions: { provider: selection.provider, model: selection.model },
       setup: (agentCtx) => {
         installModelSelection(agentCtx as never, { current: selection, assembled: undefined });
-        memoryAttachment = memory?.attach(agentCtx, { kind: "global" });
+        memoryAttachment = memory?.attach(agentCtx, { kind: "global" }, {
+          channel: "admin",
+          sessionId,
+          selection: { provider: selection.provider, model: selection.model }
+        });
       }
     });
     const agent = handle.agent;

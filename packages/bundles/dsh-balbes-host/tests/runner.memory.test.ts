@@ -24,6 +24,7 @@ function fakeAgent() {
 describe("runPrompt memory delivery wiring", () => {
   it("attaches memory for the global scope and prepares the prompt", async () => {
     const scopes: unknown[] = [];
+    const writes: unknown[] = [];
     const prepared: string[] = [];
     let seenAgentCtx: unknown;
     const ctx = {
@@ -45,9 +46,10 @@ describe("runPrompt memory delivery wiring", () => {
             return { flush: async () => {} };
           case "balbesMemoryContext":
             return {
-              attach: (agentCtx: unknown, scope: unknown) => {
+              attach: (agentCtx: unknown, scope: unknown, write: unknown) => {
                 expect(agentCtx).toBe(seenAgentCtx);
                 scopes.push(scope);
+                writes.push(write);
                 return { prepare: async (text: string) => void prepared.push(text) };
               }
             };
@@ -58,6 +60,13 @@ describe("runPrompt memory delivery wiring", () => {
     };
     const outcome = await runPrompt(ctx, "hello memory");
     expect(scopes).toEqual([{ kind: "global" }]);
+    expect(writes).toEqual([
+      {
+        channel: "admin",
+        sessionId: expect.stringMatching(/^session-/),
+        selection: { provider: "p", model: "m" }
+      }
+    ]);
     expect(prepared).toEqual(["hello memory"]);
     expect(outcome.text).toBe("ok");
   });
