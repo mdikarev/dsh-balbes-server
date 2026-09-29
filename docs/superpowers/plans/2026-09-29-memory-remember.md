@@ -60,23 +60,23 @@ Per canon-first, no application code starts until the living canon names the new
 - Consumes: the approved spec `docs/superpowers/specs/2026-09-29-memory-remember-design.md`.
 - Produces: canon that Task 10 audits against.
 
-- [ ] **Step 1: Update ARCHITECTURE.md**
+- [x] **Step 1: Update ARCHITECTURE.md**
 
 In the memory section, add a subsection "Запись памяти: инструмент `remember`" that states: `remember` is a scoped agent tool registered beside `recall` in `dsh-balbes-memory-context`; it writes only through `balbesMemory.save`; `origin=agent` and `originRef="<channel> session:<id>"`; the layer chooses scope — `global` from the home context, and from a project context either `global` or the current project via a one-shot LLM classification with fallback to the current project; `pinned` is always `false`; delivery sees a write from the next `prepare`. Remove any sentence that says the model layer is read-only.
 
-- [ ] **Step 2: Update GLOSSARY.md**
+- [x] **Step 2: Update GLOSSARY.md**
 
 Add the term "remember (явная запись памяти)": the model-facing tool that saves one durable fact to the owner's long-term memory with agent provenance and a layer-chosen scope.
 
-- [ ] **Step 3: Update OVERVIEW.md**
+- [x] **Step 3: Update OVERVIEW.md**
 
 In the memory part of the stages/success signals, place explicit write: the agent can save knowledge itself through `remember`, and the owner still edits memory in the admin panel.
 
-- [ ] **Step 4: Close p10e in future plans**
+- [x] **Step 4: Close p10e in future plans**
 
 Via `canon-future-plan`, set `p10e-memory-remember.md` status to `absorbed` and replace its open questions with the decisions (write immediately; layer classifies global vs current project via an LLM call; default type `note`; no agent pinning; provenance `channel + session`; visible next turn). Update row 10e in `future_plans/INDEX.md` to `absorbed`.
 
-- [ ] **Step 5: Verify canon**
+- [x] **Step 5: Verify canon**
 
 Run: `doc-canon scout "remember explicit memory write"`
 Expected: `p10e-memory-remember.md` shows status absorbed and ARCHITECTURE/GLOSSARY text hits mention `remember` and agent provenance; no contradictory "read-only" wording for the model layer.
