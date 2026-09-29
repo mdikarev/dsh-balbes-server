@@ -99,9 +99,11 @@ export function buildRememberTool(
         try {
           classified = await classify(args.text, scope.name);
         } catch (error) {
+          // Only a bounded identifier: a provider error can echo its request,
+          // and the classifier request embeds the memory text.
           logger?.warn(
             "balbes-memory-context: scope classification failed: " +
-              (error instanceof Error ? error.message : String(error))
+              (error instanceof Error ? error.name : typeof error)
           );
           classified = undefined;
         }

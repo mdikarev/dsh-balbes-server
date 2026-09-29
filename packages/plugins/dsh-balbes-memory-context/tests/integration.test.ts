@@ -239,6 +239,17 @@ describe.skipIf(!realEnabled)("REAL composition (memory delivery)", () => {
       expect(saved!.pinned).toBe(false);
       expect(saved!.type).toBe("fact");
       expect(String(saved!.originRef)).toMatch(/^admin session:/);
+
+      // Write→read convergence: the record the model wrote is delivered back to the
+      // model by the next prompt (map/push), so write and read meet.
+      stub.setScript([{ text: "noted" }]);
+      const deliveryBefore = stub.calls.length;
+      const delivery = await postJson(base + "/api/prompt", { prompt: "what is p10eremembermarker7a31" }, token);
+      expect(delivery.status, delivery.raw).toBe(200);
+      const deliveryCalls = stub.calls.slice(deliveryBefore);
+      expect(deliveryCalls.length).toBeGreaterThan(0);
+      const deliveryBody = JSON.stringify(deliveryCalls.map((call) => call.body));
+      expect(deliveryBody, deliveryBody.slice(0, 4000)).toContain(rememberMarker);
     } finally {
       await stopServer();
       await rm(home, { recursive: true, force: true });

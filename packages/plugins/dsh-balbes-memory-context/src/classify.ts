@@ -66,9 +66,11 @@ export function createLlmClassifier(
         .join(" ");
       return parseScopeAnswer(answer);
     } catch (error) {
+      // Only a bounded identifier: provider error messages can echo the request,
+      // and the request embeds the memory text.
       logger?.warn(
         "balbes-memory-context: scope classification failed: " +
-          (error instanceof Error ? error.message : String(error))
+          (error instanceof Error ? error.name : typeof error)
       );
       return undefined;
     }

@@ -8,6 +8,7 @@ import {
   MEMORY_SECTION_ORDER
 } from "../src/context.js";
 import type { LlmClassifierSeat } from "../src/classify.js";
+import type { StreamChunk } from "@deepseek-ai/dsh-llm";
 import type { BalbesMemoryReadSlice, MemoryReadFilter, MemoryWriteContext } from "../src/types.js";
 
 function record(partial: Partial<MemoryRecord> & { id: string; text: string }): MemoryRecord {
@@ -36,6 +37,8 @@ interface Harness {
   tools: unknown[];
   warnings: string[];
   infos: string[];
+  /** Drafts the fake store's save received, in call order. */
+  drafts: Array<Record<string, unknown>>;
 }
 
 function harness(
@@ -47,6 +50,7 @@ function harness(
   const tools: unknown[] = [];
   const warnings: string[] = [];
   const infos: string[] = [];
+  const drafts: Array<Record<string, unknown>> = [];
   const memory = {
     list: async (_filter?: MemoryReadFilter) => records,
     count: async (_filter?: MemoryReadFilter) => records.length,
@@ -54,8 +58,10 @@ function harness(
       records.filter((r) => r.text.includes("deploy")).map((r) => ({ record: r, rank: -1 })),
     ...(options.writable === true
       ? {
-          save: async (draft: { text: string; scope: MemoryRecord["scope"]; type: MemoryRecord["type"] }) =>
-            record({ id: "saved", text: draft.text, scope: draft.scope, type: draft.type, origin: "agent" })
+          save: async (draft: { text: string; scope: MemoryRecord["scope"]; type: MemoryRecord["type"] }) => {
+            drafts.push(draft as unknown as Record<string, unknown>);
+            return record({ id: "saved", text: draft.text, scope: draft.scope, type: draft.type, origin: "agent" });
+          }
         }
       : {})
   };
@@ -90,7 +96,7 @@ function harness(
     warn: (message) => warnings.push(message),
     info: (message) => infos.push(message)
   });
-  const harnessValue: Harness = { agentCtx, sections, contexts, tools, warnings, infos };
+  const harnessValue: Harness = { agentCtx, sections, contexts, tools, warnings, infos, drafts };
   Object.defineProperty(harnessValue, "attach", {
     value: service.attach.bind(service),
     enumerable: false
@@ -174,5 +180,28 @@ describe("createMemoryContext", () => {
     const h = harness([record({ id: "a", text: "hello" })]) as HarnessWithAttach;
     h.attach(h.agentCtx, { kind: "global" }, { channel: "admin", sessionId: "s1" });
     expect(h.tools).toHaveLength(1);
+  });
+
+  it("classifies a project fact to global through the llm seat when selection is present", async () => {
+    const llm: LlmClassifierSeat = {
+      stream() {
+        return (async function* (): AsyncGenerator<StreamChunk> {
+          yield { type: "text-delta", index: 0, text: "global" };
+          yield { type: "finish", reason: { kind: "stop" } };
+        })();
+      }
+    };
+    const h = harness([record({ id: "a", text: "hello" })], { writable: true, llm }) as HarnessWithAttach;
+    h.attach(
+      h.agentCtx,
+      { kind: "project", name: "myproj" },
+      { channel: "telegram", sessionId: "s1", selection: { provider: "p", model: "m" } }
+    );
+    expect(h.tools.map((tool) => (tool as { name: string }).name)).toEqual(["recall", "remember"]);
+    const remember = h.tools[1] as { execute(args: { text: string }, ctx: never): Promise<unknown> };
+    await remember.execute({ text: "owner prefers Russian" }, {} as never);
+    expect(h.drafts).toHaveLength(1);
+    expect(h.drafts[0]).toMatchObject({ scope: { kind: "global" }, text: "owner prefers Russian" });
+    expect(h.infos.join("\n")).toContain("classified=true");
   });
 });
