@@ -153,6 +153,9 @@ describe.skipIf(!realEnabled)("REAL composition (memory delivery)", () => {
       startStubLlm(options?: { text?: string }): Promise<{
         port: number;
         calls: Array<{ path: string; body: { system?: unknown; tools?: unknown; messages?: unknown } }>;
+        setScript(
+          script: Array<{ text?: string; toolCall?: { name: string; arguments: string } }>
+        ): void;
         close(): Promise<void>;
       }>;
     };
@@ -211,6 +214,31 @@ describe.skipIf(!realEnabled)("REAL composition (memory delivery)", () => {
         .map((call) => (typeof call.body.system === "string" ? call.body.system : ""))
         .join("\n");
       expect(secondSystems, secondSystems.slice(0, 4000)).toContain(livenessMarker);
+
+      const rememberMarker = "p10eremembermarker7a31";
+      stub.setScript([
+        {
+          toolCall: {
+            name: "remember",
+            arguments: JSON.stringify({ text: "durable fact " + rememberMarker, type: "fact" })
+          }
+        },
+        { text: "saved" }
+      ]);
+      const writeRun = await postJson(base + "/api/prompt", { prompt: "Remember the durable fact" }, token);
+      expect(writeRun.status, writeRun.raw).toBe(200);
+
+      const listRes = await postJson(base + "/api/memory/list", { query: rememberMarker }, token);
+      expect(listRes.status, listRes.raw).toBe(200);
+      const records = (listRes.json as { records: Array<Record<string, unknown>> }).records;
+      const saved = records.find(
+        (entry) => typeof entry.text === "string" && entry.text.includes(rememberMarker)
+      );
+      expect(saved, JSON.stringify(records)).toBeDefined();
+      expect(saved!.origin).toBe("agent");
+      expect(saved!.pinned).toBe(false);
+      expect(saved!.type).toBe("fact");
+      expect(String(saved!.originRef)).toMatch(/^admin session:/);
     } finally {
       await stopServer();
       await rm(home, { recursive: true, force: true });
