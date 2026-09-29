@@ -20,15 +20,13 @@ export interface ModelConnection {
 export const DEEPSEEK_OFFICIAL_ROUTE = "deepseek-official";
 export const DEEPSEEK_API_KEY_REF = "DEEPSEEK_API_KEY";
 
-/** Pinned mirror of the pi-ai builtin "deepseek" catalog (3 models), synced on
- *  engine upgrade. Order and names mirror the installed pi-ai 0.85.1 builtin
- *  catalog (order flash, vision-exp, pro; names are space-separated). It is one
- *  half of the reserved route's catalog: the engine's own default model
- *  (`deepseek-flash`) lives only in the native dsh-llm-deepseek catalog below,
- *  so this list alone cannot represent the route (see DEEPSEEK_OFFICIAL_MODELS). */
+/** Pinned mirror of the pi-ai builtin "deepseek" catalog (2 models since pi-ai
+ *  0.87.1 / dsh 0.2.0-rc.2), synced on engine upgrade. Order and names mirror
+ *  the installed pi-ai builtin catalog (order flash, pro; names are
+ *  space-separated). Since 0.2.0 it equals the native dsh-llm-deepseek catalog,
+ *  so the union in DEEPSEEK_OFFICIAL_MODELS is still those two ids. */
 export const PI_AI_DEEPSEEK_MODELS: ModelOption[] = [
-  { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" },
-  { id: "deepseek-v4-flash-vision-exp", name: "DeepSeek V4 Flash Vision Exp" },
+  { id: "deepseek-flash", name: "DeepSeek V4.1 Flash" },
   { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro" }
 ];
 
@@ -36,7 +34,7 @@ export const PI_AI_DEEPSEEK_MODELS: ModelOption[] = [
  *  catalog (2 models since dsh 0.1.7-rc.1), synced on engine upgrade. This is
  *  the catalog of the route the plugin reserves — "deepseek-official" is that
  *  adapter's PROVIDER — and it carries `deepseek-flash`, the engine
- *  0.1.7-rc.1 fresh-profile default. Order is the native catalog order. */
+ *  0.2.0-rc.2 fresh-profile default. Order is the native catalog order. */
 export const DEEPSEEK_NATIVE_MODELS: ModelOption[] = [
   { id: "deepseek-flash", name: "DeepSeek-V41-Flash" },
   { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" }
@@ -162,7 +160,7 @@ async function readNativeDeepSeekCatalog(loadModule: EngineCatalogLoader): Promi
  *  the order-stable union of the native dsh-llm-deepseek catalog and the pi-ai
  *  builtin catalog (native entries first), deduplicated by id. Each side falls
  *  back to its own pinned mirror independently, so `deepseek-flash` — the dsh
- *  0.1.7-rc.1 engine default — survives any single runtime read failure. For every
+ *  0.2.0-rc.2 engine default — survives any single runtime read failure. For every
  *  other key the answer is the pi-ai catalog, or [] when that read fails (no
  *  pinned fallback exists for non-deepseek providers). */
 export function createEngineCatalogReader(load?: EngineCatalogLoader): ModelCatalogReader {
@@ -259,7 +257,7 @@ export function validateCustomPayload(p: {
 /**
  * Preset provider catalog (id + label). Display/validation copy of
  * MODEL_PROVIDER_PRESETS in packages/contracts — keep both lists in sync; the
- * engine pi-ai catalog provider ids (dsh 0.1.7-rc.1) are the ground truth and
+ * engine pi-ai catalog provider ids (dsh 0.2.0-rc.2) are the ground truth and
  * route ids of preset connections equal these provider ids.
  */
 export const PROVIDER_PRESETS: ReadonlyArray<{ providerId: string; label: string }> = [

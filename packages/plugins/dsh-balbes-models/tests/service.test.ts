@@ -80,7 +80,7 @@ describe("balbesModels service", () => {
   });
 
   it("keeps the engine's own default model inside its connection's catalog and re-savable", async () => {
-    // Anti-desync invariant (dsh 0.1.5 default is deepseek-flash): models.list
+    // Anti-desync invariant (dsh 0.2.0 default is deepseek-flash): models.list
     // must expose the engine default inside its own connection, and saving that
     // same default must not fail with invalid-model.
     const defaultModel = makeDefault("deepseek-official", "deepseek-flash");

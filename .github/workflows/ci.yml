@@ -163,3 +163,9 @@ jobs:
         env:
           RUN_REAL: "1"
         run: bash node_modules/.bin/vitest run tests/integration.test.ts
+
+      - name: REAL suites — models (catalog + settings persistence)
+        working-directory: packages/plugins/dsh-balbes-models
+        env:
+          RUN_REAL: "1"
+        run: bash node_modules/.bin/vitest run tests/integration.test.ts

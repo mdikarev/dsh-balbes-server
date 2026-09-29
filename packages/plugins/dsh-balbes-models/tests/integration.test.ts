@@ -157,6 +157,8 @@ const realEnabled = runReal ? await hasDsh() : false;
 
 describe.skipIf(!realEnabled)("REAL composition (models API)", () => {
   let home: string | undefined;
+  /** Settings land in the active profile patch (dsh 0.2.0), not the legacy settings.yaml. */
+  let profilePatchPath = "";
   let port: number;
   let login: string;
   let password: string;
@@ -166,6 +168,7 @@ describe.skipIf(!realEnabled)("REAL composition (models API)", () => {
     await buildPackages();
     port = await freePort();
     home = await mkdtemp(join(tmpdir(), "balbes-models-real-"));
+    profilePatchPath = join(home, "profiles", "balbes-models-test", "cordis.patch.yml");
     const profiles = join(home, "profiles");
     await mkdir(profiles, { recursive: true });
     await cp(fixtureProfile, join(profiles, "balbes-models-test"), { recursive: true });
@@ -226,11 +229,11 @@ describe.skipIf(!realEnabled)("REAL composition (models API)", () => {
       expect((await postJson(`${base}/api/models/list`, {})).status).toBe(401);
       expect((await postJson(`${base}/api/models/save`, { kind: "custom", displayName: "X" })).status).toBe(401);
       expect((await postJson(`${base}/api/models/delete`, { routeId: "x" })).status).toBe(401);
-      expect((await postJson(`${base}/api/models/default`, { provider: "deepseek-official", model: "deepseek-v4-flash" })).status).toBe(401);
+      expect((await postJson(`${base}/api/models/default`, { provider: "deepseek-official", model: "deepseek-v4-pro" })).status).toBe(401);
 
       // fresh home: the engine default selection is
       // {provider: "deepseek-official", model: "deepseek-flash"} (dsh-base
-      // cordis.patch.yml `agent-default-model`, engine 0.1.5); the reserved
+      // cordis.patch.yml `agent-default-model`, engine 0.2.0); the reserved
       // deepseek route is the one marked isDefault, no key stored yet.
       const empty = await postJson(`${base}/api/models/list`, {}, token);
       expect(empty.status, JSON.stringify(empty.json)).toBe(200);
@@ -239,7 +242,7 @@ describe.skipIf(!realEnabled)("REAL composition (models API)", () => {
       const ds = body.connections.find((c) => c.routeId === "deepseek-official");
       expect(ds?.kind).toBe("deepseek");
       expect(ds?.hasKey).toBe(false);
-      expect(ds?.models).toContain("deepseek-v4-flash");
+      expect(ds?.models).toContain("deepseek-v4-pro");
       expect(ds?.models).toContain("deepseek-flash");
       expect(ds?.isDefault).toBe(true);
       // Anti-desync guard: models.list's current default must be offered by its
@@ -260,8 +263,8 @@ describe.skipIf(!realEnabled)("REAL composition (models API)", () => {
       }, token);
       expect(saved.status, JSON.stringify(saved.json)).toBe(200);
 
-      // disk: route in $DSH_HOME/settings.yaml (llm-pi-ai) and the key ref value in .credentials.yaml
-      const settingsYaml = await readFile(join(home, "settings.yaml"), "utf8");
+      // disk: route in the active profile patch (llm-pi-ai) and the key ref value in .credentials.yaml
+      const settingsYaml = await readFile(profilePatchPath, "utf8");
       expect(settingsYaml).toContain("my-gateway");
       expect(settingsYaml).toContain("apiKeyEnv: BALBES_MY_GATEWAY_API_KEY");
       const credsYaml = await readFile(join(home, ".credentials.yaml"), "utf8");
@@ -291,7 +294,7 @@ describe.skipIf(!realEnabled)("REAL composition (models API)", () => {
       const credsAfterClear = await readIfPresent(join(home, ".credentials.yaml"));
       expect(credsAfterClear).not.toContain("BALBES_MY_GATEWAY_API_KEY");
       expect(credsAfterClear).toContain("BALBES_EDIT_CREATED_API_KEY: sk-abc");
-      const settingsAfterClear = await readIfPresent(join(home, "settings.yaml"));
+      const settingsAfterClear = await readIfPresent(profilePatchPath);
       expect(settingsAfterClear).toContain("my-gateway");
       expect(settingsAfterClear).toContain("apiKeyEnv: BALBES_MY_GATEWAY_API_KEY");
       const afterClear = (await postJson(`${base}/api/models/list`, {}, token)).json as ModelsListBody;
@@ -300,7 +303,7 @@ describe.skipIf(!realEnabled)("REAL composition (models API)", () => {
       // default model save -> agent-default-model section on disk + list reflects it
       const setDefault = await postJson(`${base}/api/models/default`, { provider: "my-gateway", model: "m-1" }, token);
       expect(setDefault.status, JSON.stringify(setDefault.json)).toBe(200);
-      const settingsAfterDefault = await readIfPresent(join(home, "settings.yaml"));
+      const settingsAfterDefault = await readIfPresent(profilePatchPath);
       expect(settingsAfterDefault).toContain("agent-default-model");
       expect(settingsAfterDefault).toContain("provider: my-gateway");
       const afterDefault = (await postJson(`${base}/api/models/list`, {}, token)).json as ModelsListBody;
@@ -317,12 +320,12 @@ describe.skipIf(!realEnabled)("REAL composition (models API)", () => {
       expect(missing.status).toBe(404);
       expect((missing.json as { error: { code: string } }).error.code).toBe("not-found");
 
-      // move the default back, then delete succeeds and removes the route from settings.yaml
-      const resetDefault = await postJson(`${base}/api/models/default`, { provider: "deepseek-official", model: "deepseek-v4-flash" }, token);
+      // move the default back, then delete succeeds and removes the route from the profile patch
+      const resetDefault = await postJson(`${base}/api/models/default`, { provider: "deepseek-official", model: "deepseek-v4-pro" }, token);
       expect(resetDefault.status, JSON.stringify(resetDefault.json)).toBe(200);
       const deleted = await postJson(`${base}/api/models/delete`, { routeId: "my-gateway" }, token);
       expect(deleted.status, JSON.stringify(deleted.json)).toBe(200);
-      const settingsAfterDelete = await readIfPresent(join(home, "settings.yaml"));
+      const settingsAfterDelete = await readIfPresent(profilePatchPath);
       expect(settingsAfterDelete).not.toContain("my-gateway");
       expect(settingsAfterDelete).toContain("edit-created");
 
@@ -362,7 +365,7 @@ describe.skipIf(!realEnabled)("REAL composition (models API)", () => {
 
       // disk: llm-pi-ai carries the openai route with apiKeyEnv + models and no
       // api/baseURL keys; the key value lives in the credentials file
-      const settingsYaml = await readFile(join(home, "settings.yaml"), "utf8");
+      const settingsYaml = await readFile(profilePatchPath, "utf8");
       const openaiBlock = yamlBlockForKey(settingsYaml, "openai");
       expect(openaiBlock).not.toBe("");
       expect(openaiBlock).toContain("apiKeyEnv: BALBES_OPENAI_API_KEY");
@@ -402,7 +405,7 @@ describe.skipIf(!realEnabled)("REAL composition (models API)", () => {
         kind: "preset", provider: "openai", routeId: "openai", baseURL: "https://custom-openai.example/v1", models: ["gpt-4o-mini", "gpt-4o"]
       }, token);
       expect(withBase.status, JSON.stringify(withBase.json)).toBe(200);
-      const yamlWithBase = await readIfPresent(join(home, "settings.yaml"));
+      const yamlWithBase = await readIfPresent(profilePatchPath);
       const openaiWithBase = yamlBlockForKey(yamlWithBase, "openai");
       expect(openaiWithBase).toContain("baseURL: https://custom-openai.example/v1");
       expect(openaiWithBase).toContain("gpt-4o");
@@ -417,13 +420,13 @@ describe.skipIf(!realEnabled)("REAL composition (models API)", () => {
         kind: "preset", provider: "openai", routeId: "openai", models: ["gpt-4o-mini"]
       }, token);
       expect(overrideRemoved.status, JSON.stringify(overrideRemoved.json)).toBe(200);
-      const yamlAfterEdit = await readIfPresent(join(home, "settings.yaml"));
+      const yamlAfterEdit = await readIfPresent(profilePatchPath);
       const openaiAfterEdit = yamlBlockForKey(yamlAfterEdit, "openai");
       expect(openaiAfterEdit).not.toBe("");
-      // dsh 0.1.5 serializes the llm-pi-ai section block-style
-      // (`models:\n  - id: gpt-4o-mini`) instead of the 0.1.2 inline flow list;
-      // the id extraction below is style-independent, so the check tracks the
-      // stored fact (which models sit under `openai`) rather than the emitter.
+      // dsh 0.2.0 serializes the llm-pi-ai section block-style
+      // (`models:\n  - id: gpt-4o-mini`); the id extraction below is
+      // style-independent, so the check tracks the stored fact (which models sit
+      // under `openai`) rather than the emitter.
       expect(openaiAfterEdit).toContain("apiKeyEnv: BALBES_OPENAI_API_KEY");
       expect(yamlModelIds(openaiAfterEdit)).toEqual(["gpt-4o-mini"]);
       expect(openaiAfterEdit).not.toContain("baseURL:");
@@ -435,10 +438,10 @@ describe.skipIf(!realEnabled)("REAL composition (models API)", () => {
       // an absent key on the edits leaves the stored credential untouched
       expect(connAfterEdit?.hasKey).toBe(true);
 
-      // delete removes the openai route from settings.yaml and its key ref
+      // delete removes the openai route from the profile patch and its key ref
       const deleted = await postJson(`${base}/api/models/delete`, { routeId: "openai" }, token);
       expect(deleted.status, JSON.stringify(deleted.json)).toBe(200);
-      const settingsAfter = await readIfPresent(join(home, "settings.yaml"));
+      const settingsAfter = await readIfPresent(profilePatchPath);
       expect(yamlBlockForKey(settingsAfter, "openai")).toBe("");
       const credsAfter = await readIfPresent(join(home, ".credentials.yaml"));
       expect(credsAfter).not.toContain("BALBES_OPENAI_API_KEY");
@@ -468,15 +471,15 @@ describe.skipIf(!realEnabled)("REAL composition (models API)", () => {
       expect(openaiBody.provider).toBe("openai");
       expect(openaiBody.models.length, `openai catalog came back empty — runtime engine catalog read failed: ${JSON.stringify(openai.json)}`).toBeGreaterThan(0);
 
-      // deepseek-official -> the union engine catalog: native
-      // dsh-llm-deepseek entries first (incl. the 0.1.5 default
-      // deepseek-flash), then pi-ai-only ids; deduplicated by id
+      // deepseek-official -> the union engine catalog: since 0.2.0 the native
+      // dsh-llm-deepseek and pi-ai deepseek catalogs are identical
+      // (deepseek-flash, deepseek-v4-pro), deduplicated by id
       const ds = await postJson(`${base}/api/models/catalog`, { provider: "deepseek-official" }, token);
       expect(ds.status, JSON.stringify(ds.json)).toBe(200);
       const dsBody = ds.json as { provider: string; models: Array<{ id: string; name?: string }> };
       expect(dsBody.provider).toBe("deepseek-official");
       expect(dsBody.models.map((m) => m.id)).toEqual([
-        "deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"
+        "deepseek-flash", "deepseek-v4-pro"
       ]);
       expect(new Set(dsBody.models.map((m) => m.id)).size).toBe(dsBody.models.length);
 
@@ -494,13 +497,13 @@ describe.skipIf(!realEnabled)("REAL composition (models API)", () => {
       expect((unknown.json as { error: { code: string } }).error.code).toBe("invalid-provider");
 
       // models.list: the deepseek connection's models come from the runtime
-      // union engine catalog -> all four ids, deepseek-flash included
+      // union engine catalog -> both 0.2.0 ids, deepseek-flash included
       const listed = await postJson(`${base}/api/models/list`, {}, token);
       expect(listed.status, JSON.stringify(listed.json)).toBe(200);
       const listedBody = listed.json as ModelsListBody;
       const dsConn = listedBody.connections.find((c) => c.routeId === "deepseek-official");
       expect(dsConn?.models).toEqual([
-        "deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"
+        "deepseek-flash", "deepseek-v4-pro"
       ]);
       // the same anti-desync guard as the first test, now on this boot
       const defaultConn = listedBody.connections.find((c) => c.routeId === listedBody.default.provider);

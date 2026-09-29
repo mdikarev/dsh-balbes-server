@@ -215,10 +215,11 @@
 - notes: отдаёт состояние движка: роуты провайдеров (settings-секция
   `llm-pi-ai`); встроенный `deepseek-official` в списке всегда, его модели —
   объединение builtin-каталога pi-ai и нативного каталога движка
-  `dsh-llm-deepseek` без дублей: 4 модели (`deepseek-flash` — дефолт свежего
-  профиля движка 0.1.7-rc.2, `deepseek-v4-pro`, `deepseek-v4-flash`,
-  `deepseek-v4-flash-vision-exp`); pinned-список DeepSeek — только fallback
-  при недоступности рантайм-каталога, синхронизируется по движку.
+  `dsh-llm-deepseek` без дублей: 2 модели (`deepseek-flash` — дефолт свежего
+  профиля движка 0.2.0-rc.2, `deepseek-v4-pro`). С движка 0.2.0 builtin
+  pi-ai-каталог `deepseek` совпадает с нативным, поэтому объединение даёт те же
+  2 модели; pinned-список DeepSeek — только fallback при недоступности
+  рантайм-каталога, синхронизируется по движку.
   Пресеты (`kind: "preset"`) — подключения по каталоговым провайдерам
   движка dsh (pi-ai catalog): у `kind: "preset"` элемент несёт
   `providerId` (равен `routeId`) — каталоговый id провайдера (напр.
@@ -247,9 +248,9 @@
   нативным каталогом `dsh-llm-deepseek`); модели не хардкодятся как основной
   источник (pinned-список DeepSeek — только fallback при недоступности
   рантайм-каталога).
-  DeepSeek официальный — 4 модели каталога движка (`deepseek-flash`,
-  `deepseek-v4-pro`, `deepseek-v4-flash`,
-  `deepseek-v4-flash-vision-exp`); пресеты (11
+  DeepSeek официальный — 2 модели каталога движка (`deepseek-flash`,
+  `deepseek-v4-pro`; с движка 0.2.0 builtin pi-ai-каталог `deepseek` совпадает
+  с нативным); пресеты (11
   каталоговых провайдеров) — модели их builtin-каталога в движке. Ручка —
   источник для выбора моделей при подключении/правке провайдера в UI
   (ADMIN_UI.md); выбранные модели подключения (chosen) остаются источником
@@ -274,9 +275,9 @@
   на которой стоит дефолт, → 409 `default-in-use`: владелец сначала меняет
   дефолтную модель. Для deepseek сохраняется только ключ (URL фиксирован;
   модели — объединение builtin-каталога pi-ai и нативного каталога
-  `dsh-llm-deepseek` без дублей: `deepseek-flash`, `deepseek-v4-pro`,
-  `deepseek-v4-flash`, `deepseek-v4-flash-vision-exp`; pinned-список —
-  только fallback при недоступности каталога, синхронизируется по движку). Валидация: baseURL — валидный http(s)-URL;
+  `dsh-llm-deepseek` без дублей: `deepseek-flash`, `deepseek-v4-pro`; pinned-список —
+  только fallback при недоступности каталога, синхронизируется по движку).
+  Валидация: baseURL — валидный http(s)-URL;
   модели custom — ≥ 1 id без пробелов/запятых. `key` передан — пишет ref
   в `$DSH_HOME/.credentials.yaml`; `key: null` у custom — сбрасывает (unset).
   Секрет не логируется и в ответ не возвращается никогда.

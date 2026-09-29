@@ -135,11 +135,11 @@ describe("balbes-models plugin", () => {
     expect(body.connections[0]).toMatchObject({ routeId: "deepseek-official", kind: "deepseek", hasKey: false, isDefault: true });
   });
 
-  it("deepseek connection in models.list carries the runtime catalog (4 models incl the engine default deepseek-flash)", async () => {
+  it("deepseek connection in models.list carries the runtime catalog (2 models incl the engine default deepseek-flash)", async () => {
     apply(ctx as never, {});
     const { json } = await call("/api/models/list", {});
     const models = (json as { connections: Array<{ routeId: string; models: string[] }> }).connections.find((c) => c.routeId === "deepseek-official")!.models;
-    expect(models).toEqual(["deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"]);
+    expect(models).toEqual(["deepseek-flash", "deepseek-v4-pro"]);
   });
 
   it("save custom writes the pi-ai route and the key ref", async () => {
@@ -359,14 +359,12 @@ describe("models.catalog route", () => {
   const engineFixture: Record<string, Array<{ id: string; name?: string }>> = {
     deepseek: [
       { id: "deepseek-flash", name: "DeepSeek-V41-Flash" },
-      { id: "deepseek-v4-flash" },
-      { id: "deepseek-v4-pro" },
-      { id: "deepseek-v4-flash-vision-exp", name: "Vision Exp" }
+      { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" }
     ],
     openai: [{ id: "gpt-4o-mini" }, { id: "gpt-4o", name: "GPT-4o" }]
   };
 
-  it("200: deepseek-official returns the injected reader's deepseek catalog (4 ids incl the engine default)", async () => {
+  it("200: deepseek-official returns the injected reader's deepseek catalog (2 ids incl the engine default)", async () => {
     const { status, json } = await callCatalog(fakeCatalogReader(engineFixture), { provider: "deepseek-official" });
     expect(status).toBe(200);
     expect(json).toEqual({ provider: "deepseek-official", models: engineFixture.deepseek });

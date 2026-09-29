@@ -111,7 +111,7 @@ curl -fsSL https://raw.githubusercontent.com/mdikarev/dsh-balbes-server/main/scr
    работающий сервис не трогается.
 5. **Профиль.** Синхронизирует `profiles/balbes` из репозитория в
    `$DSH_HOME/profiles/balbes` (замена каталога целиком; профиль в репо —
-   источник правды). **Настройки при этом сохраняются:** dsh 0.1.7 пишет
+   источник правды). **Настройки при этом сохраняются:** dsh 0.2.0 пишет
    админские настройки (подключения моделей, Telegram, модель по умолчанию)
    верхнеуровневыми записями `- id: …` в `cordis.patch.yml` профиля, поэтому
    установщик перед заменой извлекает их и дописывает в свежий патч — иначе
@@ -498,7 +498,7 @@ curl -sS -X POST http://127.0.0.1:8080/api/workspaces/delete \
 
 Модели: список подключений и дефолтная модель — `POST /api/models/list`
 (bearer). Полный smoke — REAL-тест пакета `dsh-balbes-models`; на свежем доме
-движок 0.1.7-rc.2 дефолтит на `deepseek-flash`, и с настроенным ключом DeepSeek
+движок 0.2.0-rc.2 дефолтит на `deepseek-flash`, и с настроенным ключом DeepSeek
 ожидается подключение `deepseek-official`:
 
 ```bash
@@ -506,10 +506,9 @@ curl -sS -X POST http://127.0.0.1:8080/api/workspaces/delete \
 curl -sS -X POST http://127.0.0.1:8080/api/models/list \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{}'
 # ожидается: "default":{"provider":"deepseek-official","model":"deepseek-flash"}
-#             (дефолт свежего профиля движка 0.1.7-rc.2) и подключение
-#             deepseek-official с 4 моделями каталога движка:
-#             deepseek-flash, deepseek-v4-pro, deepseek-v4-flash,
-#             deepseek-v4-flash-vision-exp; дефолт входит в каталог своего
+#             (дефолт свежего профиля движка 0.2.0-rc.2) и подключение
+#             deepseek-official с 2 моделями каталога движка 0.2.0:
+#             deepseek-flash, deepseek-v4-pro; дефолт входит в каталог своего
 #             соединения, поэтому models.default его принимает
 ```
 
@@ -518,8 +517,7 @@ curl -sS -X POST http://127.0.0.1:8080/api/models/list \
 curl -sS -X POST http://127.0.0.1:8080/api/models/catalog \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"provider":"deepseek-official"}'
-# ожидается: models содержит те же 4 id — deepseek-flash, deepseek-v4-pro,
-#             deepseek-v4-flash, deepseek-v4-flash-vision-exp (4)
+# ожидается: models содержит те же 2 id — deepseek-flash, deepseek-v4-pro
 curl -sS -X POST http://127.0.0.1:8080/api/models/catalog \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"provider":"openai"}'
@@ -1056,7 +1054,7 @@ sudo systemctl restart dsh-balbes
 токена. Файл без `archived` читается как пустой архив (совместимость).
 Токен — только в `$DSH_HOME/.credentials.yaml`; настройки (включая
 `balbes-telegram`) — записи с `id:` в профильном
-`$DSH_HOME/profiles/balbes/cordis.patch.yml` (dsh 0.1.7; см. «Где лежат
+`$DSH_HOME/profiles/balbes/cordis.patch.yml` (dsh 0.2.0; см. «Где лежат
 данные»). Модель в `telegram-state.json` не хранится: её место — запись
 `agent-default-model` того же профильного патча, и это ровно та настройка,
 которой управляет раздел «Модели» админки. Один и тот же токен не должен
@@ -1594,7 +1592,7 @@ ls -l "$HOME/.dsh/storages/memory.sqlite"*
   на свежей БД первая миграция (0→1) применяется без бэкапа, поэтому
   `bak-v1` появляется только после первой реально применённой миграции;
 - `balbes/ui/` — собранный SPA админки, который раздаёт сервер;
-- `profiles/balbes/cordis.patch.yml` — **настройки dsh на 0.1.7**: базовый
+- `profiles/balbes/cordis.patch.yml` — **настройки dsh на 0.2.0**: базовый
   список плагинов профиля плюс верхнеуровневые записи `- id: …` с
   `config:`, которыми управляют админка и Telegram: подключения моделей
   (`llm-pi-ai`), Telegram (`balbes-telegram`: `enabled`, `allowedUserId`) и
@@ -1603,7 +1601,7 @@ ls -l "$HOME/.dsh/storages/memory.sqlite"*
   через админку, а ключи API лежат в `.credentials.yaml` (ссылки
   `BALBES_<ROUTE>_API_KEY`);
 - `settings.yaml.imported` — легаси-документ dsh ≤ 0.1.5, который движок
-  0.1.7 один раз импортировал в профиль и переименовал. Не источник истины;
+  0.1.7+ один раз импортировал в профиль и переименовал. Не источник истины;
   если в нём остались секции, значит импорт их не принял — перенесите
   настройку через админку.
 
