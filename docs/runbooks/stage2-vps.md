@@ -656,6 +656,12 @@ node --no-warnings -e 'const{DatabaseSync}=require("node:sqlite");const db=new D
 `balbes-memory-context: ... missing` и `prepare failed` (см. «Устранение
 неполадок»).
 
+С p10e тот же плагин даёт модели инструмент явной записи `remember`: он пишет
+через уже существующий сервис памяти, поэтому нового пакета, миграции БД и
+HTTP-ручки у него нет. Проверка — в блоке «Память: явная запись (remember,
+p10e)» ниже: модель сама вызывает инструмент, а запись получает провенанс
+`origin: "agent"`, `originRef: "admin session:<id>"` и `pinned: false`.
+
 ```bash
 TOKEN=... # из POST /api/auth/login
 
@@ -674,6 +680,34 @@ curl -fsS -X POST http://127.0.0.1:8080/api/prompt \
 # ждите: модель отвечает на вопрос, а не повторяет запись целиком.
 
 # уборка тестовой записи
+curl -fsS -X POST http://127.0.0.1:8080/api/memory/delete \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{"id":"<id>"}'
+# ожидается: {"deleted":true}
+```
+
+Память: явная запись (remember, p10e) — модель сохраняет факт сама, вызовом
+инструмента:
+
+```bash
+TOKEN=... # POST /api/auth/login
+
+# Факт сформулирован как долговечное знание о системе, а не как разовая задача:
+# описание инструмента remember прямо запрещает сохранять one-off task details.
+# Маркер — без дефисов: `/api/memory/list` передаёт query в FTS5 MATCH дословно,
+# и незакавыченный дефис FTS5 разбирает как фильтр по колонке (`no such column`).
+curl -fsS -X POST http://127.0.0.1:8080/api/prompt \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"prompt":"Сохрани в долговременную память инструментом remember один долговечный системный факт: внутренний код сборки Балбеса — p10eremembermarker7a31. Значение сохрани дословно."}'
+
+# запись, созданная моделью: ищем по тому же маркеру
+curl -fsS -X POST http://127.0.0.1:8080/api/memory/list \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"query":"p10eremembermarker7a31"}'
+# ожидается: {"records":[{...,"text":"...p10eremembermarker7a31...","pinned":false,
+#   "origin":"agent","originRef":"admin session:<id>",...}]}; type — fact или note
+#   (по умолчанию note). Сохраните id записи из ответа.
+
+# уборка записи, созданной моделью
 curl -fsS -X POST http://127.0.0.1:8080/api/memory/delete \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{"id":"<id>"}'
 # ожидается: {"deleted":true}
@@ -1121,6 +1155,8 @@ curl -fsS -X POST http://127.0.0.1:8080/api/health   # {"ok":true,...}
 (`git pull --ff-only` → сборка → `sync_profile` →
 `copy_memory_context_into_profile()` → рестарт `dsh-balbes`). Миграций БД нет —
 схема памяти не меняется, поэтому отдельного шага у `balbes-memory-context` нет.
+Инструмент `remember` (p10e) — часть того же плагина: новых пакетов, миграций и
+HTTP-ручек он не добавляет, поэтому отдельного шага обновления у него тоже нет.
 
 ### Миграции памяти
 
