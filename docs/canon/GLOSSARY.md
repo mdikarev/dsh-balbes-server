@@ -406,7 +406,7 @@ scope, теги и короткий preview; обрезается бюджето
 ### Доставка памяти (memory delivery)
 Agent-scoped слой, делающий память видимой модели: секция ядра и карты,
 runtime-контекст релевантного push и инструмент `recall`. Только чтение;
-модельный write — p10d.
+модельный write (`remember`) — p10e, ревью записи — p10f.
 
 ## Naming conventions
 
