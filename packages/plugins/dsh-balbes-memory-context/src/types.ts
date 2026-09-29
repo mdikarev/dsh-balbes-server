@@ -27,11 +27,34 @@ export interface BalbesMemoryReadSlice {
   count(filter?: MemoryReadFilter): Promise<number>;
 }
 
+/** Channel and live session serving the agent's current task: provenance and classifier route. */
+export interface MemoryWriteContext {
+  /** "admin" (POST /api/prompt) or "telegram". */
+  channel: string;
+  /** Live agent session; becomes part of originRef. */
+  sessionId: string;
+  /** Agent model selection for the classifier; without it classification is skipped. */
+  selection?: { provider: string; model: string };
+}
+
+/** Structural write slice of balbesMemory; the agent writes only through it. */
+export interface MemoryWriteSlice {
+  save(draft: {
+    scope: MemoryScope;
+    type: MemoryRecord["type"];
+    text: string;
+    tags?: string[];
+    pinned?: boolean;
+    origin: "agent";
+    originRef?: string | null;
+  }): Promise<MemoryRecord>;
+}
+
 /** Per-agent handle; prepare() рендерит блоки одного хода. */
 export interface MemoryContextAttachment {
   prepare(taskText: string): Promise<void>;
 }
 
 export interface BalbesMemoryContextService {
-  attach(agentCtx: unknown, scope: MemoryContextScope): MemoryContextAttachment;
+  attach(agentCtx: unknown, scope: MemoryContextScope, write?: MemoryWriteContext): MemoryContextAttachment;
 }
