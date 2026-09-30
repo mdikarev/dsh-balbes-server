@@ -68,6 +68,14 @@ function throwingLlm(error: Error): LlmClassifierSeat {
   };
 }
 
+describe("CLASSIFY_MAX_TOKENS", () => {
+  it("leaves room for a reasoning model to spend tokens before the one-word answer", () => {
+    // A budget that reasoning tokens can exhaust yields no text block, and the
+    // silent fallback would disable global promotion for every project write.
+    expect(CLASSIFY_MAX_TOKENS).toBeGreaterThanOrEqual(32);
+  });
+});
+
 describe("createLlmClassifier", () => {
   it("returns the parsed scope and calls the model as a standalone one-shot", async () => {
     let seen: Record<string, unknown> | undefined;
@@ -84,6 +92,20 @@ describe("createLlmClassifier", () => {
     expect(seen!.purpose).toBeUndefined();
   });
 
+  it("tells the model that owner-level facts are global", async () => {
+    let seen: Record<string, unknown> | undefined;
+    const classify = createLlmClassifier(
+      fakeLlm(textChunks("global"), (options) => {
+        seen = options;
+      }),
+      { provider: "p", model: "m" }
+    );
+    await expect(classify("owner language is Russian", "myproj")).resolves.toBe("global");
+    const system = String(seen!.system);
+    expect(system).toContain("global or project");
+    expect(system).toContain("owner");
+  });
+
   it("returns undefined and warns when the stream throws", async () => {
     const warnings: string[] = [];
     const classify = createLlmClassifier(
@@ -98,6 +120,34 @@ describe("createLlmClassifier", () => {
   it("returns undefined for an empty or ambiguous answer", async () => {
     const classify = createLlmClassifier(fakeLlm(textChunks("")), { provider: "p", model: "m" });
     await expect(classify("fact", "myproj")).resolves.toBeUndefined();
+  });
+
+  it("warns once when the answer text is empty, without leaking the fact", async () => {
+    const warnings: string[] = [];
+    const fact = "основной язык владельца — русский";
+    const classify = createLlmClassifier(
+      fakeLlm(textChunks("   \n")),
+      { provider: "p", model: "m" },
+      { warn: (message) => warnings.push(message) }
+    );
+    await expect(classify(fact, "myproj")).resolves.toBeUndefined();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("no answer text");
+    expect(warnings.join("\n")).not.toContain(fact);
+  });
+
+  it("warns once with the unusable wording when the answer names no scope", async () => {
+    const warnings: string[] = [];
+    const answer = "maybe project or global, hard to say";
+    const classify = createLlmClassifier(
+      fakeLlm(textChunks(answer)),
+      { provider: "p", model: "m" },
+      { warn: (message) => warnings.push(message) }
+    );
+    await expect(classify("fact", "myproj")).resolves.toBeUndefined();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("unusable");
+    expect(warnings.join("\n")).not.toContain(answer);
   });
 
   it("returns undefined when the call times out", async () => {
