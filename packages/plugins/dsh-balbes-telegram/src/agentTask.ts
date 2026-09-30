@@ -105,9 +105,21 @@ export interface ApprovalAttachment {
   attach(agentCtx: unknown, ref: WorkspaceRef): void;
 }
 
+/** Место извлечения (p10g): слой владеет поверхностью, канал — ходом. */
+export interface MemoryExtractionHandleLike {
+  qualifies(facts: { ok: boolean; toolCalls: number }): boolean;
+  begin(): { message: string };
+  end(): void;
+}
+
 export interface MemoryContextAttachmentLike {
   prepare(taskText: string): Promise<void>;
+  extraction?: MemoryExtractionHandleLike;
 }
+
+/** Summary служебного сообщения извлечения; форма `notice` требует её. */
+const EXTRACTION_NOTICE_SUMMARY = "memory extraction";
+
 export interface MemoryContextServiceLike {
   attach(
     agentCtx: unknown,
@@ -720,18 +732,89 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
     }
   }
 
-  /** Run one task and, once it settles, start the next queued task (FIFO). */
-  async function startTurn(
-    key: string,
-    entry: KeyedEntry,
-    ref: WorkspaceRef,
-    text: string,
-    opts: { sessionId?: string } | undefined
-  ): Promise<TaskResult> {
-    entry.busy = true;
-    entry.activeText = text;
+  /**
+   * The p10g service turn: after a successful task that did work, run ONE
+   * extraction turn in the SAME session, so the agent proposes durable
+   * knowledge through `propose_memory` (review queue, never truth). It never
+   * changes the task's result: every failure is contained to a warning, and a
+   * driver-level failure gets the same "wedged agent" policy the task path
+   * uses. The workspace stays busy for its duration.
+   */
+  async function runExtractionTurn(entry: KeyedEntry, result: TaskResult): Promise<void> {
+    const extraction = entry.memory?.extraction;
+    if (!result.ok || extraction === undefined) return;
+    if (entry.retired || entry.cancelled) return;
+    const handle = entry.handle;
+    const taskSeq = entry.firstSeq;
+    if (handle === undefined || taskSeq === undefined) return;
+    // The gate reads the TOOL CALLS of the task turn from the same window the
+    // progress card uses: no model call is spent on the decision.
+    const toolCalls = summarizeProgress(handle.agent.session, taskSeq).steps.length;
+    if (!extraction.qualifies({ ok: true, toolCalls })) return;
+    let directive: string;
     try {
-      return await executeTurn(key, entry, ref, text, opts);
+      directive = extraction.begin().message;
+    } catch (error) {
+      deps.logger?.warn(
+        `dsh-balbes-telegram: memory extraction could not start: ${errorMessage(error)}`
+      );
+      return;
+    }
+    // The progress read now describes THIS turn: the task's window is over and
+    // its result was already computed.
+    const extractionSeq = handle.agent.session.seq;
+    entry.firstSeq = extractionSeq;
+    entry.startedAt = Date.now();
+    try {
+      handle.agent.followup(
+        createUserMessage({
+          content: [{ type: "text", text: directive }],
+          // A producer-declared kind (MessageSourceMap is merge-extensible):
+          // the session view renders the directive as context, never as an
+          // owner prompt. The harness's own map has no entry for this kind, so
+          // the source object is asserted while `content` above stays checked.
+          source: {
+            kind: "balbes-memory-extraction",
+            form: "notice",
+            summary: EXTRACTION_NOTICE_SUMMARY
+          } as never
+        }) as never
+      );
+      await handle.agent.whenIdle();
+      await deps.sessions.flush(handle.agent.session);
+      const outcome = summarizeTurn(handle.agent.session, extractionSeq);
+      if (outcome.reason?.kind === "error" || outcome.reason?.kind === "aborted") {
+        deps.logger?.warn(
+          "dsh-balbes-telegram: memory extraction turn ended as " + outcome.reason.kind
+        );
+      }
+    } catch (error) {
+      // Driver-level failure: the agent loop is wedged, exactly as a failed
+      // task turn leaves it. reset() owns the disposal when it retired the entry.
+      if (!entry.retired && entry.handle === handle) {
+        entry.handle = undefined;
+        entry.sessionId = undefined;
+        entry.memory = undefined;
+        await disposeQuietly(handle, "disposing the agent wedged by a failed memory extraction turn failed");
+      }
+      deps.logger?.warn(`dsh-balbes-telegram: memory extraction turn failed: ${errorMessage(error)}`);
+    } finally {
+      extraction.end();
+    }
+  }
+
+  /** Run one task, settle its promise, then start the next queued task (FIFO). */
+  async function startTurn(key: string, entry: KeyedEntry, task: PendingTask): Promise<void> {
+    entry.busy = true;
+    entry.activeText = task.text;
+    try {
+      const result = await executeTurn(key, entry, task.ref, task.text, task.opts);
+      // The owner's answer settles BEFORE the service turn: the result is
+      // already computed and the caller must not wait for bookkeeping.
+      task.resolve(result);
+      await runExtractionTurn(entry, result);
+    } catch (error) {
+      task.resolve({ ok: false, code: "agent-error", message: errorMessage(error, AGENT_ERROR_MESSAGE) });
     } finally {
       entry.busy = false;
       entry.activeText = undefined;
@@ -746,9 +829,7 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
       entry.cancelled = false;
       const next = entry.queue.shift();
       if (next !== undefined && !entry.retired && cache.get(key) === entry) {
-        void startTurn(key, entry, next.ref, next.text, next.opts).then(next.resolve, (error) => {
-          next.resolve({ ok: false, code: "agent-error", message: errorMessage(error, AGENT_ERROR_MESSAGE) });
-        });
+        void startTurn(key, entry, next);
       }
     }
   }
@@ -786,7 +867,11 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
           entry!.queue.push({ ref, text, opts, resolve });
         });
       }
-      return startTurn(key, entry, ref, text, opts);
+      // A fresh task owns a deferred so its promise can settle before the
+      // extraction turn that follows it.
+      return new Promise<TaskResult>((resolve) => {
+        void startTurn(key, entry, { ref, text, opts, resolve });
+      });
     },
 
     async reset(ref: WorkspaceRef): Promise<void> {
