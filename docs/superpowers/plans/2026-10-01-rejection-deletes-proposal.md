@@ -274,22 +274,22 @@ git commit -m "feat(memory): drop legacy rejected proposals in migration v3 (p10
       expect(rejectedList.status, rejectedList.raw).toBe(200);
       expect((rejectedList.json as { proposals: unknown[] }).proposals).toEqual([]);
 
-      const secondReject = await postJson(
-        base + "/api/memory/review/reject",
-        { id: proposalId },
-        token
-      );
+      // Повторный отказ: строки больше нет.
+      const secondReject = await api("/api/memory/review/reject", { id });
       expect(secondReject.status, secondReject.raw).toBe(404);
       expect((secondReject.json as { error: { code: string } }).error.code).toBe("not-found");
-
-      // Предложение удалено, но знание не попало в истину.
-      const listAfter = await postJson(base + "/api/memory/list", {}, token);
-      expect(listAfter.status, listAfter.raw).toBe(200);
-      const texts = (listAfter.json as { records: Array<{ text: string }> }).records.map((r) => r.text);
-      expect(texts.some((text) => text.includes("<маркер предложения из этого кейса>"))).toBe(false);
 ```
 
-`<маркер предложения из этого кейса>` заменить на фактическую переменную/маркер, который кейс уже использует при `propose` (прочитать кейс целиком, ничего не выдумывать). Если кейс проверяет ещё и ответ первого отказа, убедиться, что он ожидает `status: "rejected"` и `decidedEdit: false` — это сохранившееся поведение.
+Точные адаптации к существующему коду этого кейса (обязательно прочитать кейс целиком):
+
+1. Второй ассерт (`const decided = await api("/api/memory/review/list", { status: ["rejected"] });` и `…some(…).toBe(true)`) сейчас ждёт, что отклонённая строка лежит как аудит — **заменить** на ожидание пустого списка:
+   ```ts
+   const decided = await api("/api/memory/review/list", { status: ["rejected"] });
+   expect((decided.json as { proposals: MemoryProposal[] }).proposals).toEqual([]);
+   ```
+2. Блок `const pendingQueue …` (проверка, что очередь ожидающих не содержит отклонённое) сохранить как есть — поведение не изменилось.
+3. Ассерт «не попало в истину» уже есть в кейсе (`const listed = await api("/api/memory/list", { query: marker }); … toEqual([])`) — не дублировать, оставить.
+4. Хелпер кейса называется `api(path, body)` и возвращает `{status, json, raw}`, а маркер — локальная переменная `marker` (строка ~281); пример выше с `postJson`/`base`/`token` — подсказка формы, привести к фактическому хелперу.
 
 - [ ] **Step 2: Прогнать REAL-тест**
 
