@@ -437,7 +437,13 @@ Append two new tests:
   it("upgrades a v1 database, keeping its records and backing it up", async () => {
     const dir = await tempDir();
     const path = join(dir, "memory.sqlite");
-    const v1 = await openMemoryDatabase(path, { migrations: [MIGRATIONS[0]!] });
+    // Build the v1 fixture through the real v1 migration. Do NOT use
+    // openMemoryDatabase({ migrations: [MIGRATIONS[0]!] }) here: its
+    // post-migration validation runs against the module-wide required set
+    // (which now includes the v2 table), so that seam only works with a list
+    // that reaches this build's LATEST_VERSION.
+    const v1 = new DatabaseSync(path);
+    migrate(v1, [MIGRATIONS[0]!]);
     v1.prepare(
       "INSERT INTO memories (id, scope_kind, scope_name, type, text, pinned, origin, origin_ref, created_at, updated_at) " +
         "VALUES (?, 'global', NULL, 'fact', ?, 0, 'owner', NULL, ?, ?)"
