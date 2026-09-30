@@ -1,4 +1,4 @@
-import type { MemoryRecord, MemoryScope } from "dsh-balbes-contracts";
+import type { MemoryProposal, MemoryRecord, MemoryScope } from "dsh-balbes-contracts";
 
 export type { MemoryRecord, MemoryScope } from "dsh-balbes-contracts";
 
@@ -48,6 +48,29 @@ export interface MemoryWriteSlice {
     origin: "agent";
     originRef?: string | null;
   }): Promise<MemoryRecord>;
+}
+
+/** Структурный write-срез пути ревью: служебный ход пишет только через него. */
+export interface MemoryProposalDraft {
+  scope: MemoryScope;
+  type: MemoryRecord["type"];
+  text: string;
+  tags?: string[];
+  originRef?: string | null;
+}
+
+export interface MemoryProposalSlice {
+  propose(draft: MemoryProposalDraft): Promise<MemoryProposal>;
+  listProposals(filter?: {
+    scope?: MemoryScope;
+    status?: MemoryProposal["status"][];
+    limit?: number;
+  }): Promise<MemoryProposal[]>;
+}
+
+/** Срез, нужный входному дедупу: очередь плюс чтение истины. */
+export interface MemoryExtractionSlice extends MemoryProposalSlice {
+  list(filter?: MemoryReadFilter): Promise<MemoryRecord[]>;
 }
 
 /** Per-agent handle; prepare() рендерит блоки одного хода. */
