@@ -19,7 +19,7 @@
   `telegram.save`, `telegram.test`, `telegram.disable`, `telegram.clear-token`,
   `sessions.list`, `sessions.read`, `memory.list`, `memory.save`, `memory.delete`,
   `memory.propose`, `memory.review/list`, `memory.review/approve`,
-  `memory.review/reject`.
+  `memory.review/reject`, `memory.metrics`.
 - Вне scope: статика SPA (не API), внутренние сервисные интерфейсы Cordis
   (в т.ч. сервис `balbesModels` и командная поверхность Telegram-канала),
   streaming-доставка ответов модели (Telegram отправляет финальные сообщения и
@@ -475,6 +475,26 @@
 - response: `{proposal: MemoryProposal}`
 - errors: 400 (`bad-request`: нет/пустой `id`), 400 (`invalid-status`: предложение уже решено), 401, 404 (`not-found`), 500, 503 (`memory-unavailable`)
 - notes: строка сохраняется как аудит (`status: "rejected"`, `decidedAt`, `decidedBy: "owner"`), запись в `memories` не создаётся; обратных переходов нет — повторное решение всегда `invalid-status`.
+
+### memory.metrics — метрики доставки памяти
+- method: POST
+- path: /api/memory/metrics
+- auth: bearer
+- request: `{reset?: boolean, top?: integer}` (`top` — размер `topRecords`,
+  дефолт 20, максимум 100; `reset: true` закрывает окно и возвращает снимок
+  закрытого окна, накопительные тоталы процесса сохраняются)
+- response: `{metrics: MemoryMetricsSnapshot}` — `schema`, `process`
+  (`startedAt`, `totals`), `window` (`startedAt`, `durationMs`, `turns`,
+  `deliveries`), `byChannel`, `byScope`, `recall` (`calls`, `empty`, `failed`,
+  `latencyMs`), `unqueriedDelivered`, `dropped`, `topRecords`
+  (`id`, `type`, `scope`, `inCore`, `inMap`, `inPush`, `recallDelivered`,
+  `recallQueries`)
+- errors: 400 `bad-request` (не булев `reset`, `top` не число/вне 1..100),
+  401, 503 `metrics-unavailable` (сервис не собран)
+- notes: read-only, в хранилище ничего не пишет. Текста памяти в ответе нет ни в
+  одном поле — только id, тип, scope и счётчики; `originRef` не возвращается.
+  Метрики живут в процессе и теряются при рестарте (персистентность — p12).
+  `reset` существует для детерминированного smoke без рестарта сервиса.
 
 `MemoryRecord`: `id`, `scope`, `type`, `tags`, `pinned`, `origin` (`"owner"|"agent"`), `originRef: string | null`, `createdAt`/`updatedAt` (ISO). Компиляторный SoT — `packages/contracts/src/index.ts`.
 
