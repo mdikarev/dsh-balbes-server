@@ -1,44 +1,26 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, type AdminApi } from "../api/client";
-import type { MemoryRecord, MemoryScope, MemoryType, WorkspaceProject } from "dsh-balbes-contracts";
+import type { MemoryRecord, MemoryType, WorkspaceProject } from "dsh-balbes-contracts";
 import Modal from "../components/Modal";
-
-const MEMORY_TYPES: MemoryType[] = ["fact", "preference", "decision", "note"];
-
-const TYPE_LABELS: Record<MemoryType, string> = {
-  fact: "факт",
-  preference: "предпочтение",
-  decision: "решение",
-  note: "заметка"
-};
+import MemoryReviewQueue from "./MemoryReviewQueue";
+import {
+  MEMORY_TYPES,
+  TYPE_LABELS,
+  formatTime,
+  levelKey,
+  levelLabel,
+  parseScope,
+  parseTags,
+  type MemoryLevel as Level,
+  type LevelSelection
+} from "./memoryShared";
 
 const ORIGIN_LABELS: Record<MemoryRecord["origin"], string> = {
   owner: "владелец",
   agent: "агент"
 };
 
-type Level = MemoryScope;
-/** The toolbar selection: a concrete level, or the «Все» pseudo-level listing every scope. */
-type LevelSelection = Level | { kind: "all" };
 type Editor = { mode: "create" } | { mode: "edit"; record: MemoryRecord };
-
-function levelKey(level: LevelSelection): string {
-  if (level.kind === "all") return "all";
-  return level.kind === "global" ? "global" : "project:" + level.name;
-}
-
-function levelLabel(level: Level): string {
-  return level.kind === "global" ? "Дом" : level.name;
-}
-
-/** Parses a concrete level option value; «Все» is not a concrete level. */
-function parseScope(value: string): Level {
-  return value === "global" ? { kind: "global" } : { kind: "project", name: value.slice("project:".length) };
-}
-
-function parseTags(raw: string): string[] {
-  return raw.split(/[\s,]+/).map((tag) => tag.trim()).filter((tag) => tag !== "");
-}
 
 function secretRule(message: string): string {
   const match = /"([^"]*)"\s*$/.exec(message);
@@ -55,12 +37,9 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : "неизвестная ошибка";
 }
 
-function formatTime(iso: string): string {
-  const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString("ru-RU");
-}
-
 export default function MemoryPage({ api }: { api: AdminApi }) {
+  const [tab, setTab] = useState<"records" | "review">("records");
+  const [pendingCount, setPendingCount] = useState(0);
   const [projects, setProjects] = useState<WorkspaceProject[]>([]);
   const [projectsLoaded, setProjectsLoaded] = useState(false);
   const [level, setLevel] = useState<LevelSelection>({ kind: "global" });
@@ -97,6 +76,18 @@ export default function MemoryPage({ api }: { api: AdminApi }) {
       setLoadError(messageOf(error));
     }
   }, [api, level, type, tag, pinnedOnly, query]);
+
+  const refreshPendingCount = useCallback(async (): Promise<void> => {
+    try {
+      // No scope, no type, no tag: this is the total, not the current view.
+      const res = await api.listMemoryReview({});
+      setPendingCount(res.proposals.length);
+    } catch {
+      // The queue tab surfaces the real error; a stale badge is not worth an alert.
+    }
+  }, [api]);
+
+  useEffect(() => { void refreshPendingCount(); }, [refreshPendingCount]);
 
   useEffect(() => {
     let cancelled = false;
@@ -203,6 +194,36 @@ export default function MemoryPage({ api }: { api: AdminApi }) {
 
   return (
     <div className="memory-page" data-testid="memory-page">
+      <div className="memory-tabs" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "records"}
+          className={tab === "records" ? "memory-tab memory-tab-active" : "memory-tab"}
+          data-testid="memory-tab-records"
+          onClick={() => setTab("records")}
+        >
+          Записи
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "review"}
+          className={tab === "review" ? "memory-tab memory-tab-active" : "memory-tab"}
+          data-testid="memory-tab-review"
+          onClick={() => setTab("review")}
+        >
+          Очередь ревью
+          {pendingCount > 0 && (
+            <span className="memory-tab-count" data-testid="memory-tab-review-count">{pendingCount}</span>
+          )}
+        </button>
+      </div>
+
+      {tab === "review" ? (
+        <MemoryReviewQueue api={api} onDecided={refreshPendingCount} />
+      ) : (
+        <>
       <div className="memory-toolbar">
         <select
           className="memory-level"
@@ -392,6 +413,8 @@ export default function MemoryPage({ api }: { api: AdminApi }) {
             <button type="button" className="btn-danger" disabled={busy} onClick={() => void confirmDelete()} data-testid="memory-delete-confirm">{busy ? "Удаляется..." : "Удалить"}</button>
           </div>
         </Modal>
+      )}
+        </>
       )}
     </div>
   );

@@ -2,7 +2,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import MemoryPage from "../src/pages/MemoryPage";
 import { ApiError, type AdminApi } from "../src/api/client";
-import type { MemoryListRequest, MemoryRecord, MemorySaveRequest, WorkspaceListResponse } from "dsh-balbes-contracts";
+import type {
+  MemoryAutonomyPolicy,
+  MemoryListRequest,
+  MemoryProposal,
+  MemoryRecord,
+  MemoryReviewApproveRequest,
+  MemorySaveRequest,
+  WorkspaceListResponse
+} from "dsh-balbes-contracts";
 
 afterEach(cleanup);
 
@@ -10,6 +18,8 @@ const WORKSPACES: WorkspaceListResponse = {
   home: { path: "/h/agent" },
   projects: [{ name: "alpha", path: "/p/alpha" }]
 };
+
+const REVIEW_POLICY: MemoryAutonomyPolicy = { immediate: ["owner", "remember"], review: ["pipeline"], autoApprove: "none" };
 
 function record(overrides: Partial<MemoryRecord> = {}): MemoryRecord {
   return {
@@ -27,11 +37,31 @@ function record(overrides: Partial<MemoryRecord> = {}): MemoryRecord {
   };
 }
 
+function queueProposal(overrides: Partial<MemoryProposal> = {}): MemoryProposal {
+  return {
+    id: "p-1",
+    scope: { kind: "global" },
+    type: "fact",
+    text: "staged fact",
+    tags: ["x"],
+    origin: "agent",
+    originRef: "pipeline:extraction admin session:s1",
+    status: "proposed",
+    proposedAt: "2026-09-30T00:00:00.000Z",
+    decidedAt: null,
+    decidedBy: null,
+    decidedEdit: false,
+    memoryId: null,
+    ...overrides
+  };
+}
+
 function makeApi(records: MemoryRecord[], overrides: Partial<AdminApi> = {}): AdminApi {
   const store = [...records];
   return {
     listWorkspaces: vi.fn(async () => ({ home: { path: "/h/agent" }, projects: [] })),
     listMemory: vi.fn(async () => ({ records: [...store] })),
+    listMemoryReview: vi.fn(async () => ({ proposals: [], policy: REVIEW_POLICY })),
     saveMemory: vi.fn(async (req: MemorySaveRequest) => {
       const saved = record({ id: "m-new", text: req.text, type: req.type, tags: req.tags ?? [], pinned: req.pinned ?? false });
       store.push(saved);
@@ -239,5 +269,55 @@ describe("MemoryPage", () => {
     const dialog = await screen.findByRole("dialog");
     expect(dialog.textContent).toContain("Уровень: alpha");
     expect(within(dialog).queryByTestId("memory-form-level")).toBeNull();
+  });
+
+  it("switches to the review queue and back", async () => {
+    const api = makeApi([record()]);
+    render(<MemoryPage api={api} />);
+    expect(await screen.findByTestId("memory-row:m-1")).toBeTruthy();
+    // the queue is not mounted behind the records tab: no prefetch, no hidden render
+    expect(screen.queryByTestId("memory-review")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("memory-tab-review"));
+    expect(await screen.findByTestId("memory-review-empty")).toBeTruthy();
+    expect(api.listMemoryReview).toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId("memory-tab-records"));
+    expect(await screen.findByTestId("memory-row:m-1")).toBeTruthy();
+  });
+
+  it("shows the pending counter on the review tab label", async () => {
+    // The canon puts a pending counter on the tab label, so the page seeds it
+    // once on mount — before the owner ever opens the queue.
+    const api = makeApi([record()], {
+      listMemoryReview: vi.fn(async () => ({
+        proposals: [queueProposal(), queueProposal({ id: "p-2" })],
+        policy: { immediate: ["owner", "remember"], review: ["pipeline"], autoApprove: "none" }
+      }))
+    } as Partial<AdminApi>);
+    render(<MemoryPage api={api} />);
+    expect(await screen.findByTestId("memory-tab-review-count")).toBeTruthy();
+    expect(screen.getByTestId("memory-tab-review-count").textContent).toBe("2");
+    // the badge is the total queue, never the queue's own filtered view: unfiltered request
+    expect(api.listMemoryReview).toHaveBeenCalledWith({});
+  });
+
+  it("refreshes the pending counter after a decision in the queue", async () => {
+    let proposals = [queueProposal()];
+    const api = makeApi([record()], {
+      listMemoryReview: vi.fn(async () => ({ proposals: [...proposals], policy: REVIEW_POLICY })),
+      approveMemoryReview: vi.fn(async (_req: MemoryReviewApproveRequest) => {
+        proposals = [];
+        return { proposal: queueProposal({ status: "accepted", decidedBy: "owner", memoryId: "m-1" }), record: record() };
+      })
+    });
+    render(<MemoryPage api={api} />);
+    expect((await screen.findByTestId("memory-tab-review-count")).textContent).toBe("1");
+
+    fireEvent.click(screen.getByTestId("memory-tab-review"));
+    fireEvent.click(await screen.findByTestId("memory-review-approve:p-1"));
+    fireEvent.click(screen.getByTestId("memory-review-form-approve"));
+    await waitFor(() => expect(api.approveMemoryReview).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByTestId("memory-tab-review-count")).toBeNull());
   });
 });

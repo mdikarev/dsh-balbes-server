@@ -550,6 +550,7 @@ button.ws-tree-row:hover { background: var(--surface); }
 .memory-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
 .memory-tab { background: transparent; border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
 .memory-tab-active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.memory-tab-count { margin-left: 6px; padding: 0 6px; border-radius: 8px; background: rgba(255, 255, 255, 0.25); font-size: 12px; }
 .memory-review-policy { margin: 0 0 12px; opacity: 0.8; font-size: 13px; }
 .memory-review-status { padding: 1px 6px; border-radius: 4px; font-size: 12px; }
 .memory-review-status-accepted { background: rgba(46, 160, 67, 0.18); }
