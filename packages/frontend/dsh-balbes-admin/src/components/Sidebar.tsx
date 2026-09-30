@@ -16,7 +16,6 @@ const NAV_GROUPS: NavGroup[] = [
   {
     title: "Работа",
     items: [
-      { id: "test", label: "Тестовая страница", soon: false },
       { id: "workspaces", label: "Проекты", soon: false }
     ]
   },

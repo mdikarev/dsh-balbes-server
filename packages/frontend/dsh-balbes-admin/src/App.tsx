@@ -3,17 +3,15 @@ import { TOKEN_KEY, type AdminApi } from "./api/client";
 import Sidebar from "./components/Sidebar";
 import Topbar from "./components/Topbar";
 import Login from "./pages/Login";
-import TestPage from "./pages/TestPage";
 import WorkspacesPage from "./pages/WorkspacesPage";
 import ModelsPage from "./pages/ModelsPage";
 import TelegramPage from "./pages/TelegramPage";
 import MemoryPage from "./pages/MemoryPage";
 
 type View = "loading" | "login" | "main";
-type Page = "test" | "workspaces" | "models" | "telegram" | "memory";
+type Page = "workspaces" | "models" | "telegram" | "memory";
 
 const PAGE_TITLES: Record<Page, string> = {
-  test: "Тестовая страница",
   workspaces: "Проекты",
   models: "Модели",
   telegram: "Telegram",
@@ -22,7 +20,7 @@ const PAGE_TITLES: Record<Page, string> = {
 
 export default function App({ api }: { api: AdminApi }) {
   const [view, setView] = useState<View>("loading");
-  const [page, setPage] = useState<Page>("test");
+  const [page, setPage] = useState<Page>("workspaces");
 
   useEffect(() => {
     let cancelled = false;
@@ -36,12 +34,12 @@ export default function App({ api }: { api: AdminApi }) {
 
   function handleLogout(): void {
     localStorage.removeItem(TOKEN_KEY);
-    setPage("test");
+    setPage("workspaces");
     setView("login");
   }
 
   function handleLogin(): void {
-    setPage("test");
+    setPage("workspaces");
     setView("main");
   }
 
@@ -52,9 +50,7 @@ export default function App({ api }: { api: AdminApi }) {
       <Sidebar active={page} onNavigate={(id) => setPage(id as Page)} />
       <main className="content">
         <Topbar title={PAGE_TITLES[page]} onLogout={handleLogout} />
-        {page === "test" ? (
-          <TestPage api={api} />
-        ) : page === "workspaces" ? (
+        {page === "workspaces" ? (
           <WorkspacesPage api={api} />
         ) : page === "models" ? (
           <ModelsPage api={api} />

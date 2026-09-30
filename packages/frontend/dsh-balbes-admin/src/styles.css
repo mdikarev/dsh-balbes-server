@@ -141,28 +141,11 @@ button { font: inherit; }
 }
 .btn-ghost:hover { color: var(--text); border-color: var(--text-dim); }
 
-.spinner {
-  width: 13px; height: 13px; border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, .35); border-top-color: #fff;
-  animation: spin .8s linear infinite; flex: none;
-}
-@keyframes spin { to { transform: rotate(360deg); } }
-
 /* ── page content ─────────────────────────────────────────── */
 .page { padding: 30px 40px; max-width: 860px; width: 100%; min-height: 0; overflow-y: auto; }
 .page h1 { margin: 0 0 4px; font-size: 22px; font-weight: 650; }
 .page .lead { margin: 0 0 22px; color: var(--text-dim); }
-.page .prompt-note { color: var(--text-dim); font-size: 13px; margin: 0 0 16px; }
-.page .prompt-note code {
-  font-family: var(--mono); color: var(--text); background: var(--surface);
-  border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px;
-}
 .page .form-error { margin-bottom: 14px; }
-.answer-box {
-  margin: 0 0 16px; background: var(--bg); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 14px 16px; font-family: var(--mono);
-  font-size: 13.5px; white-space: pre-wrap; color: var(--text); overflow-x: auto;
-}
 
 /* ── shell nav: live items are buttons now ────────────────── */
 /* Reset only the UA button chrome (.nav-item already defines layout,

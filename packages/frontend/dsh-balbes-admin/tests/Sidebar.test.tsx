@@ -3,17 +3,19 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import Sidebar from "../src/components/Sidebar";
 
 describe("Sidebar", () => {
-  it("рендерит группы навигации и помечает «Тестовая страница» активной", () => {
-    render(<Sidebar active="test" onNavigate={() => {}} />);
+  it("рендерит группы навигации и помечает «Проекты» активным", () => {
+    render(<Sidebar active="workspaces" onNavigate={() => {}} />);
 
     // Group labels from the mockup.
     expect(screen.getByText("Работа")).toBeTruthy();
     expect(screen.getByText("Управление")).toBeTruthy();
     expect(screen.getByText("Система")).toBeTruthy();
 
-    // «Тестовая страница» is the active item.
-    const activeItem = screen.getByText("Тестовая страница");
+    // «Проекты» is the active item; the removed test-prompt page has no nav item.
+    const activeItem = screen.getByRole("button", { name: "Проекты" });
     expect(activeItem.className).toContain("active");
+    expect(activeItem.getAttribute("aria-current")).toBe("page");
+    expect(screen.queryByText("Тестовая страница")).toBeNull();
 
     // «Модели» replaced the ghost «Ключи» and is a live button without the
     // «скоро» pill; remaining ghost items are grayed out and carry the pill.
@@ -30,7 +32,7 @@ describe("Sidebar", () => {
 
   it("«Модели» is a live item that fires onNavigate with its id", () => {
     const onNavigate = vi.fn();
-    render(<Sidebar active="test" onNavigate={onNavigate} />);
+    render(<Sidebar active="workspaces" onNavigate={onNavigate} />);
 
     // The ghost «Ключи» item is gone.
     expect(screen.queryByText("Ключи")).toBeNull();
@@ -41,8 +43,8 @@ describe("Sidebar", () => {
 
   it("fires onNavigate for live items", () => {
     const onNavigate = vi.fn();
-    render(<Sidebar active="test" onNavigate={onNavigate} />);
-    fireEvent.click(screen.getByText("Проекты"));
+    render(<Sidebar active="workspaces" onNavigate={onNavigate} />);
+    fireEvent.click(screen.getByRole("button", { name: "Проекты" }));
     expect(onNavigate).toHaveBeenCalledWith("workspaces");
   });
 
