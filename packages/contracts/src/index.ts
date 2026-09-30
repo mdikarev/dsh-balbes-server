@@ -252,6 +252,8 @@ export interface TelegramSettingsStatus {
   /** Token presence is reported as a boolean; the token itself never appears in responses. */
   tokenConfigured: boolean;
   enabled: boolean;
+  /** Answer streaming in the chat; an absent settings key resolves to true. */
+  streamAnswers: boolean;
   /** Allowed Telegram user id; absent = no allowlist. */
   allowedUserId?: number;
   botUsername?: string;
@@ -270,6 +272,8 @@ export interface TelegramSaveRequest {
   token?: string;
   allowedUserId?: number;
   enabled?: boolean;
+  /** Answer streaming in the chat; absent = keep the stored value. */
+  streamAnswers?: boolean;
 }
 export interface TelegramSaveResponse {
   status: TelegramSettingsStatus;

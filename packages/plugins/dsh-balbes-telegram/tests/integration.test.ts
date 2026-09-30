@@ -159,6 +159,7 @@ interface TgStatus {
   state: string;
   tokenConfigured: boolean;
   enabled: boolean;
+  streamAnswers: boolean;
   allowedUserId?: number;
   botUsername?: string;
   lastPollAt?: string;
@@ -787,7 +788,7 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
       await writeFile(join(home, "projects", "demo", "note.txt"), NOTE_TEXT);
 
       // (b) a fresh home knows nothing yet
-      expect(await tgStatus(token)).toEqual({ state: "not-configured", tokenConfigured: false, enabled: false });
+      expect(await tgStatus(token)).toEqual({ state: "not-configured", tokenConfigured: false, enabled: false, streamAnswers: true });
 
       // (c) enabling without an allowlist is refused as a whole request
       const noUser = await tgPost("/api/telegram/save", { token: BOT_TOKEN, enabled: true }, token);

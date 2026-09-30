@@ -98,6 +98,8 @@ export const Config = z.object({
   // two ARE the `balbes-telegram` settings section the admin page edits; the
   // `telegramSettingsSchema` below mirrors them for the older register seam.
   enabled: z.boolean().default(false).volatile(),
+  // Потоковый ответ в чате: дефолт включён, переключается страницей «Telegram».
+  streamAnswers: z.boolean().default(true).volatile(),
   allowedUserId: z.union([z.natural().min(1), z.const(null)]).default(null).volatile()
 });
 
@@ -113,6 +115,7 @@ export const Config = z.object({
  */
 export const telegramSettingsSchema = z.object({
   enabled: z.boolean().default(false),
+  streamAnswers: z.boolean().default(true),
   allowedUserId: z.union([z.natural().min(1), z.const(null)]).default(null)
 });
 
@@ -138,6 +141,7 @@ interface TelegramConfigLike {
   apiBase?: string;
   maxFileBytes?: number;
   enabled?: { get(): boolean };
+  streamAnswers?: { get(): boolean };
   allowedUserId?: { get(): number | null | undefined };
 }
 
@@ -168,6 +172,7 @@ function createSettingsScope(ctx: PluginCtx, settings: SettingsLike, config: Tel
   if (typeof settings.register === "function") return settings.register(SETTINGS_ENTRY_ID, telegramSettingsSchema);
   const read = (): TelegramSettingsSection => ({
     enabled: configRefValue(config.enabled, false),
+    streamAnswers: configRefValue(config.streamAnswers, true),
     allowedUserId: configRefValue(config.allowedUserId, null) ?? null
   });
   const update = settings.update?.bind(settings);
@@ -647,6 +652,8 @@ export function apply(ctx: PluginCtx, config: TelegramConfigLike): void {
     runner: runnerWithSessions,
     bot: chatBot,
     maxFileBytes,
+    // Живой переключатель потока ответа: значение читается на старте задачи.
+    streamAnswers: () => settingsScope.get().streamAnswers ?? true,
     ...(balbesModels !== undefined ? { models: balbesModels } : {}),
     // The catalog is exposed only when its source (the registry) is composed;
     // absent, the chat falls back to "list unavailable" instead of failing.

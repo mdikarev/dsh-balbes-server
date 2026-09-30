@@ -51,6 +51,8 @@ export interface TelegramStatus {
   state: TelegramRuntimeState;
   tokenConfigured: boolean;
   enabled: boolean;
+  /** Потоковый ответ в чате: всегда конкретное значение (отсутствующий ключ → true). */
+  streamAnswers: boolean;
   /** Absent while no allowlist is configured. */
   allowedUserId?: number;
   /** `getMe` identity of the stored token, once known (never the token itself). */
@@ -68,6 +70,11 @@ export interface TelegramStatus {
  */
 export interface TelegramSettingsSection {
   enabled: boolean;
+  /**
+   * Потоковый ответ в чате. Ключ может отсутствовать (документ настроек старше
+   * поля) — отсутствие означает «включено», как и дефолт настройки.
+   */
+  streamAnswers?: boolean;
   allowedUserId?: number | null;
 }
 
@@ -111,6 +118,8 @@ export interface TelegramAdminDeps {
 /** Stable, safe error codes (R-API-1 envelopes). */
 const CODE_INTERNAL = "internal";
 const CODE_INVALID_USER_ID = "invalid-user-id";
+/** `telegram.save` отказал: `streamAnswers` не boolean. */
+const CODE_INVALID_STREAM_ANSWERS = "invalid-stream-answers";
 const CODE_INVALID_CONFIG = "invalid-config";
 const CODE_NOT_CONFIGURED = "not-configured";
 const CODE_INVALID_TOKEN = "invalid-token";
@@ -178,12 +187,13 @@ export function pollerTimingOptions(
 export async function buildTelegramStatus(deps: TelegramAdminDeps): Promise<TelegramStatus> {
   const section = deps.settingsScope.get();
   const enabled = section.enabled === true;
+  const streamAnswers = section.streamAnswers ?? true;
   const allowedUserId = section.allowedUserId ?? undefined;
   const configured = (await deps.credentials.describe(TELEGRAM_BOT_TOKEN_REF)).configured;
   const extras = await deps.statusExtras();
   const poll = deps.poller.status();
 
-  const status: TelegramStatus = { state: "error", tokenConfigured: configured, enabled };
+  const status: TelegramStatus = { state: "error", tokenConfigured: configured, enabled, streamAnswers };
   if (allowedUserId !== undefined) status.allowedUserId = allowedUserId;
   if (extras.botUsername !== undefined) status.botUsername = extras.botUsername;
   const lastPollAt = extras.lastPollAt ?? poll.lastPollAt;
@@ -240,6 +250,11 @@ export function registerTelegramRoutes(http: HttpSeatLike, deps: TelegramAdminDe
         return;
       }
       const enabled = typeof input.enabled === "boolean" ? input.enabled : undefined;
+      const streamAnswers = typeof input.streamAnswers === "boolean" ? input.streamAnswers : undefined;
+      if (input.streamAnswers !== undefined && streamAnswers === undefined) {
+        fail(res, 400, CODE_INVALID_STREAM_ANSWERS, "streamAnswers must be a boolean");
+        return;
+      }
 
       const section = deps.settingsScope.get();
       const configured = token !== "" || (await deps.credentials.describe(TELEGRAM_BOT_TOKEN_REF)).configured;
@@ -255,6 +270,7 @@ export function registerTelegramRoutes(http: HttpSeatLike, deps: TelegramAdminDe
       const patch: Record<string, unknown> = {};
       if (hasUser) patch.allowedUserId = allowedUserId;
       if (enabled !== undefined) patch.enabled = enabled;
+      if (streamAnswers !== undefined) patch.streamAnswers = streamAnswers;
       // A token-only save changes no setting; writing an empty patch would only
       // add an empty user section to the settings document.
       if (Object.keys(patch).length > 0) await deps.settingsScope.update(patch);

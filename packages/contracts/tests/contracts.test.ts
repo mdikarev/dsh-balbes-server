@@ -95,18 +95,19 @@ import type {
 
 describe("telegram contracts", () => {
   it("status carries no token, only tokenConfigured", () => {
-    const status: TelegramSettingsStatus = { state: "connected", tokenConfigured: true, enabled: true, allowedUserId: 12345, botUsername: "balbes_bot", lastPollAt: "2026-09-10T00:00:00.000Z" };
+    const status: TelegramSettingsStatus = { state: "connected", tokenConfigured: true, enabled: true, streamAnswers: true, allowedUserId: 12345, botUsername: "balbes_bot", lastPollAt: "2026-09-10T00:00:00.000Z" };
     const statusRes: TelegramStatusResponse = { status };
-    const saveRes: TelegramSaveResponse = { status: { state: "disabled", tokenConfigured: true, enabled: false, allowedUserId: 12345 } };
-    const saveReq: TelegramSaveRequest = { allowedUserId: 12345, enabled: true }; // token absent = keep
+    const saveRes: TelegramSaveResponse = { status: { state: "disabled", tokenConfigured: true, enabled: false, streamAnswers: false, allowedUserId: 12345 } };
+    const saveReq: TelegramSaveRequest = { allowedUserId: 12345, enabled: true, streamAnswers: false }; // token absent = keep
+    const streamReq: TelegramSaveRequest = { streamAnswers: true }; // только переключатель потока
     const disableReq: TelegramDisableRequest = {};
-    const disableRes: TelegramDisableResponse = { status: { state: "disabled", tokenConfigured: true, enabled: false } };
+    const disableRes: TelegramDisableResponse = { status: { state: "disabled", tokenConfigured: true, enabled: false, streamAnswers: true } };
     const clearReq: TelegramClearTokenRequest = {};
-    const clearRes: TelegramClearTokenResponse = { status: { state: "not-configured", tokenConfigured: false, enabled: false } };
+    const clearRes: TelegramClearTokenResponse = { status: { state: "not-configured", tokenConfigured: false, enabled: false, streamAnswers: true } };
     const testReq: TelegramTestRequest = {};
     const testRes: TelegramTestResponse = { username: "balbes_bot" };
     const states: TelegramState[] = ["not-configured", "disabled", "connected", "error"];
-    expect([status, statusRes, saveReq, saveRes, disableReq, disableRes, clearReq, clearRes, testReq, testRes, states]).toBeTruthy();
+    expect([status, statusRes, saveReq, streamReq, saveRes, disableReq, disableRes, clearReq, clearRes, testReq, testRes, states]).toBeTruthy();
   });
 });
 

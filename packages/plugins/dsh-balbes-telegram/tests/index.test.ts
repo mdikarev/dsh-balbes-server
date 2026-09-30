@@ -51,16 +51,16 @@ class FakeScope {
   updates: object[] = [];
   watchers: Array<() => void> = [];
 
-  constructor(public value: { enabled: boolean; allowedUserId?: number | null } = { enabled: false, allowedUserId: null }) {}
+  constructor(public value: { enabled: boolean; streamAnswers?: boolean; allowedUserId?: number | null } = { enabled: false, allowedUserId: null }) {}
 
-  get(): { enabled: boolean; allowedUserId?: number | null } {
+  get(): { enabled: boolean; streamAnswers?: boolean; allowedUserId?: number | null } {
     return { ...this.value };
   }
 
   async update(patch: object): Promise<void> {
     this.updates.push(patch);
     const prev = this.value;
-    this.value = { ...this.value, ...(patch as { enabled?: boolean; allowedUserId?: number | null }) };
+    this.value = { ...this.value, ...(patch as { enabled?: boolean; streamAnswers?: boolean; allowedUserId?: number | null }) };
     await this.commit(this.value, prev);
   }
 
@@ -449,15 +449,29 @@ describe("balbes-telegram plugin", () => {
   it("registers the exact settings schema semantics (enabled default, positive-int or null allowlist)", () => {
     apply(makeCtx(), { dshHome: home });
     const schema = settings.calls[0]!.schema as (data?: unknown) => unknown;
-    // defaults: disabled, no allowlist
-    expect(schema({})).toMatchObject({ enabled: false });
+    // defaults: disabled, streaming on, no allowlist
+    expect(schema({})).toMatchObject({ enabled: false, streamAnswers: true });
     // an explicit positive user id is kept
     expect(schema({ enabled: true, allowedUserId: 5 })).toMatchObject({ enabled: true, allowedUserId: 5 });
+    // the stream switch is a boolean setting of its own
+    expect(schema({ streamAnswers: false })).toMatchObject({ streamAnswers: false });
+    // the plugin Config carries the same default for the 0.1.7 settings seam
+    // (a Volatile field resolves to its live reference, not to a plain value)
+    expect(Config({}).streamAnswers.get()).toBe(true);
     // null means "no allowlist"
     expect(schema({ allowedUserId: null })).toMatchObject({ allowedUserId: null });
     // zero and non-integers are rejected (z.natural() enforces the integer)
     expect(() => schema({ allowedUserId: 0 })).toThrow();
     expect(() => schema({ allowedUserId: 1.5 })).toThrow();
+  });
+
+  it("wires the live stream setting into the chat deps", async () => {
+    const h = await bootTelegram();
+    // Секция старого документа настроек ключа не несёт — это «включено».
+    expect(h.deps.streamAnswers?.()).toBe(true);
+
+    settings.scope.value = { enabled: true, allowedUserId: 7, streamAnswers: false };
+    expect(h.deps.streamAnswers?.()).toBe(false);
   });
 
   it("warns without crashing when balbesHttp is absent", () => {
@@ -484,12 +498,12 @@ describe("balbes-telegram plugin", () => {
     apply(makeCtx(), { dshHome: home });
 
     const first = await call("/api/telegram/status");
-    expect(first.json).toEqual({ status: { state: "not-configured", tokenConfigured: false, enabled: false } });
+    expect(first.json).toEqual({ status: { state: "not-configured", tokenConfigured: false, enabled: false, streamAnswers: true } });
 
     const saved = await call("/api/telegram/save", { token: TOKEN });
     expect(saved.status).toBe(200);
     expect(credentials.refs.get(TELEGRAM_BOT_TOKEN_REF)).toBe(TOKEN);
-    expect(saved.json).toEqual({ status: { state: "disabled", tokenConfigured: true, enabled: false } });
+    expect(saved.json).toEqual({ status: { state: "disabled", tokenConfigured: true, enabled: false, streamAnswers: true } });
   });
 
   it("refuses to enable the bot through the assembled plugin without a token", async () => {
@@ -515,7 +529,7 @@ describe("balbes-telegram plugin", () => {
     expect(status).toBe(200);
     expect(credentials.unsetCalls).toEqual([TELEGRAM_BOT_TOKEN_REF]);
     expect(settings.scope.updates).toEqual([{ enabled: false }]);
-    expect(json).toEqual({ status: { state: "not-configured", tokenConfigured: false, enabled: false } });
+    expect(json).toEqual({ status: { state: "not-configured", tokenConfigured: false, enabled: false, streamAnswers: true } });
   });
 
   it("never returns the token through the assembled plugin", async () => {

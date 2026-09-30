@@ -11,7 +11,8 @@ import {
   type ResLike,
   type TelegramAdminDeps,
   type TelegramRuntime,
-  type TelegramSettingsSection
+  type TelegramSettingsSection,
+  type TelegramStatus
 } from "../src/admin.js";
 import { BotApiError, type BotClient, type BotUpdate } from "../src/bot.js";
 import type { Poller, PollStatusDetail } from "../src/poller.js";
@@ -286,7 +287,7 @@ describe("POST /api/telegram/status", () => {
     const { status, json } = await h.call("/api/telegram/status");
     expect(status).toBe(200);
     expect(json).toEqual({
-      status: { state: "not-configured", tokenConfigured: false, enabled: false }
+      status: { state: "not-configured", tokenConfigured: false, enabled: false, streamAnswers: true }
     });
   });
 
@@ -294,8 +295,19 @@ describe("POST /api/telegram/status", () => {
     const h = harness({ scope: new FakeScope({ enabled: false, allowedUserId: 7 }), tokenConfigured: true });
     const { json } = await h.call("/api/telegram/status");
     expect(json).toEqual({
-      status: { state: "disabled", tokenConfigured: true, enabled: false, allowedUserId: 7 }
+      status: { state: "disabled", tokenConfigured: true, enabled: false, streamAnswers: true, allowedUserId: 7 }
     });
+  });
+
+  it("reports the stream setting, defaulting an absent key to enabled", async () => {
+    // Секция старого документа настроек ключа не несёт — это «включено».
+    const withoutKey = harness({ scope: new FakeScope({ enabled: true, allowedUserId: 7 }) });
+    const absent = await withoutKey.call("/api/telegram/status");
+    expect((absent.json as { status: TelegramStatus }).status.streamAnswers).toBe(true);
+
+    const explicitOff = harness({ scope: new FakeScope({ enabled: true, allowedUserId: 7, streamAnswers: false }) });
+    const off = await explicitOff.call("/api/telegram/status");
+    expect((off.json as { status: TelegramStatus }).status.streamAnswers).toBe(false);
   });
 
   it("reports connected while the poller runs, with the bot identity and the last poll time", async () => {
@@ -310,6 +322,7 @@ describe("POST /api/telegram/status", () => {
         state: "connected",
         tokenConfigured: true,
         enabled: true,
+        streamAnswers: true,
         allowedUserId: 7,
         botUsername: "test_bot",
         lastPollAt: "2026-09-10T10:00:00.000Z"
@@ -327,6 +340,7 @@ describe("POST /api/telegram/status", () => {
         state: "error",
         tokenConfigured: true,
         enabled: true,
+        streamAnswers: true,
         allowedUserId: 7,
         error: { code: "unauthorized", message: "Unauthorized" }
       }
@@ -350,7 +364,7 @@ describe("POST /api/telegram/status", () => {
     h.poller.detail = { state: "running", lastError: { code: "poll-failed", message: "socket hang up" } };
     const { json } = await h.call("/api/telegram/status");
     expect(json).toEqual({
-      status: { state: "connected", tokenConfigured: true, enabled: true, allowedUserId: 7 }
+      status: { state: "connected", tokenConfigured: true, enabled: true, streamAnswers: true, allowedUserId: 7 }
     });
   });
 
@@ -372,7 +386,7 @@ describe("POST /api/telegram/save", () => {
     expect(status).toBe(200);
     expect(h.credentials.setCalls).toEqual([{ ref: TELEGRAM_BOT_TOKEN_REF, value: TOKEN }]);
     expect(h.scope.updates).toEqual([]);
-    expect(json).toEqual({ status: { state: "disabled", tokenConfigured: true, enabled: false } });
+    expect(json).toEqual({ status: { state: "disabled", tokenConfigured: true, enabled: false, streamAnswers: true } });
     expect(h.poller.starts).toEqual([]);
   });
 
@@ -431,7 +445,7 @@ describe("POST /api/telegram/save", () => {
     // a later /status reports where the loop ended up
     const after = await h.call("/api/telegram/status");
     expect(after.json).toEqual({
-      status: { state: "connected", tokenConfigured: true, enabled: true, allowedUserId: 7 }
+      status: { state: "connected", tokenConfigured: true, enabled: true, streamAnswers: true, allowedUserId: 7 }
     });
   });
 
@@ -441,6 +455,24 @@ describe("POST /api/telegram/save", () => {
     expect(status).toBe(200);
     expect(h.scope.updates).toEqual([{ allowedUserId: 7 }]);
     expect(h.poller.starts).toEqual([]);
+  });
+
+  it("saves the stream setting without touching the other fields", async () => {
+    const h = harness({ scope: new FakeScope({ enabled: true, allowedUserId: 7, streamAnswers: true }) });
+    const { json } = await h.call("/api/telegram/save", { streamAnswers: false });
+    expect(h.scope.updates).toEqual([{ streamAnswers: false }]);
+    const status = (json as { status: TelegramStatus }).status;
+    expect(status.streamAnswers).toBe(false);
+    expect(status.enabled).toBe(true);
+    expect(status.allowedUserId).toBe(7);
+  });
+
+  it("rejects a non-boolean stream setting", async () => {
+    const h = harness({ scope: new FakeScope({ enabled: true, allowedUserId: 7, streamAnswers: true }) });
+    const { status, json } = await h.call("/api/telegram/save", { streamAnswers: "yes" });
+    expect(status).toBe(400);
+    expect((json as { error: { code: string } }).error.code).toBe("invalid-stream-answers");
+    expect(h.scope.updates).toEqual([]);
   });
 
   it("keeps the stored token when saving only the User ID", async () => {
@@ -561,7 +593,7 @@ describe("POST /api/telegram/disable", () => {
     expect(status).toBe(200);
     expect(h.scope.updates).toEqual([{ enabled: false }]);
     expect(json).toEqual({
-      status: { state: "disabled", tokenConfigured: true, enabled: false, allowedUserId: 7 }
+      status: { state: "disabled", tokenConfigured: true, enabled: false, streamAnswers: true, allowedUserId: 7 }
     });
 
     await h.runtime.settled();
@@ -585,7 +617,7 @@ describe("POST /api/telegram/disable", () => {
     // the transition: the loop is still winding down at this point
     expect(status).toBe(200);
     expect(json).toEqual({
-      status: { state: "disabled", tokenConfigured: true, enabled: false, allowedUserId: 7 }
+      status: { state: "disabled", tokenConfigured: true, enabled: false, streamAnswers: true, allowedUserId: 7 }
     });
     expect(h.scope.updates).toEqual([{ enabled: false }]);
     expect(h.poller.status().state).toBe("running");
@@ -609,7 +641,7 @@ describe("POST /api/telegram/clear-token", () => {
     expect(h.credentials.refs.size).toBe(0);
     expect(h.scope.updates).toEqual([{ enabled: false }]);
     expect(json).toEqual({
-      status: { state: "not-configured", tokenConfigured: false, enabled: false, allowedUserId: 7 }
+      status: { state: "not-configured", tokenConfigured: false, enabled: false, streamAnswers: true, allowedUserId: 7 }
     });
 
     await h.runtime.settled();
@@ -620,7 +652,7 @@ describe("POST /api/telegram/clear-token", () => {
     const h = harness();
     const { status, json } = await h.call("/api/telegram/clear-token");
     expect(status).toBe(200);
-    expect(json).toEqual({ status: { state: "not-configured", tokenConfigured: false, enabled: false } });
+    expect(json).toEqual({ status: { state: "not-configured", tokenConfigured: false, enabled: false, streamAnswers: true } });
   });
 });
 
@@ -907,6 +939,7 @@ describe("runtime transition serialization", () => {
         state: "error",
         tokenConfigured: true,
         enabled: true,
+        streamAnswers: true,
         allowedUserId: 8,
         error: { code: "runtime-error", message: "credentials unavailable" }
       }
@@ -1118,6 +1151,7 @@ describe("buildTelegramStatus", () => {
       state: "connected",
       tokenConfigured: true,
       enabled: true,
+      streamAnswers: true,
       allowedUserId: 7,
       lastPollAt: "2026-09-10T12:00:00.000Z"
     });
