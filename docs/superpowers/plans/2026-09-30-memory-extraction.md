@@ -1623,9 +1623,8 @@ const EXTRACTION_CHAT_REPLY = "привет";
         () => llm.calls.find(isExtractionRequest),
         "the extraction turn's model request"
       );
-      expect(extractionCall, "the extraction turn's model request").toBeDefined();
-      expect(toolNames(extractionCall!.body)).toContain("propose_memory");
-      expect(toolNames(extractionCall!.body)).not.toContain("remember");
+      expect(toolNames(extractionCall.body)).toContain("propose_memory");
+      expect(toolNames(extractionCall.body)).not.toContain("remember");
       const taskCall = llm.calls.find((call) =>
         JSON.stringify(call.body.messages ?? []).includes(EXTRACTION_TASK_PROMPT)
       );
