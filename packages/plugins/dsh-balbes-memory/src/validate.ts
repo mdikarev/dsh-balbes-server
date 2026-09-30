@@ -1,4 +1,4 @@
-import { MemoryError } from "./errors.js";
+import { MemoryError, type MemoryErrorCode } from "./errors.js";
 import {
   LIMITS,
   MEMORY_ORIGINS,
@@ -55,10 +55,10 @@ export function assertScope(scope: unknown): MemoryScope {
   throw new MemoryError("invalid-scope", 'scope.kind must be "global" or "project"');
 }
 
-export function normalizeTag(tag: string): string {
+export function normalizeTag(tag: string, code: MemoryErrorCode = "invalid-record"): string {
   const normalized = tag.trim().toLowerCase();
   if (normalized === "" || normalized.length > LIMITS.maxTagLength || !TAG.test(normalized)) {
-    throw new MemoryError("invalid-record", "invalid tag: " + tag);
+    throw new MemoryError(code, "invalid tag: " + tag);
   }
   return normalized;
 }
@@ -177,7 +177,7 @@ export function normalizeFilter(filter: unknown): MemoryFilter {
   }
   if (f.tag !== undefined) {
     if (typeof f.tag !== "string") throw new MemoryError("invalid-filter", "tag must be a string");
-    out.tag = normalizeTag(f.tag);
+    out.tag = normalizeTag(f.tag, "invalid-filter");
   }
   if (f.pinned !== undefined) {
     if (typeof f.pinned !== "boolean") throw new MemoryError("invalid-filter", "pinned must be a boolean");
@@ -229,7 +229,7 @@ export function normalizeProposalFilter(filter: unknown): MemoryProposalFilter {
   }
   if (f.tag !== undefined) {
     if (typeof f.tag !== "string") throw new MemoryError("invalid-filter", "tag must be a string");
-    out.tag = normalizeTag(f.tag);
+    out.tag = normalizeTag(f.tag, "invalid-filter");
   }
   if (f.status !== undefined) {
     if (!Array.isArray(f.status)) throw new MemoryError("invalid-filter", "status must be an array");

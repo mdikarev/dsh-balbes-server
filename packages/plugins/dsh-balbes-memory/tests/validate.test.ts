@@ -76,6 +76,10 @@ describe("normalizeDraft", () => {
     expect(() => normalizeDraft({ ...base, text: "   " })).toThrowError(MemoryError);
     expect(() => normalizeDraft({ ...base, text: "x".repeat(9000) })).toThrowError(MemoryError);
   });
+
+  it("reports invalid-record for a malformed record tag", () => {
+    expect(codeOf(() => normalizeDraft({ ...base, tags: ["bad tag"] }))).toBe("invalid-record");
+  });
 });
 
 describe("normalizeFilter", () => {
@@ -89,6 +93,11 @@ describe("normalizeFilter", () => {
 
   it("rejects a negative limit", () => {
     expect(() => normalizeFilter({ limit: -1 })).toThrowError(MemoryError);
+  });
+
+  it("reports invalid-filter for a malformed tag", () => {
+    expect(codeOf(() => normalizeFilter({ tag: "bad tag" }))).toBe("invalid-filter");
+    expect(codeOf(() => normalizeFilter({ tag: "" }))).toBe("invalid-filter");
   });
 });
 
@@ -135,6 +144,8 @@ describe("proposal normalizers", () => {
     expect(codeOf(() => normalizeProposalFilter({ status: ["maybe"] }))).toBe("invalid-filter");
     expect(codeOf(() => normalizeProposalFilter({ status: "proposed" }))).toBe("invalid-filter");
     expect(codeOf(() => normalizeProposalFilter({ status: [] }))).toBe("invalid-filter");
+    expect(codeOf(() => normalizeProposalFilter({ tag: "bad tag" }))).toBe("invalid-filter");
+    expect(codeOf(() => normalizeProposalFilter({ tag: "" }))).toBe("invalid-filter");
   });
 
   it("drops identity and provenance fields from a decision patch", () => {
