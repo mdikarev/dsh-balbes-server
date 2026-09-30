@@ -280,7 +280,9 @@ describe("MemoryPage", () => {
 
     fireEvent.click(screen.getByTestId("memory-tab-review"));
     expect(await screen.findByTestId("memory-review-empty")).toBeTruthy();
-    expect(api.listMemoryReview).toHaveBeenCalled();
+    // The mount seed already called this, so a bare toHaveBeenCalled() would pass
+    // even if the queue never fetched. The queue requests its default level.
+    expect(api.listMemoryReview).toHaveBeenCalledWith({ scope: { kind: "global" } });
 
     fireEvent.click(screen.getByTestId("memory-tab-records"));
     expect(await screen.findByTestId("memory-row:m-1")).toBeTruthy();
