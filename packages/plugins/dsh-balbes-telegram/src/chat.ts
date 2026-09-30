@@ -1,4 +1,5 @@
 import type { AgentTaskRunner, WorkspaceRef } from "./agentTask.js";
+import { answerView } from "./answerStream.js";
 import {
   QUEUE_MAX_WAITING,
   RESET_ABORT_MESSAGE,
@@ -181,6 +182,10 @@ export interface ChatDeps {
   filePageChars?: number;
   /** How often a running task's card re-reads the runner (default 3500 ms). */
   progressIntervalMs?: number;
+  /** How often the growing answer message re-reads the runner (default progressIntervalMs). */
+  streamIntervalMs?: number;
+  /** Live switch of the answer stream; absent means enabled (setting default). */
+  streamAnswers?: () => boolean;
   /** The models surface the menu card reports; absent when not composed. */
   models?: ModelsSlice;
   /** The channel's session catalog; absent when the sessions registry is not composed. */
@@ -616,6 +621,17 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
    */
   const progressIntervalMs = clampInt(
     deps.progressIntervalMs,
+    DEFAULT_PROGRESS_INTERVAL_MS,
+    1,
+    3_600_000
+  );
+  /**
+   * Answer-stream cadence. Mirrors the card's interval by default: two edits per
+   * window is still well under Telegram's per-chat limit, and the card only
+   * writes when its text really changed.
+   */
+  const streamIntervalMs = clampInt(
+    deps.streamIntervalMs ?? deps.progressIntervalMs,
     DEFAULT_PROGRESS_INTERVAL_MS,
     1,
     3_600_000
@@ -1369,6 +1385,72 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
     return handle;
   }
 
+  /** Одно растущее сообщение ответа: см. {@link startAnswerStream}. */
+  interface AnswerStreamHandle {
+    /** Сообщение потока, или `undefined`, пока оно не создано. */
+    messageId(): number | undefined;
+    /** Текст, который сообщение показывает сейчас (последняя успешная запись). */
+    shown(): string;
+    /** Остановить тикер: новые правки не начинаются. */
+    stop(): void;
+    /** Дождаться уже ушедшей правки; никогда не reject'ит. */
+    idle(): Promise<void>;
+  }
+
+  /**
+   * Растущее сообщение ответа. Поток — ПРЕДПРОСМОТР: точный текст приходит из
+   * раннера в финале, поэтому сообщение создаётся лениво (ход без текста
+   * лишнего сообщения не оставляет), а его жизнь зеркалит карточку прогресса:
+   * цепочка правок, счётчик неудач, `idle()` перед финализацией. Кнопок у
+   * сообщения нет, `liveCards` его не знает — нажатий на нём не бывает.
+   */
+  function startAnswerStream(chatId: number, ref: WorkspaceRef, taskText: string): AnswerStreamHandle {
+    let messageId: number | undefined;
+    let lastText = "";
+    let failures = 0;
+    let pending: Promise<void> = Promise.resolve();
+    const tick = async (): Promise<void> => {
+      try {
+        const snapshot = deps.runner.answer(ref);
+        // Чужая или ещё не начатая задача: это сообщение молчит, как и карточка.
+        if (snapshot.phase === "idle" || snapshot.taskText !== taskText) return;
+        const view = answerView(snapshot.text ?? "");
+        if (view === "" || view === lastText) return;
+        if (messageId === undefined) {
+          const created = await deps.bot.sendMessage(chatId, view);
+          // 0 — «id неизвестен» (см. bot.ts): править нечего, поток заканчивается,
+          // ответ доедет штатной финальной доставкой.
+          if (created === 0) {
+            clearInterval(timer);
+            return;
+          }
+          messageId = created;
+        } else {
+          await deps.bot.editMessageText(chatId, messageId, view);
+        }
+        lastText = view;
+        // Успешная запись доказывает, что поток жив: счётчик неудач обнуляется.
+        failures = 0;
+      } catch (error) {
+        failures += 1;
+        if (failures >= MAX_CARD_EDIT_FAILURES) clearInterval(timer);
+        warn(`answer stream write failed (${codeOf(error)})`);
+      }
+    };
+    const timer = setInterval(() => {
+      // Та же цепочка, что у карточки: две правки одного сообщения не должны
+      // обгонять друг друга, а `idle()` покрывает всё, что уже на проводе.
+      pending = pending.then(() => tick(), () => {}).catch(() => {});
+    }, streamIntervalMs);
+    timer.unref?.();
+    return {
+      messageId: () => messageId,
+      shown: () => lastText,
+      stop: () => clearInterval(timer),
+      idle: () => pending.catch(() => undefined)
+    };
+  }
+
   /**
    * Run one accepted task; settles in the background, never blocks the chat.
    *
@@ -1386,6 +1468,11 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
   ): Promise<void> {
     /** What the card becomes when this run settles; absent = leave it alone. */
     let receipt: ReceiptDraft | undefined;
+    /**
+     * Поток фиксируется на задачу: выключение посреди генерации не отрывает
+     * уже растущее сообщение, а включение не оживляет прошлую задачу.
+     */
+    const stream = (deps.streamAnswers?.() ?? true) ? startAnswerStream(chatId, ref, text) : undefined;
     try {
       let result: Awaited<ReturnType<AgentTaskRunner["run"]>>;
       try {
@@ -1403,9 +1490,33 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
           kind: "done",
           steps: Math.max(deps.runner.progress(ref).steps.length, card?.steps() ?? 0)
         };
+        // Сначала остановить поток и дождаться правки «в полёте»: иначе поздний
+        // тик перепишет финальный ответ, который владельцу больше неоткуда взять.
+        stream?.stop();
+        await stream?.idle();
         const chunks = splitMessage(sanitizeReply(result.text));
+        const streamedId = stream?.messageId();
         if (chunks.length === 0) {
-          await send(chatId, EMPTY_REPLY);
+          // Фрагмент владельцу уже показан и остаётся ответом; пустой плашки нет.
+          if (streamedId === undefined) await send(chatId, EMPTY_REPLY);
+          return;
+        }
+        if (streamedId !== undefined && stream?.shown() === chunks[0]) {
+          // Показанное уже точное начало ответа: доотправляем только остаток.
+          for (const chunk of chunks.slice(1)) await send(chatId, chunk);
+          return;
+        }
+        if (streamedId !== undefined) {
+          // `chunks[0]` существует: пустой список вышел бы через `EMPTY_REPLY`.
+          const first = chunks[0]!;
+          try {
+            await deps.bot.editMessageText(chatId, streamedId, first);
+            for (const chunk of chunks.slice(1)) await send(chatId, chunk);
+          } catch (error) {
+            // Правка не прошла: ответ важнее отсутствия дубля — уходит целиком.
+            warn(`answer stream finalize failed (${codeOf(error)})`);
+            for (const chunk of chunks) await send(chatId, chunk);
+          }
           return;
         }
         for (const chunk of chunks) await send(chatId, chunk);
@@ -1456,7 +1567,9 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
       // ordering guarantee — a late tick would overwrite the receipt the owner
       // has nothing else to go by (the cancelled path sends no message at all).
       card?.stop();
+      stream?.stop();
       await card?.idle();
+      await stream?.idle();
       // …unless the owner took the message over while this run was in flight
       // («⬅ Меню» on a live card): the menu they opened is what must stay in
       // that message, so an abandoned card stamps nothing. The run's own outcome

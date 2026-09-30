@@ -400,6 +400,8 @@ function makeHarness(
     models?: ModelsFake;
     sessions?: SessionsFake;
     progressIntervalMs?: number;
+    streamIntervalMs?: number;
+    streamAnswers?: boolean;
     /**
      * The approval gate's pending read. Absent means no approval surface is
      * composed: the card then never shows a waiting line.
@@ -436,6 +438,8 @@ function makeHarness(
     listPageSize: opts.listPageSize ?? 8,
     filePageChars: opts.filePageChars ?? 3000,
     ...(opts.progressIntervalMs === undefined ? {} : { progressIntervalMs: opts.progressIntervalMs }),
+    ...(opts.streamIntervalMs === undefined ? {} : { streamIntervalMs: opts.streamIntervalMs }),
+    streamAnswers: () => opts.streamAnswers ?? true,
     ...(opts.approvals === undefined ? {} : { approvals: opts.approvals }),
     ...(opts.models === undefined ? {} : { models: opts.models }),
     ...(opts.sessions === undefined ? {} : { sessions: opts.sessions.service }),
@@ -1008,6 +1012,219 @@ describe("chat machine: tasks", () => {
 
     expect(bot.texts()[1]).toContain("Агент не смог выполнить задачу");
     expect(bot.texts()[1]).not.toContain("socket hang up\n");
+  });
+
+  it("grows a separate answer message while the task streams", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness({ streamIntervalMs: 1000 });
+      withActive(h);
+      const gate = h.runner.hold();
+      await h.machine.onMessage(message("долгая задача"));
+      const cardId = h.bot.sent[0]!.messageId;
+
+      h.runner.answer.mockReturnValue({ phase: "running", taskText: "долгая задача", text: "первый" });
+      await vi.advanceTimersByTimeAsync(1000);
+
+      // Поток — своё сообщение, карточка остаётся картой хода.
+      expect(h.bot.sent).toHaveLength(2);
+      expect(h.bot.sent[1]!.text).toBe("первый");
+      expect(h.bot.sent[1]!.markup).toBeUndefined();
+      const streamId = h.bot.sent[1]!.messageId;
+      expect(streamId).not.toBe(cardId);
+
+      // Идентичный текст не переотправляется.
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(h.bot.sent).toHaveLength(2);
+
+      h.runner.answer.mockReturnValue({ phase: "running", taskText: "долгая задача", text: "первый второй" });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(h.bot.lastEdit().messageId).toBe(streamId);
+      expect(h.bot.lastEdit().text).toBe("первый второй");
+
+      // Финал: сообщение потока становится точным ответом (он короче лимита,
+      // поэтому это единственное сообщение ответа — новых не появляется).
+      gate.release({ ok: true, text: "первый второй третий", sessionId: "s-1" });
+      await drain();
+
+      expect(h.bot.texts()).toEqual(["⏳ Дом агента · 0:00", "первый"]);
+      // Последняя правка этого сообщения — финальная. (Самая последняя правка
+      // в чате — квитанция карточки: `finally` шлёт её после финализации, см.
+      // `runTask`, поэтому утверждение адресуется сообщению потока.)
+      const finalized = h.bot.edits.filter((edit) => edit.messageId === streamId).at(-1)!;
+      expect(finalized.text).toBe("первый второй третий");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows only the tail of a long answer and finalizes it as the first chunk", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness({ streamIntervalMs: 1000 });
+      withActive(h);
+      const gate = h.runner.hold();
+      await h.machine.onMessage(message("длинная"));
+      const head = "H".repeat(4000);
+      const tail = "T".repeat(3500);
+      h.runner.answer.mockReturnValue({ phase: "running", taskText: "длинная", text: head + tail });
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(h.bot.sent[1]!.text).toBe(tail); // витрина — хвост
+      const streamId = h.bot.sent[1]!.messageId;
+
+      gate.release({ ok: true, text: head + tail, sessionId: "s-1" });
+      await drain();
+
+      // Финал переписывает сообщение началом точного ответа (первый чанк
+      // `splitMessage` — здесь без переводов строки, значит жёсткий срез 4096),
+      // остаток уходит новым сообщением, и весь текст на месте без потерь.
+      const firstChunk = (head + tail).slice(0, 4096);
+      const finalized = h.bot.edits.filter((edit) => edit.messageId === streamId).at(-1)!;
+      expect(finalized.text).toBe(firstChunk);
+      const rest = h.bot.texts().slice(2);
+      expect(finalized.text + rest.join("")).toBe(head + tail);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never creates a stream message when the setting is off", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness({ streamIntervalMs: 1000, streamAnswers: false });
+      withActive(h);
+      const gate = h.runner.hold();
+      await h.machine.onMessage(message("задача"));
+      h.runner.answer.mockReturnValue({ phase: "running", taskText: "задача", text: "текст" });
+      await vi.advanceTimersByTimeAsync(3000);
+
+      expect(h.bot.sent).toHaveLength(1);
+
+      gate.release({ ok: true, text: "готово", sessionId: "s-1" });
+      await drain();
+      expect(h.bot.texts()).toEqual(["⏳ Дом агента · 0:00", "готово"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never creates a stream message for a turn whose live text stays empty", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness({ streamIntervalMs: 1000 });
+      withActive(h);
+      const gate = h.runner.hold();
+      await h.machine.onMessage(message("служебный ход"));
+      // Служебный ход p10g (или ход из одних вызовов инструментов): окно
+      // открыто, текста нет — сообщение потока не создаётся и не правится.
+      h.runner.answer.mockReturnValue({ phase: "running", taskText: "служебный ход", text: "" });
+      await vi.advanceTimersByTimeAsync(3000);
+
+      expect(h.bot.sent).toHaveLength(1);
+
+      gate.release({ ok: true, text: "готово", sessionId: "s-1" });
+      await drain();
+      expect(h.bot.texts()).toEqual(["⏳ Дом агента · 0:00", "готово"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not re-edit the stream message when it already shows the final answer", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness({ streamIntervalMs: 1000 });
+      withActive(h);
+      const gate = h.runner.hold();
+      await h.machine.onMessage(message("короткая"));
+      h.runner.answer.mockReturnValue({ phase: "running", taskText: "короткая", text: "готово" });
+      await vi.advanceTimersByTimeAsync(1000);
+      const streamId = h.bot.sent[1]!.messageId;
+
+      gate.release({ ok: true, text: "готово", sessionId: "s-1" });
+      await drain();
+
+      // Показанное и есть точный ответ: финал не правит сообщение и не шлёт дубль.
+      expect(h.bot.texts()).toEqual(["⏳ Дом агента · 0:00", "готово"]);
+      expect(h.bot.edits.filter((edit) => edit.messageId === streamId)).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the fragment and sends the rest as new messages when the final edit fails", async () => {
+    vi.useFakeTimers();
+    try {
+      // Первый же editMessageText — финальный: он и отказывает. Правок карточки
+      // в окне теста нет (тик карточки 3500 мс, окно — 1000 мс).
+      const h = makeHarness({ streamIntervalMs: 1000, failEditPlan: [true] });
+      withActive(h);
+      const gate = h.runner.hold();
+      await h.machine.onMessage(message("задача"));
+      h.runner.answer.mockReturnValue({ phase: "running", taskText: "задача", text: "фрагмент" });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(h.bot.texts()[1]).toBe("фрагмент");
+
+      gate.release({ ok: true, text: "точный ответ", sessionId: "s-1" });
+      await drain();
+
+      // Ответ не потерян: ушёл новым сообщением, фрагмент остался в чате.
+      expect(h.bot.texts()).toContain("точный ответ");
+      expect(h.bot.texts()).toContain("фрагмент");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves the streamed fragment alone when the owner stops the task", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness({ streamIntervalMs: 1000 });
+      withActive(h);
+      const gate = h.runner.hold();
+      await h.machine.onMessage(message("задача"));
+      h.runner.answer.mockReturnValue({ phase: "running", taskText: "задача", text: "недописан" });
+      await vi.advanceTimersByTimeAsync(1000);
+      const streamId = h.bot.sent[1]!.messageId;
+      const editsBefore = h.bot.edits.filter((edit) => edit.messageId === streamId).length;
+
+      gate.release({ ok: false, code: "cancelled", message: "остановлено" });
+      await drain();
+
+      // Фрагмент не удаляем и не помечаем: его сообщение больше не правится,
+      // новых сообщений ответа нет — исход несёт квитанция карточки.
+      expect(h.bot.texts()).toEqual(["⏳ Дом агента · 0:00", "недописан"]);
+      expect(h.bot.edits.filter((edit) => edit.messageId === streamId)).toHaveLength(editsBefore);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves the streamed fragment alone when the run fails", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness({ streamIntervalMs: 1000 });
+      withActive(h);
+      const gate = h.runner.hold();
+      await h.machine.onMessage(message("задача"));
+      h.runner.answer.mockReturnValue({ phase: "running", taskText: "задача", text: "фрагмент" });
+      await vi.advanceTimersByTimeAsync(1000);
+      const streamId = h.bot.sent[1]!.messageId;
+
+      gate.release({ ok: false, code: "agent-error", message: "boom" });
+      await drain();
+
+      // Ошибка говорит своим сообщением, как и раньше; фрагмент замирает.
+      expect(h.bot.texts()).toEqual([
+        "⏳ Дом агента · 0:00",
+        "фрагмент",
+        "Агент не смог выполнить задачу: boom"
+      ]);
+      expect(h.bot.edits.filter((edit) => edit.messageId === streamId)).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
