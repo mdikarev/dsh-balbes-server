@@ -8,24 +8,45 @@ dsh используется как зависимость (не форк): вс
 ## Что это и что умеет сейчас
 
 - **Профиль `balbes`** = ядро `@deepseek-ai/dsh-base` + собственный host-бандл
-  `dsh-balbes-host` + плагин воркспейсов `dsh-balbes-workspaces`
-  (headless из ранних этапов убран).
+  `dsh-balbes-host` + девять отдельных плагинов: воркспейсы
+  (`dsh-balbes-workspaces`), git-доступ (`dsh-balbes-git`), модели
+  (`dsh-balbes-models`), сессии (`dsh-balbes-sessions`), глобальный контекст дома
+  (`dsh-balbes-home`), память (`dsh-balbes-memory`, `-context`, `-admin`) и
+  Telegram-канал (`dsh-balbes-telegram`). Версия движка зафиксирована пином
+  `scripts/engine-version.txt`.
 - **Сервер-демон** (systemd): `dsh --profile balbes` поднимает HTTP-админку и держит процесс.
-- **Админка** (`dsh-balbes-admin`, React + Vite): вход по логину/паролю (JWT); экраны —
-  «Проекты» (воркспейсы: дом агента отдельной секцией + список/создание/удаление
-  проектов), «Модели», «Telegram» и «Память». Отдельной страницы тестового промпта
-  нет: промпт-поверхность — ручка `POST /api/prompt` (проверка — curl с JWT).
-- **Воркспейсы на сервере**: дом агента `$DSH_HOME/agent/` (зарезервирован, авто-создаётся
-  при старте) и проекты `$DSH_HOME/projects/<имя>/`; каталог — источник правды, реестр-индекс
-  `$DSH_HOME/projects.json` (600). Управление — API `/api/workspaces/list|create|delete`
-  (bearer) и страница «Проекты» в админке.
+- **Админка** (`dsh-balbes-admin`, React + Vite): вход по логину/паролю (JWT);
+  live-экраны — «Проекты», «Модели», «Telegram» и «Память»; пункты «Скиллы»,
+  «Агенты», «Команды» и «Настройки» показаны заглушками. Отдельной страницы
+  тестового промпта нет: промпт-поверхность — ручка `POST /api/prompt`
+  (проверка — curl с JWT).
+- **Воркспейсы на сервере**: дом агента `$DSH_HOME/agent/` (глобальные правила
+  `AGENTS.md`, секция системного промпта `self.md`, глобальные скиллы) и проекты
+  `$DSH_HOME/projects/<имя>/`; каталог — источник правды, реестр-индекс
+  `$DSH_HOME/projects.json` (600). Управление — API
+  `/api/workspaces/list|create|create-from-git|delete|tree|file|events` (bearer) и
+  страница «Проекты»: список воркспейсов, дерево каталога и правая зона табов
+  («Сессии» плюс динамические табы открытых сессий и файлов). Диалог сессии
+  читается целиком, файлы рендерятся по типу — Markdown и код с подсветкой.
+- **Telegram-канал**: задачи в воркспейсах (новые сессии и возврат к прежним),
+  выбор воркспейса и модели прямо в чате, гейтованные операции с одноразовым
+  подтверждением владельца.
+- **Память** (сервис `balbesMemory`): долговременное знание с двумя уровнями
+  (дом и проект), типами и тегами, поиском по FTS5. Доставка в модель — ядро
+  закреплённых записей и карта в системном промпте, релевантный push в
+  runtime-контекст, полный текст — инструментом `recall`; явная запись —
+  инструментом `remember`. Владелец видит и правит память в админке, а
+  предложенные пайплайном записи проходят ревью: вкладка «Очередь ревью» на
+  странице «Память» — одобрение (при необходимости с правкой) или отклонение,
+  политика автономии показана владельцу.
 - **Авторизация**: логин/пароль генерируются при установке один раз (пароль хранится только
   scrypt-хэшем), JWT HS256 (24 ч), лимит попыток входа 5/30 мин по IP. Все запросы к `/api/*` —
   только POST (правило R-API-1); кроме `login` и `health` каждый хендлер требует валидный токен.
-- **Задел на рост**: API-контракты типизированы (`dsh-balbes-contracts` + реестр в
-  canon — секция `docs/canon/API_CONTRACTS.md`), шов в ядро повторяет агентский цикл dsh — следующие этапы
-  (сессии/чат в воркспейсах, git/ключи, наполнение дома, каналы Telegram/A2A и т.д.)
-  добавляются поверх того же host'а.
+- **Задел на рост**: API-контракты типизированы (`dsh-balbes-contracts` + реестр
+  `docs/canon/API_CONTRACTS.md`). Дальше по дорожной карте — компактизация памяти
+  (p10d), автоизвлечение знания из задач (p10g), метрики попаданий (p10h),
+  потоковая доставка ответа (p11), наблюдаемость сервера (p12), межпроектный
+  список дел (p13).
 
 Текущая дорожная карта и детальные границы — в `docs/canon/`; дизайн и планы этапов —
 в `docs/superpowers/specs/` и `docs/superpowers/plans/`.
@@ -46,9 +67,10 @@ curl -fsSL https://raw.githubusercontent.com/mdikarev/dsh-balbes-server/main/scr
 
 1. Ставит окружение: Node ≥ 22 (NodeSource), pnpm, git, глобальный `@deepseek-ai/dsh`.
 2. Клонирует/обновляет репозиторий в `~/dsh-balbes-server`.
-3. Собирает workspace (host, плагин воркспейсов, контракты, SPA).
-4. Синхронизирует профиль `balbes` в `$DSH_HOME/profiles/balbes` и кладёт собранные host
-   и плагин воркспейсов в его `node_modules`; SPA — в `$DSH_HOME/balbes/ui`.
+3. Собирает workspace: host-бандл, девять плагинов, контракты и SPA.
+4. Синхронизирует профиль `balbes` в `$DSH_HOME/profiles/balbes`, кладёт собранные
+   host и все плагины в его `node_modules`, SPA — в `$DSH_HOME/balbes/ui`.
+   Настройки движка из профильного `cordis.patch.yml` при обновлении сохраняются.
 5. Ключ DeepSeek **не запрашивает**: если задан `DEEPSEEK_API_KEY`, пишет его в `$DSH_HOME/.credentials.yaml` (600); иначе ключ задаётся после установки в админке, раздел «Модели».
 6. Генерирует учётные данные админки **один раз** и печатает их (**сохраните пароль**).
 7. Ставит и запускает systemd-юнит `dsh-balbes` (автозапуск, переживает reboot).
@@ -112,7 +134,19 @@ curl -sS -X POST http://127.0.0.1:8080/api/workspaces/create \
 curl -sS -X POST http://127.0.0.1:8080/api/workspaces/delete \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"name":"my-project"}'
+
+# память: список → создать → удалить
+curl -sS -X POST http://127.0.0.1:8080/api/memory/list -H "authorization: Bearer $TOKEN"
+curl -sS -X POST http://127.0.0.1:8080/api/memory/save \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"scope":{"kind":"global"},"type":"note","text":"smoke note","tags":["smoke"]}'
+curl -sS -X POST http://127.0.0.1:8080/api/memory/delete \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{"id":"<id>"}'
 ```
+
+Полный смоук памяти — включая ревью предложенных записей (предложить → очередь
+и политика → одобрить с правкой → повторное решение отклоняется) — в
+`docs/runbooks/stage2-vps.md`.
 
 ## Настройки (окружение)
 
@@ -129,34 +163,55 @@ curl -sS -X POST http://127.0.0.1:8080/api/workspaces/delete \
 
 ## Где лежат данные (в `$DSH_HOME`)
 
-- `profiles/balbes/` — установленный профиль (включая собранные host и плагин
-  воркспейсов в его `node_modules`);
-- `agent/` — дом агента (зарезервированный воркспейс; создаётся автоматически);
+- `profiles/balbes/` — установленный профиль: собранные host и все плагины в его
+  `node_modules`, настройки движка в `cordis.patch.yml` (ими управляют админка и
+  Telegram — вручную не редактируйте);
+- `profiles/node_modules/` — зеркало-симлинки на установку dsh (`@deepseek-ai/*`);
+- `admin-auth.json` — логин, scrypt-хэш пароля, `jwtSecret`, `createdAt` (600;
+  открытого пароля там нет);
+- `.credentials.yaml` — ключи API, включая ключ модели (600);
+- `agent/` — дом агента: `AGENTS.md`, `self.md`, `skills/` (создаётся
+  автоматически; правки владельца не перезаписываются);
 - `projects/` — проекты-воркспейсы (`projects/<имя>/` — каталог проекта);
 - `projects.json` — реестр-индекс воркспейсов (600; только метаданные `createdAt`,
   источник правды — каталоги на диске);
-- `.credentials.yaml` — ключ модели (600);
-- `admin-auth.json` — логин, scrypt-хэш пароля, `jwtSecret` (600; открытого пароля там нет);
-- `balbes/ui` — собранная админка;
+- `workspace-sessions.json` — реестр сессий воркспейсов (600): «воркспейс →
+  `sessionId` + канал»; заголовки берутся из логов сессий `sessions/`;
+- `telegram-state.json` — состояние Telegram-канала (600): offset long polling,
+  выбранный воркспейс, id сессий и архив; токен бота лежит не здесь, а в
+  `.credentials.yaml`;
+- `storages/memory.sqlite` — долговременная память (SQLite, WAL). Перед миграцией
+  схемы рядом создаётся бэкап `memory.sqlite.bak-v<прежняя версия>`; на свежей БД
+  апгрейда нет, поэтому бэкапа не будет — это не ошибка;
+- `balbes/ui/` — собранная админка, которую раздаёт сервер;
+- `settings.yaml.imported` — легаси-документ dsh ≤ 0.1.5, не источник истины;
 - сессии/настройки dsh — штатные каталоги dsh.
 
 ## Структура репозитория
 
 ```
 packages/
-  bundles/dsh-balbes-host/   # Cordis-бандл: патч-слой + плагины startup/server/auth/static/api
-  plugins/dsh-balbes-workspaces/ # плагин воркспейсов (дом агента + проекты, API /api/workspaces/*)
-  contracts/                 # dsh-balbes-contracts — типы API-контрактов
-  frontend/dsh-balbes-admin/ # React SPA (Vite)
-profiles/balbes/             # манифест профиля (источник правды — репозиторий)
+  bundles/dsh-balbes-host/          # Cordis-бандл: патч-слой + плагины startup/server/auth/static/api
+  plugins/dsh-balbes-workspaces/    # воркспейсы: дом агента и проекты (/api/workspaces/*)
+  plugins/dsh-balbes-git/           # git-доступ: токен и создание проекта из GitHub
+  plugins/dsh-balbes-models/        # модели: каталог, настройки, модель по умолчанию
+  plugins/dsh-balbes-sessions/      # реестр сессий воркспейсов (/api/sessions/*)
+  plugins/dsh-balbes-home/          # глобальный контекст дома агента
+  plugins/dsh-balbes-memory/        # память: SQLite-хранилище и сервис balbesMemory
+  plugins/dsh-balbes-memory-context/ # доставка памяти в модель: ядро, карта, push, recall, remember
+  plugins/dsh-balbes-memory-admin/  # ручки памяти и очереди ревью (/api/memory/*)
+  plugins/dsh-balbes-telegram/      # Telegram-канал: сессии, апрувы, команды
+  contracts/                        # dsh-balbes-contracts — типы API-контрактов
+  frontend/dsh-balbes-admin/        # React SPA (Vite)
+profiles/balbes/                    # манифест профиля (источник правды — репозиторий)
 scripts/
-  install.sh                 # установщик одной командой (curl|bash)
-  admin-creds.mjs            # генерация/сброс учётных данных админки
-  link-core.mjs              # линковка зеркала @deepseek-ai для сборки/typecheck
+  install.sh                        # установщик одной командой (curl|bash)
+  admin-creds.mjs                   # генерация/сброс учётных данных админки
+  link-core.mjs                     # линковка зеркала @deepseek-ai для сборки/typecheck
 docs/
-  canon/                     # канон (архитектура, глоссарий, контракты API — источник истины)
-  runbooks/                  # эксплуатационные runbook'и (установка, DoD, неполадки)
-  superpowers/               # спеки и планы этапов
+  canon/                            # канон (архитектура, глоссарий, контракты API — источник истины)
+  runbooks/                         # эксплуатационные runbook'и (установка, DoD, неполадки)
+  superpowers/                      # спеки и планы этапов
 ```
 
 ## Документация
@@ -165,6 +220,7 @@ docs/
   устранение неполадок.
 - `docs/canon/API_CONTRACTS.md` — контракты API (реестр ручек `/api/*`).
 - `docs/canon/future_plans/` — направленные инициативы будущего (статусы draft/absorbed).
+- `docs/canon/ADMIN_UI.md` — экраны админки и их поведение.
 - `docs/canon/` — архитектура, термины, зафиксированные решения.
 - `docs/superpowers/specs/` — продуктовые спеки (MVP; воркспейсы).
 - `docs/superpowers/plans/` — планы реализации этапов (воркспейсы и др.).
