@@ -73,9 +73,30 @@ export interface MemoryExtractionSlice extends MemoryProposalSlice {
   list(filter?: MemoryReadFilter): Promise<MemoryRecord[]>;
 }
 
+/** Факты завершённой задачи, по которым решает гейт извлечения; текста задачи тут нет. */
+export interface ExtractionTurnFacts {
+  ok: boolean;
+  toolCalls: number;
+}
+
+/**
+ * Место извлечения одного агента (p10g): слой владеет write-поверхностью
+ * служебного хода, канал — самим ходом (агент, очередь, отмена).
+ */
+export interface MemoryExtractionHandle {
+  /** Дешёвый гейт: успешная задача, в которой агент работал. Без вызова модели. */
+  qualifies(facts: ExtractionTurnFacts): boolean;
+  /** Снять `remember`, зарегистрировать `propose_memory`, вернуть директиву. */
+  begin(): { message: string };
+  /** Вернуть поверхность задачи и записать счётчики. Идемпотентен. */
+  end(): void;
+}
+
 /** Per-agent handle; prepare() рендерит блоки одного хода. */
 export interface MemoryContextAttachment {
   prepare(taskText: string): Promise<void>;
+  /** Есть только тогда, когда слой может извлекать (write-контекст + save + propose + listProposals). */
+  extraction?: MemoryExtractionHandle;
 }
 
 export interface BalbesMemoryContextService {

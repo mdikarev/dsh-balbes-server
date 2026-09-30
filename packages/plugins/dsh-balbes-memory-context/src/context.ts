@@ -4,10 +4,20 @@ import { buildFtsQuery } from "./query.js";
 import { buildRememberTool } from "./remember.js";
 import { escapeInterpolation, renderCore, renderMap, renderPush } from "./render.js";
 import { buildRecallTool } from "./recall.js";
+import {
+  buildProposeTool,
+  createExtractionCounters,
+  loadProposalIndex,
+  EXTRACTION_DIRECTIVE
+} from "./propose.js";
 import type {
   BalbesMemoryContextService,
   BalbesMemoryReadSlice,
+  MemoryContextAttachment,
   MemoryContextScope,
+  MemoryExtractionHandle,
+  MemoryExtractionSlice,
+  MemoryProposalSlice,
   MemoryWriteContext,
   MemoryWriteSlice
 } from "./types.js";
@@ -60,15 +70,74 @@ export function createMemoryContext(logger: MemoryContextLogger): BalbesMemoryCo
       systemPrompt.section({ name: MEMORY_SECTION_NAME, order: MEMORY_SECTION_ORDER, text: () => state.coreMap });
       systemPrompt.context({ name: MEMORY_CONTEXT_NAME, order: MEMORY_CONTEXT_ORDER, text: () => state.push });
       tools.register(buildRecallTool(memory, scopes));
-      const writable = memory as BalbesMemoryReadSlice & Partial<MemoryWriteSlice>;
+      const writable = memory as BalbesMemoryReadSlice & Partial<MemoryWriteSlice> & Partial<MemoryProposalSlice>;
+      let extraction: MemoryExtractionHandle | undefined;
       if (typeof writable.save === "function" && write !== undefined) {
         const classify =
           llm !== undefined && write.selection !== undefined
             ? createLlmClassifier(llm, write.selection, logger)
             : undefined;
-        tools.register(buildRememberTool(writable as MemoryWriteSlice, scope, write, classify, logger));
+        const registerRemember = (): (() => void) =>
+          tools.register(buildRememberTool(writable as MemoryWriteSlice, scope, write, classify, logger));
+        let rememberDispose = registerRemember();
+        if (typeof writable.propose === "function" && typeof writable.listProposals === "function") {
+          const slice = writable as MemoryExtractionSlice;
+          const counters = createExtractionCounters();
+          const writeContext = write;
+          let proposeDispose: (() => void) | undefined;
+          let open = false;
+          // The agent scope may already be gone (reset/dispose): the
+          // registration died with it, and a second release is a no-op.
+          const safeDispose = (dispose: () => void): void => {
+            try {
+              dispose();
+            } catch {
+              /* scope already disposed */
+            }
+          };
+          extraction = {
+            qualifies: (facts) => facts.ok && facts.toolCalls > 0,
+            begin() {
+              // Counters are PER SERVICE TURN: one agent handle outlives many
+              // turns, and a running total would silently turn the 3-proposal
+              // cap into a per-session cap.
+              counters.proposed = 0;
+              counters.duplicate = 0;
+              counters.secret = 0;
+              counters.limit = 0;
+              // Register first: a failed registration must leave the task-turn
+              // surface intact. No turn is in flight between the two calls, so
+              // the invariant "no immediate-write tool during extraction" holds.
+              proposeDispose = tools.register(
+                buildProposeTool(slice, scope, writeContext, counters, () =>
+                  loadProposalIndex(slice, scopes, logger)
+                )
+              );
+              safeDispose(rememberDispose);
+              open = true;
+              return { message: EXTRACTION_DIRECTIVE };
+            },
+            end() {
+              if (!open) return;
+              open = false;
+              if (proposeDispose !== undefined) {
+                safeDispose(proposeDispose);
+                proposeDispose = undefined;
+              }
+              rememberDispose = registerRemember();
+              logger.info?.(
+                "balbes-memory-context: extraction channel=" + writeContext.channel +
+                  " scope=" + scopeTag(scope) +
+                  " proposed=" + counters.proposed +
+                  " duplicate=" + counters.duplicate +
+                  " secret=" + counters.secret +
+                  " limit=" + counters.limit
+              );
+            }
+          };
+        }
       }
-      return {
+      const attachment: MemoryContextAttachment = {
         async prepare(taskText: string): Promise<void> {
           try {
             const [records, total] = await Promise.all([
@@ -99,6 +168,8 @@ export function createMemoryContext(logger: MemoryContextLogger): BalbesMemoryCo
           }
         }
       };
+      if (extraction !== undefined) attachment.extraction = extraction;
+      return attachment;
     }
   };
 }
