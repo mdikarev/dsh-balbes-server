@@ -611,15 +611,35 @@ describe.skipIf(!realEnabled)("REAL extraction composition (fake Bot API + LLM s
         { text: EXTRACTION_DONE_REPLY }
       ]);
       server.enqueueMessage({ fromId: OWNER_USER_ID, text: EXTRACTION_TASK_PROMPT });
+      // The stream's message must exist BEFORE the exact answer: born lazily on
+      // a non-empty delta, showing a STRICT PREFIX of the reply (the drip is
+      // ~4.5 s for 5 parts, so a production 3.5 s tick always lands inside the
+      // turn). This is what makes the "no late edits" proof below discriminating
+      // — a build with no preview at all would deliver the answer as one
+      // ordinary `sendMessage` and this wait would time out.
+      const partial = await waitForMessage(
+        (text) => text.length > 0 && text !== EXTRACTION_TASK_REPLY && EXTRACTION_TASK_REPLY.startsWith(text),
+        "the growing answer message",
+        from,
+        180_000
+      );
       // waitForMessage, not waitForOutbound(sendMessage): the stream finalizes
-      // its own message by editing it, so the exact answer may legitimately
-      // arrive as `editMessageText` into the message the stream created.
+      // its own message by editing it, so the exact answer arrives as
+      // `editMessageText` into the message the stream created. The method is
+      // ASSERTED, not assumed — an edit is exactly what a non-streaming
+      // delivery into a fresh message cannot be.
       const final = await waitForMessage(
         (text) => text === EXTRACTION_TASK_REPLY,
         "the task answer",
         from,
         180_000
       );
+      expect(final.messageId).toBe(partial.messageId);
+      expect(final.entry.method).toBe("editMessageText");
+
+      // The late-edit watch opens HERE, the moment the final answer is on the
+      // record: nothing the p10g service turn could write from now on is missed.
+      const streamBefore = server.outbound.length;
 
       // (b2) the model request of the service turn proves the surface switch on
       // the REAL registry: during extraction the agent may propose and cannot
@@ -660,10 +680,9 @@ describe.skipIf(!realEnabled)("REAL extraction composition (fake Bot API + LLM s
       // (b3) the service turn never touches the stream message. The live window
       // belongs to the TASK turn, so the p10g turn — same session, same agent —
       // must neither grow nor rewrite the message the owner already has. The
-      // window below covers the rest of the service turn (its directive and
-      // closing text are scripted immediately); an edit here would mean the
-      // extraction turn leaked into the answer stream.
-      const streamBefore = server.outbound.length;
+      // window opened with `streamBefore` right after the final answer (above)
+      // and is still open here, so it covers the whole service turn; an edit
+      // here would mean the extraction turn leaked into the answer stream.
       await waitFor(
         () => (llm.calls.filter(isExtractionRequest).length >= 2 ? true : undefined),
         "the extraction turn to close"
