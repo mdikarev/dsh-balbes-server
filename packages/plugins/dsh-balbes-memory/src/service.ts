@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { MemoryError } from "./errors.js";
+import { createProposalStore } from "./proposals.js";
 import { detectSecret } from "./secrets.js";
 import { normalizeDraft, normalizeFilter, normalizePatch } from "./validate.js";
 import {
@@ -65,6 +66,33 @@ export function createMemoryService(db: DatabaseSync): BalbesMemoryService {
   const updateMemory = db.prepare(
     "UPDATE memories SET type = ?, text = ?, pinned = ?, origin_ref = ?, updated_at = ? WHERE id = ?"
   );
+
+  interface RecordInput {
+    scope: MemoryRecord["scope"];
+    type: MemoryType;
+    text: string;
+    tags: string[];
+    pinned: boolean;
+    origin: MemoryOrigin;
+    originRef: string | null;
+  }
+
+  /** Insert one memory row plus its tags. The caller owns the transaction. */
+  function insertRecordRow(id: string, input: RecordInput, now: string): void {
+    insertMemory.run(
+      id,
+      input.scope.kind,
+      input.scope.kind === "project" ? input.scope.name : null,
+      input.type,
+      input.text,
+      input.pinned ? 1 : 0,
+      input.origin,
+      input.originRef,
+      now,
+      now
+    );
+    for (const tag of input.tags) insertTag.run(id, tag);
+  }
 
   function tagsOf(id: string): string[] {
     return selectTags.all(id).map((row) => asText(row.tag, "corrupt tag"));
@@ -147,22 +175,9 @@ export function createMemoryService(db: DatabaseSync): BalbesMemoryService {
     }
     const id = randomUUID();
     const now = new Date().toISOString();
-    const scopeName = normalized.scope.kind === "project" ? normalized.scope.name : null;
     db.exec("BEGIN");
     try {
-      insertMemory.run(
-        id,
-        normalized.scope.kind,
-        scopeName,
-        normalized.type,
-        normalized.text,
-        normalized.pinned ? 1 : 0,
-        normalized.origin,
-        normalized.originRef,
-        now,
-        now
-      );
-      for (const tag of normalized.tags) insertTag.run(id, tag);
+      insertRecordRow(id, normalized, now);
       db.exec("COMMIT");
     } catch (error) {
       db.exec("ROLLBACK");
@@ -274,5 +289,12 @@ export function createMemoryService(db: DatabaseSync): BalbesMemoryService {
     return Number(row?.n ?? 0);
   }
 
-  return { save, get, update, delete: remove, list, search, count };
+  const proposals = createProposalStore(db, {
+    insertMemoryRecord(id, input) {
+      insertRecordRow(id, input, new Date().toISOString());
+    },
+    loadRecord: load
+  });
+
+  return { save, get, update, delete: remove, list, search, count, ...proposals };
 }

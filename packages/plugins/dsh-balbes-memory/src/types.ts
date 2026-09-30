@@ -1,5 +1,6 @@
 import type {
   MemoryOrigin,
+  MemoryProposal,
   MemoryProposalStatus,
   MemoryRecord,
   MemoryScope,
@@ -87,6 +88,11 @@ export interface BalbesMemoryService {
   list(filter?: MemoryFilter): Promise<MemoryRecord[]>;
   search(request: SearchRequest): Promise<SearchHit[]>;
   count(filter?: MemoryFilter): Promise<number>;
+  propose(draft: MemoryProposalDraft): Promise<MemoryProposal>;
+  getProposal(id: string): Promise<MemoryProposal | undefined>;
+  listProposals(filter?: MemoryProposalFilter): Promise<MemoryProposal[]>;
+  approve(id: string, patch?: MemoryDecisionPatch): Promise<{ proposal: MemoryProposal; record: MemoryRecord }>;
+  reject(id: string): Promise<MemoryProposal>;
 }
 
 export const MEMORY_TYPES = ["fact", "preference", "decision", "note"] as const;
