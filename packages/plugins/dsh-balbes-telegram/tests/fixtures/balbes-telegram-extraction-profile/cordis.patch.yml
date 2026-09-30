@@ -1,0 +1,50 @@
+# Profile patch of the telegram REAL composition: dsh-base + the balbes host
+# bundle (from package.json), plus the seven standalone plugins the extraction
+# scenario needs.
+#
+# `balbes-workspaces` provides the `balbesWorkspaces` service AND the
+# /api/workspaces/* routes the scenario drives to create projects;
+# `balbes-sessions` provides the `balbesSessions` service the plugin under test
+# registers its workspace sessions in (and owns $DSH_HOME/workspace-sessions.json);
+# `balbes-models` provides the `balbesModels` service the /model picker writes
+# through (`saveDefault`) and the /api/models/* routes;
+# `balbes-telegram` is the plugin under test (its `inject` list needs
+# `balbesHttp`, `settings`, `credentials`, `balbesWorkspaces`, `balbesSessions`,
+# `agents`, `sessions`, `agentDefaultModel` and `balbesModels` — Cordis has no
+# optional inject, so a profile that composes this channel MUST also compose
+# both the sessions and the models plugins, exactly as the deployable `balbes`
+# profile does).
+#
+# The three memory rows are what the p10g extraction scenario proves:
+# `balbes-memory` opens the store `$DSH_HOME/storages/memory.sqlite` and
+# provides `balbesMemory`; `balbes-memory-context` owns the extraction seat
+# (register `propose_memory`, retire `remember`) the channel drives after a
+# task that did tool work; `balbes-memory-admin` serves the
+# `memory.review/list` route the scenario reads the staged proposal from (and
+# `memory.list` for the "staged is not truth" assertion). The deployable
+# `balbes` profile composes the same three rows.
+#
+# `session-title-llm` is disabled for stub determinism: a fresh session
+# otherwise fires an EXTRA first-prompt model request (Task 1 seam fact 10),
+# which would consume a scripted stub entry that belongs to the task turn.
+# Disabling the row (rather than tolerating the extra request) keeps every
+# scripted turn aligned with exactly one agent request.
+
+- id: session-title-llm
+  disabled: true
+
+- insert:
+    - id: balbes-workspaces
+      name: 'dsh-balbes-workspaces'
+    - id: balbes-sessions
+      name: 'dsh-balbes-sessions'
+    - id: balbes-models
+      name: 'dsh-balbes-models'
+    - id: balbes-memory
+      name: 'dsh-balbes-memory'
+    - id: balbes-memory-context
+      name: 'dsh-balbes-memory-context'
+    - id: balbes-memory-admin
+      name: 'dsh-balbes-memory-admin'
+    - id: balbes-telegram
+      name: 'dsh-balbes-telegram'
