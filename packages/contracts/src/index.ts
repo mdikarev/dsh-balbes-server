@@ -395,3 +395,75 @@ export interface MemoryDeleteRequest {
 export interface MemoryDeleteResponse {
   deleted: boolean;
 }
+
+// Memory review surface - staged proposals and owner autonomy (p10f)
+export type MemoryProposalStatus = "proposed" | "accepted" | "rejected";
+
+export interface MemoryProposal {
+  id: string;
+  scope: MemoryScope;
+  type: MemoryType;
+  text: string;
+  tags: string[];
+  origin: MemoryOrigin;
+  originRef: string | null;
+  status: MemoryProposalStatus;
+  proposedAt: string; // ISO 8601
+  decidedAt: string | null; // ISO 8601
+  decidedBy: string | null; // v1: always "owner"
+  decidedEdit: boolean;
+  memoryId: string | null;
+}
+
+export interface MemoryAutonomyPolicy {
+  /** Sources whose writes are truth immediately. */
+  immediate: Array<"owner" | "remember">;
+  /** Sources whose writes are staged for review. */
+  review: Array<"pipeline">;
+  /** There is no auto-approval path in v1. */
+  autoApprove: "none";
+}
+
+export interface MemoryProposeRequest {
+  scope: MemoryScope;
+  type: MemoryType;
+  text: string;
+  tags?: string[];
+  originRef?: string;
+}
+export interface MemoryProposeResponse {
+  proposal: MemoryProposal;
+}
+
+export interface MemoryReviewListRequest {
+  scope?: MemoryScope;
+  type?: MemoryType;
+  tag?: string;
+  /** Absent = only `proposed`; an explicit list widens the queue to decided rows. */
+  status?: MemoryProposalStatus[];
+  limit?: number;
+  offset?: number;
+}
+export interface MemoryReviewListResponse {
+  proposals: MemoryProposal[];
+  policy: MemoryAutonomyPolicy;
+}
+
+export interface MemoryReviewApproveRequest {
+  id: string;
+  type?: MemoryType;
+  text?: string;
+  tags?: string[];
+  pinned?: boolean;
+}
+export interface MemoryReviewApproveResponse {
+  proposal: MemoryProposal;
+  record: MemoryRecord;
+}
+
+export interface MemoryReviewRejectRequest {
+  id: string;
+}
+export interface MemoryReviewRejectResponse {
+  proposal: MemoryProposal;
+}

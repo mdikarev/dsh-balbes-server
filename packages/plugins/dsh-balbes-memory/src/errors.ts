@@ -4,6 +4,7 @@ export type MemoryErrorCode =
   | "not-found"
   | "invalid-scope"
   | "invalid-filter"
+  | "invalid-status"
   | "invalid-query";
 
 export class MemoryError extends Error {

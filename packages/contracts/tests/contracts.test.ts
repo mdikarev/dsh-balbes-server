@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type {
   LoginRequest,
+  MemoryAutonomyPolicy,
+  MemoryProposal,
+  MemoryReviewApproveRequest,
   PromptResponse,
   WorkspaceCreateRequest,
   WorkspaceCreateResponse,
@@ -198,5 +201,29 @@ describe("git workspace contracts", () => {
     expect(suggestProjectNameFromGitUrl("http://github.com/acme/api.git")).toBeNull();
     expect(suggestProjectNameFromGitUrl("https://github.com/acme")).toBeNull();
     expect(suggestProjectNameFromGitUrl("not a url")).toBeNull();
+  });
+});
+
+// Memory review contracts — proposals are staged, truth is a separate record.
+describe("memory review contracts", () => {
+  it("keeps proposal status separate from the memory record", () => {
+    const proposal: MemoryProposal = {
+      id: "p-1",
+      scope: { kind: "global" },
+      type: "fact",
+      text: "staged",
+      tags: [],
+      origin: "agent",
+      originRef: "pipeline:test",
+      status: "proposed",
+      proposedAt: "2026-09-30T00:00:00.000Z",
+      decidedAt: null,
+      decidedBy: null,
+      decidedEdit: false,
+      memoryId: null
+    };
+    const policy: MemoryAutonomyPolicy = { immediate: ["owner", "remember"], review: ["pipeline"], autoApprove: "none" };
+    const approve: MemoryReviewApproveRequest = { id: proposal.id, text: "edited" };
+    expect(JSON.parse(JSON.stringify({ proposal, policy, approve }))).toEqual({ proposal, policy, approve });
   });
 });

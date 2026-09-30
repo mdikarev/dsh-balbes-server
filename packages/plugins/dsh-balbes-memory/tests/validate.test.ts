@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { MemoryError } from "../src/errors.js";
-import { assertScope, normalizeDraft, normalizeFilter, normalizeTags } from "../src/validate.js";
+import {
+  assertScope,
+  normalizeDecisionPatch,
+  normalizeDraft,
+  normalizeFilter,
+  normalizeProposalDraft,
+  normalizeProposalFilter,
+  normalizeTags
+} from "../src/validate.js";
 
 describe("assertScope", () => {
   it("accepts global without a name", () => {
@@ -81,5 +89,58 @@ describe("normalizeFilter", () => {
 
   it("rejects a negative limit", () => {
     expect(() => normalizeFilter({ limit: -1 })).toThrowError(MemoryError);
+  });
+});
+
+/** The stable error code a throwing call produced, or undefined. */
+function codeOf(call: () => unknown): string | undefined {
+  try {
+    call();
+    return undefined;
+  } catch (error) {
+    return (error as { code?: string }).code;
+  }
+}
+
+describe("proposal normalizers", () => {
+  const base = { scope: { kind: "global" }, type: "fact", text: "deploy runs under systemd" };
+
+  it("normalizes a proposal draft, trims text and lowercases tags", () => {
+    expect(normalizeProposalDraft({ ...base, text: "  deploy runs  ", tags: ["Ops", "ops"] })).toEqual({
+      scope: { kind: "global" },
+      type: "fact",
+      text: "deploy runs",
+      tags: ["ops"],
+      originRef: null
+    });
+  });
+
+  it("keeps a provided originRef and rejects a non-string one", () => {
+    expect(normalizeProposalDraft({ ...base, originRef: "pipeline:extraction telegram session:s1" }).originRef)
+      .toBe("pipeline:extraction telegram session:s1");
+    expect(codeOf(() => normalizeProposalDraft({ ...base, originRef: 5 }))).toBe("invalid-record");
+  });
+
+  it("rejects an unknown type and a bad scope", () => {
+    expect(codeOf(() => normalizeProposalDraft({ ...base, type: "rumor" }))).toBe("invalid-record");
+    expect(codeOf(() => normalizeProposalDraft({ ...base, scope: { kind: "galaxy" } }))).toBe("invalid-scope");
+  });
+
+  it("normalizes a proposal filter and rejects unknown statuses", () => {
+    expect(normalizeProposalFilter({ status: ["proposed", "rejected"], tag: "Ops", limit: 5 })).toEqual({
+      status: ["proposed", "rejected"],
+      tag: "ops",
+      limit: 5
+    });
+    expect(codeOf(() => normalizeProposalFilter({ status: ["maybe"] }))).toBe("invalid-filter");
+    expect(codeOf(() => normalizeProposalFilter({ status: "proposed" }))).toBe("invalid-filter");
+    expect(codeOf(() => normalizeProposalFilter({ status: [] }))).toBe("invalid-filter");
+  });
+
+  it("drops identity and provenance fields from a decision patch", () => {
+    expect(
+      normalizeDecisionPatch({ text: " edited ", tags: ["A"], pinned: true, id: "spoof", originRef: "spoof" })
+    ).toEqual({ text: "edited", tags: ["a"], pinned: true });
+    expect(normalizeDecisionPatch({})).toEqual({});
   });
 });

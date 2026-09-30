@@ -2,11 +2,15 @@ import { MemoryError } from "./errors.js";
 import {
   LIMITS,
   MEMORY_ORIGINS,
+  MEMORY_PROPOSAL_STATUSES,
   MEMORY_TYPES,
+  type MemoryDecisionPatch,
   type MemoryDraft,
   type MemoryFilter,
   type MemoryOrigin,
   type MemoryPatch,
+  type MemoryProposalFilter,
+  type MemoryProposalStatus,
   type MemoryScope,
   type MemoryType
 } from "./types.js";
@@ -181,5 +185,80 @@ export function normalizeFilter(filter: unknown): MemoryFilter {
   }
   if (f.limit !== undefined) out.limit = assertNonNegativeInteger(f.limit, "limit");
   if (f.offset !== undefined) out.offset = assertNonNegativeInteger(f.offset, "offset");
+  return out;
+}
+
+function isProposalStatus(value: unknown): value is MemoryProposalStatus {
+  return typeof value === "string" && (MEMORY_PROPOSAL_STATUSES as readonly string[]).includes(value);
+}
+
+export interface NormalizedProposalDraft {
+  scope: MemoryScope;
+  type: MemoryType;
+  text: string;
+  tags: string[];
+  originRef: string | null;
+}
+
+export function normalizeProposalDraft(draft: unknown): NormalizedProposalDraft {
+  if (typeof draft !== "object" || draft === null) {
+    throw new MemoryError("invalid-record", "draft must be an object");
+  }
+  const d = draft as Record<string, unknown>;
+  if (!isMemoryType(d.type)) throw new MemoryError("invalid-record", "invalid type");
+  return {
+    scope: assertScope(d.scope),
+    type: d.type,
+    text: normalizeText(d.text),
+    tags: normalizeTags(d.tags),
+    originRef: normalizeOriginRef(d.originRef)
+  };
+}
+
+export function normalizeProposalFilter(filter: unknown): MemoryProposalFilter {
+  if (filter === undefined) return {};
+  if (typeof filter !== "object" || filter === null) {
+    throw new MemoryError("invalid-filter", "filter must be an object");
+  }
+  const f = filter as Record<string, unknown>;
+  const out: MemoryProposalFilter = {};
+  if (f.scope !== undefined) out.scope = assertScope(f.scope);
+  if (f.type !== undefined) {
+    if (!isMemoryType(f.type)) throw new MemoryError("invalid-filter", "invalid type");
+    out.type = f.type;
+  }
+  if (f.tag !== undefined) {
+    if (typeof f.tag !== "string") throw new MemoryError("invalid-filter", "tag must be a string");
+    out.tag = normalizeTag(f.tag);
+  }
+  if (f.status !== undefined) {
+    if (!Array.isArray(f.status)) throw new MemoryError("invalid-filter", "status must be an array");
+    if (f.status.length === 0) throw new MemoryError("invalid-filter", "status must not be empty");
+    out.status = f.status.map((status) => {
+      if (!isProposalStatus(status)) throw new MemoryError("invalid-filter", "invalid proposal status");
+      return status;
+    });
+  }
+  if (f.limit !== undefined) out.limit = assertNonNegativeInteger(f.limit, "limit");
+  if (f.offset !== undefined) out.offset = assertNonNegativeInteger(f.offset, "offset");
+  return out;
+}
+
+export function normalizeDecisionPatch(patch: unknown): MemoryDecisionPatch {
+  if (typeof patch !== "object" || patch === null) {
+    throw new MemoryError("invalid-record", "patch must be an object");
+  }
+  const p = patch as Record<string, unknown>;
+  const out: MemoryDecisionPatch = {};
+  if (p.type !== undefined) {
+    if (!isMemoryType(p.type)) throw new MemoryError("invalid-record", "invalid type");
+    out.type = p.type;
+  }
+  if (p.text !== undefined) out.text = normalizeText(p.text);
+  if (p.tags !== undefined) out.tags = normalizeTags(p.tags);
+  if (p.pinned !== undefined) {
+    if (typeof p.pinned !== "boolean") throw new MemoryError("invalid-record", "pinned must be a boolean");
+    out.pinned = p.pinned;
+  }
   return out;
 }
