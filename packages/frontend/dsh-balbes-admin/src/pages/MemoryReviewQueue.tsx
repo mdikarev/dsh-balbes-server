@@ -36,7 +36,18 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : "неизвестная ошибка";
 }
 
-export default function MemoryReviewQueue({ api }: { api: AdminApi }) {
+export default function MemoryReviewQueue({
+  api,
+  onPendingCount
+}: {
+  api: AdminApi;
+  /**
+   * Reports how many proposals are waiting whenever the load used the default
+   * (pending) filter. The canon puts a pending counter on the tab label, and the
+   * queue is the only place that fetches the queue — the page must not fetch twice.
+   */
+  onPendingCount?: (count: number) => void;
+}) {
   const [projects, setProjects] = useState<WorkspaceProject[]>([]);
   const [level, setLevel] = useState<LevelSelection>({ kind: "global" });
   const [type, setType] = useState<MemoryType | "all">("all");
@@ -65,10 +76,11 @@ export default function MemoryReviewQueue({ api }: { api: AdminApi }) {
       });
       setProposals(res.proposals);
       setPolicy(res.policy);
+      if (!showDecided) onPendingCount?.(res.proposals.length);
     } catch (error) {
       setLoadError(messageOf(error));
     }
-  }, [api, level, type, tag, showDecided]);
+  }, [api, level, type, tag, showDecided, onPendingCount]);
 
   useEffect(() => {
     let cancelled = false;

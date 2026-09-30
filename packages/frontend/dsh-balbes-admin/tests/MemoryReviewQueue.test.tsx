@@ -108,4 +108,23 @@ describe("MemoryReviewQueue", () => {
     );
     expect(await screen.findByTestId("memory-review-status:p-2")).toBeTruthy();
   });
+
+  it("reports the pending count on pending loads only", async () => {
+    const onPendingCount = vi.fn();
+    const listMemoryReview = vi.fn(async (req: MemoryReviewListRequest) =>
+      req.status === undefined
+        ? { proposals: [proposal({ id: "p-1" }), proposal({ id: "p-2" })], policy: POLICY }
+        : { proposals: [proposal({ id: "p-2", status: "rejected", decidedAt: "2026-09-30T02:00:00.000Z", decidedBy: "owner" })], policy: POLICY }
+    );
+    const api = makeApi({ proposals: [], policy: POLICY }, { listMemoryReview });
+    render(<MemoryReviewQueue api={api} onPendingCount={onPendingCount} />);
+    await waitFor(() => expect(onPendingCount).toHaveBeenCalledWith(2));
+
+    fireEvent.click(await screen.findByTestId("memory-review-decided-toggle"));
+    // the decided-mode response replaced the pending rows...
+    await waitFor(() => expect(screen.queryByTestId("memory-review-row:p-1")).toBeNull());
+    expect(listMemoryReview).toHaveBeenCalledWith(expect.objectContaining({ status: ["accepted", "rejected"] }));
+    // ...so the counter still means "waiting" and must not be overwritten
+    expect(onPendingCount).toHaveBeenCalledTimes(1);
+  });
 });
