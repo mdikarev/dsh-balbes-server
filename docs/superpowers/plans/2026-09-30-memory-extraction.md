@@ -24,6 +24,7 @@
 - Никаких новых HTTP-ручек, миграций `memory.sqlite`, экранов, пунктов сайдбара и изменений `dsh-balbes-contracts`. Извлекает только Telegram; `POST /api/prompt` шов не вызывает.
 - В журнал не попадают текст памяти, текст задачи и ответ: только канал, уровень и счётчики (`proposed/duplicate/secret/limit`).
 - Тесты: unit — под `tests/` (vitest), REAL — за гейтом `RUN_REAL=1` **и** `dsh` в `PATH`; mock только LLM-провайдер, сеть, часы. Каждая задача заканчивается зелёными тестами и коммитом.
+- Фокусированный прогон: `pnpm --filter <пакет> exec vitest run <фильтр>` — под pnpm 10 форма `pnpm --filter <пакет> test -- <фильтр>` передаёт `--` в vitest и запускает весь набор целиком.
 - Runbook `docs/runbooks/stage2-vps.md` обновляется в том же коммите, что и функциональное изменение (Task 5).
 
 ---
@@ -268,7 +269,7 @@ describe("loadProposalIndex", () => {
 
 - [ ] **Step 2: Убедиться, что тесты падают**
 
-Run: `pnpm --filter dsh-balbes-memory-context test -- propose`
+Run: `pnpm --filter dsh-balbes-memory-context exec vitest run propose`
 Expected: FAIL — `Failed to resolve import "../src/propose.js"`.
 
 - [ ] **Step 3: Добавить структурные срезы в `types.ts`**
@@ -536,7 +537,7 @@ export function buildProposeTool(
 
 - [ ] **Step 5: Прогнать тесты**
 
-Run: `pnpm --filter dsh-balbes-memory-context test -- propose`
+Run: `pnpm --filter dsh-balbes-memory-context exec vitest run propose`
 Expected: PASS (10 тестов).
 
 - [ ] **Step 6: Типы и коммит**
@@ -705,7 +706,7 @@ describe("extraction seat", () => {
 
 - [ ] **Step 2: Убедиться, что тесты падают**
 
-Run: `pnpm --filter dsh-balbes-memory-context test -- extraction`
+Run: `pnpm --filter dsh-balbes-memory-context exec vitest run extraction`
 Expected: FAIL — `attachment.extraction` is `undefined` (`TypeError: Cannot read properties of undefined`).
 
 - [ ] **Step 3: Добавить типы шва**
@@ -1169,7 +1170,7 @@ describe("agentTask memory extraction", () => {
 
 - [ ] **Step 2: Убедиться, что тесты падают**
 
-Run: `pnpm --filter dsh-balbes-telegram test -- agentTask.extraction`
+Run: `pnpm --filter dsh-balbes-telegram exec vitest run agentTask.extraction`
 Expected: FAIL — служебный ход не запускается: `expected [...] to equal ['сделай работу', ...]` / `seat.calls.begin` = 0.
 
 - [ ] **Step 3: Расширить структурные типы канала**
@@ -1541,10 +1542,10 @@ const EXTRACTION_CHAT_REPLY = "привет";
 
 - [ ] **Step 4: Прогнать REAL-сценарий**
 
-Run: `RUN_REAL=1 pnpm --filter dsh-balbes-telegram test -- extraction.real`
+Run: `RUN_REAL=1 pnpm --filter dsh-balbes-telegram exec vitest run extraction.real`
 Expected: PASS нового сценария; без `RUN_REAL=1` — `skipped`.
 
-Затем регресс существующего REAL-набора: `RUN_REAL=1 pnpm --filter dsh-balbes-telegram test -- integration`
+Затем регресс существующего REAL-набора: `RUN_REAL=1 pnpm --filter dsh-balbes-telegram exec vitest run integration`
 Expected: PASS без правок (общий профиль не менялся).
 
 Если шаг (b) падает на отсутствии `propose_memory` в запросе служебного хода, значит динамическая регистрация инструмента после `setup` в этой версии dsh не работает: остановиться и вернуться к пользователю с запасным вариантом из спеки (регистрация обоих инструментов в `setup`), не «дожимая» тест.
