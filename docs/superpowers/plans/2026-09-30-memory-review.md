@@ -1047,6 +1047,15 @@ Append to `packages/plugins/dsh-balbes-memory/tests/proposals.test.ts` inside th
     expect(pinned.proposal.decidedEdit).toBe(false);
   });
 
+  it("does not count a reordered tag list as an edit", async () => {
+    const proposal = await service.propose({ ...proposalDraft, tags: ["alpha", "beta"] });
+    const { proposal: decided, record } = await service.approve(proposal.id, { tags: ["beta", "alpha"] });
+
+    expect(decided.decidedEdit).toBe(false);
+    expect(record.tags).toEqual(["alpha", "beta"]);
+    expect(proposal.tags).toEqual(["alpha", "beta"]);
+  });
+
   it("rolls the whole promotion back when the edited text looks like a secret", async () => {
     const proposal = await service.propose(proposalDraft);
     await expect(service.approve(proposal.id, { text: "api_key: xyz" })).rejects.toMatchObject({
