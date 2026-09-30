@@ -1,3 +1,7 @@
+// keep in sync with packages/bundles/dsh-balbes-host/tests/helpers/stub-llm.mjs
+// (intended to be a verbatim copy: the telegram REAL suite must not depend on a
+// sibling package's test tree, and a divergence here would silently change what
+// the scripted agent turns see).
 import { createServer } from "node:http";
 
 function ssePayload(payload) {
@@ -17,6 +21,40 @@ function messageStart() {
     type: "message_start",
     message: { id: "stub-1", type: "message", role: "assistant", usage: {} }
   };
+}
+
+/**
+ * Text response, split into `parts` text deltas written one at a time:
+ * `message_start` + `content_block_start` immediately, then every delta after
+ * `delayMs`, then the closing frames. A REAL test uses this to observe a turn
+ * while the model is genuinely mid-response (the channel's stream preview must
+ * have something to grow between two ticks).
+ */
+function dripTextFrames(text, parts, delayMs, res) {
+  res.writeHead(200, {
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache",
+    connection: "keep-alive"
+  });
+  res.write(ssePayload(messageStart()));
+  res.write(ssePayload({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }));
+  const pieces = [];
+  const size = Math.max(1, Math.ceil(text.length / Math.max(1, parts)));
+  for (let i = 0; i < text.length; i += size) pieces.push(text.slice(i, i + size));
+  let at = 0;
+  const next = () => {
+    if (at >= pieces.length) {
+      res.write(ssePayload({ type: "content_block_stop", index: 0 }));
+      res.write(ssePayload({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } }));
+      res.write(ssePayload({ type: "message_stop" }));
+      res.end();
+      return;
+    }
+    res.write(ssePayload({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: pieces[at] } }));
+    at += 1;
+    setTimeout(next, delayMs);
+  };
+  next();
 }
 
 /** Text response: one text block, end_turn, message_stop. */
@@ -91,6 +129,9 @@ function framesFor(entry) {
  * makes the engine believe the model called a tool, `{ text }` closes the
  * conversation with a plain assistant message. `setScript` swaps the
  * sequence and resets the cursor, so one stub serves many agent runs.
+ * A `{ text, textChunks, chunkDelayMs }` entry answers with the same text
+ * dripped as several `text_delta` frames `chunkDelayMs` apart (see
+ * `dripTextFrames`), so a REAL test can catch the model mid-response.
  * `setDelay` (milliseconds) delays every response, so a test can observe an
  * agent while a turn is mid-request (cancel / dispose-busy semantics).
  */
@@ -105,12 +146,16 @@ export function startStubLlm({ text = "ok", script } = {}) {
     req.on("end", () => {
       calls.push({ path: req.url, body: JSON.parse(raw || "{}") });
       const respond = () => {
+        const entry = entries === null ? { text } : entries[cursor++ % entries.length];
+        if (typeof entry.text === "string" && entry.textChunks !== undefined) {
+          dripTextFrames(entry.text, entry.textChunks, entry.chunkDelayMs ?? 0, res);
+          return;
+        }
         res.writeHead(200, {
           "content-type": "text/event-stream",
           "cache-control": "no-cache",
           connection: "keep-alive"
         });
-        const entry = entries === null ? { text } : entries[cursor++ % entries.length];
         res.end(framesFor(entry).map(ssePayload).join(""));
       };
       if (delayMs > 0) setTimeout(respond, delayMs);

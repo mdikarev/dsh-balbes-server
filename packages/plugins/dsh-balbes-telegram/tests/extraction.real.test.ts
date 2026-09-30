@@ -128,6 +128,7 @@ interface TgStatus {
   state: string;
   tokenConfigured: boolean;
   enabled: boolean;
+  streamAnswers: boolean;
   allowedUserId?: number;
   botUsername?: string;
   lastPollAt?: string;
@@ -478,6 +479,30 @@ describe.skipIf(!realEnabled)("REAL extraction composition (fake Bot API + LLM s
     }
   }
 
+  /**
+   * Wait for one delivered message whose text satisfies `predicate` — a message
+   * the owner receives (`sendMessage`) or one of their own messages re-rendered
+   * in place (`editMessageText`) — and report the text together with the message
+   * id it was delivered in. This is what lets the stream assertion below watch
+   * the very message the stream created be finalized and then stay untouched.
+   */
+  async function waitForMessage(
+    predicate: (text: string) => boolean,
+    description: string,
+    from: number,
+    timeoutMs = 30_000
+  ): Promise<{ text: string; messageId: number; entry: OutboundCall }> {
+    const entry = await waitForOutbound(
+      (candidate) =>
+        (candidate.method === "sendMessage" || candidate.method === "editMessageText") &&
+        predicate(String(candidate.body.text ?? "")),
+      description,
+      from,
+      timeoutMs
+    );
+    return { text: String(entry.body.text ?? ""), messageId: sentMessageId(entry), entry };
+  }
+
   /** The message id the fake Bot API assigned to one recorded sendMessage. */
   function sentMessageId(entry: OutboundCall): number {
     const result = entry.result;
@@ -571,18 +596,26 @@ describe.skipIf(!realEnabled)("REAL extraction composition (fake Bot API + LLM s
       );
 
       // (b) a real tool read, then an answer; the service turn follows and
-      // proposes once, then answers
+      // proposes once, then answers.
+      //
+      // The task answer is DRIPPED (~4.5 s of text deltas): the channel's stream
+      // preview (default `streamAnswers: true`) must create its own growing
+      // message while the turn is mid-response, so THIS turn owns a stream
+      // message — the one the p10g service turn must never touch (b3).
       await mkdir(join(home, "agent"), { recursive: true });
       await writeFile(join(home, "agent", "extraction-smoke.txt"), "smoke\n");
       llm.setScript([
         { toolCall: { name: "read", arguments: JSON.stringify({ file_path: "extraction-smoke.txt" }) } },
-        { text: EXTRACTION_TASK_REPLY },
+        { text: EXTRACTION_TASK_REPLY, textChunks: 5, chunkDelayMs: 1500 },
         { toolCall: { name: "propose_memory", arguments: JSON.stringify({ text: EXTRACTION_PROPOSAL_TEXT, type: "fact", tags: ["p10g"] }) } },
         { text: EXTRACTION_DONE_REPLY }
       ]);
       server.enqueueMessage({ fromId: OWNER_USER_ID, text: EXTRACTION_TASK_PROMPT });
-      await waitForOutbound(
-        (entry) => entry.method === "sendMessage" && entry.body.text === EXTRACTION_TASK_REPLY,
+      // waitForMessage, not waitForOutbound(sendMessage): the stream finalizes
+      // its own message by editing it, so the exact answer may legitimately
+      // arrive as `editMessageText` into the message the stream created.
+      const final = await waitForMessage(
+        (text) => text === EXTRACTION_TASK_REPLY,
         "the task answer",
         from,
         180_000
@@ -623,6 +656,23 @@ describe.skipIf(!realEnabled)("REAL extraction composition (fake Bot API + LLM s
       expect(taskCall, "the task turn's model request").toBeDefined();
       expect(toolNames(taskCall!.body)).toContain("remember");
       expect(toolNames(taskCall!.body)).not.toContain("propose_memory");
+
+      // (b3) the service turn never touches the stream message. The live window
+      // belongs to the TASK turn, so the p10g turn — same session, same agent —
+      // must neither grow nor rewrite the message the owner already has. The
+      // window below covers the rest of the service turn (its directive and
+      // closing text are scripted immediately); an edit here would mean the
+      // extraction turn leaked into the answer stream.
+      const streamBefore = server.outbound.length;
+      await waitFor(
+        () => (llm.calls.filter(isExtractionRequest).length >= 2 ? true : undefined),
+        "the extraction turn to close"
+      );
+      await sleep(4000);
+      const lateStreamEdits = server.outbound
+        .slice(streamBefore)
+        .filter((entry) => entry.method === "editMessageText" && sentMessageId(entry) === final.messageId);
+      expect(lateStreamEdits, JSON.stringify(lateStreamEdits.map((entry) => entry.body.text))).toEqual([]);
 
       // (c) the proposal is staged for review with the channel provenance
       const reviewList = async (): Promise<Array<{ id: string; text: string; originRef: string | null }>> => {

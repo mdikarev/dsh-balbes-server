@@ -1928,4 +1928,88 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
       await stopServer();
     }
   }, 300_000);
+
+  /**
+   * Task 7 / p11: the REAL proof of the answer stream. The stub drips one
+   * scripted reply as several `text_delta` frames 1.5 s apart, so the turn is
+   * genuinely mid-response across the channel's production 3.5 s stream tick:
+   * the owner must see ONE message grow from a strict prefix of the answer into
+   * the exact answer, delivered in that same message and never as a second,
+   * full-text send.
+   *
+   * Streaming is ON here without touching any setting: a fresh home's settings
+   * carry no `telegram` section, and the composed default is `streamAnswers:
+   * true` (Task 5). Its own fresh home keeps the claim independent of the state
+   * the cases above left behind; the workspace is the agent home, chosen
+   * through the very same `ws:pick:0` callback scenario 1 presses.
+   */
+  it("streams the answer into its own growing message and finalizes it exactly", async () => {
+    home = await prepareHome("balbes-telegram-stream-");
+    const server = requireApi();
+    const llm = requireStub();
+    server.reset();
+    const token = await bootServer();
+    try {
+      const saved = await tgPost(
+        "/api/telegram/save",
+        { token: BOT_TOKEN, allowedUserId: OWNER_USER_ID, enabled: true },
+        token
+      );
+      expect(saved.status, saved.text).toBe(200);
+      await waitForConnected(token, true);
+
+      // The active workspace is the agent home: the same callback scenario 1
+      // presses on the workspace list's first row.
+      const from = server.outbound.length;
+      const menu = await openMenu(from);
+      const menuId = sentMessageId(menu);
+      pressButton(menuId, "ws");
+      await waitForMessage((text) => text.startsWith("Выберите воркспейс"), "the workspace list", from);
+      pressButton(menuId, "ws:pick:0");
+      await waitForMessage((text) => text === "Выбран: Дом агента", "the workspace confirmation", from);
+
+      // 6 chunks 1.5 s apart: the response streams for ~7.5 s, comfortably more
+      // than TWO production 3.5 s stream ticks, so at least one tick lands while
+      // the model is genuinely mid-response and can only show a strict prefix.
+      // A stub that answered in ONE non-streaming frame could only ever deliver
+      // the complete answer, and the partial wait below would time out.
+      const reply = "первый кусок второй кусок третий кусок";
+      llm.setScript([{ text: reply, textChunks: 6, chunkDelayMs: 1500 }]);
+
+      const taskFrom = server.outbound.length;
+      server.enqueueMessage({ fromId: OWNER_USER_ID, text: "ответь шестью кусками" });
+
+      // The task keeps its own progress card, a message of its own.
+      const card = await waitForOutbound(
+        (entry) => entry.method === "sendMessage" && String(entry.body.text ?? "").startsWith("⏳ Дом агента"),
+        "the task card",
+        taskFrom
+      );
+      const cardId = sentMessageId(card);
+
+      // 1) The stream's own message: born lazily on a non-empty delta, showing a
+      //    STRICT prefix of the answer (so the turn was really mid-response),
+      //    separate from the card and carrying no buttons.
+      const partial = await waitForMessage(
+        (text) => text.length > 0 && text !== reply && reply.startsWith(text),
+        "the growing answer message",
+        taskFrom,
+        180_000
+      );
+      expect(partial.entry.method).toBe("sendMessage");
+      expect(partial.messageId).not.toBe(cardId);
+      expect(partial.entry.body.reply_markup).toBeUndefined();
+      expect(String(card.body.text ?? "")).not.toContain(reply);
+
+      // 2) The exact answer, in the SAME message the stream created — the stream
+      //    was updated in place, not abandoned for a second full-text message.
+      const final = await waitForMessage((text) => text === reply, "the finalized answer", taskFrom, 180_000);
+      expect(final.messageId).toBe(partial.messageId);
+      expect(final.entry.method).toBe("editMessageText");
+      // No duplicate delivery of the complete answer as its own message.
+      expect(sentTexts(taskFrom)).not.toContain(reply);
+    } finally {
+      await stopServer();
+    }
+  }, 300_000);
 });
