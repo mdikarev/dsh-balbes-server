@@ -4,8 +4,8 @@ export type MemoryErrorCode =
   | "not-found"
   | "invalid-scope"
   | "invalid-filter"
-  | "invalid-status"
-  | "invalid-query";
+  | "invalid-query"
+  | "invalid-status";
 
 export class MemoryError extends Error {
   readonly code: MemoryErrorCode;

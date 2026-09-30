@@ -274,7 +274,5 @@ export function createMemoryService(db: DatabaseSync): BalbesMemoryService {
     return Number(row?.n ?? 0);
   }
 
-  // BalbesMemoryService gained the proposal methods in p10f Task 2; this store does not
-  // implement them yet. p10f Task 4 spreads the proposal store in and removes this cast.
-  return { save, get, update, delete: remove, list, search, count } as BalbesMemoryService;
+  return { save, get, update, delete: remove, list, search, count };
 }
