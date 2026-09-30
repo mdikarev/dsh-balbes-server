@@ -255,6 +255,38 @@ describe.skipIf(!realEnabled)("REAL composition (memory delivery)", () => {
         .map((call) => (typeof call.body.system === "string" ? call.body.system : ""))
         .join("\n");
       expect(deliverySystems, deliverySystems.slice(0, 4000)).toContain(rememberMarker);
+
+      // p10f: a staged proposal is not knowledge until the owner approves it.
+      const proposalMarker = "p10fproposalmarker6e40";
+      const proposalRes = await postJson(
+        base + "/api/memory/propose",
+        {
+          scope: { kind: "global" },
+          type: "fact",
+          text: "Pending " + proposalMarker + " must not be delivered before review",
+          originRef: "pipeline:real-test"
+        },
+        token
+      );
+      expect(proposalRes.status, proposalRes.raw).toBe(200);
+      const proposalId = (proposalRes.json as { proposal: { id: string } }).proposal.id;
+
+      stub.setScript([{ text: "pending run" }]);
+      const beforePending = stub.calls.length;
+      const pendingRun = await postJson(base + "/api/prompt", { prompt: "anything about pending" }, token);
+      expect(pendingRun.status, pendingRun.raw).toBe(200);
+      const pendingBodies = JSON.stringify(stub.calls.slice(beforePending).map((call) => call.body));
+      expect(pendingBodies, pendingBodies.slice(0, 4000)).not.toContain(proposalMarker);
+
+      const approveRes = await postJson(base + "/api/memory/review/approve", { id: proposalId }, token);
+      expect(approveRes.status, approveRes.raw).toBe(200);
+
+      stub.setScript([{ text: "approved run" }]);
+      const beforeApproved = stub.calls.length;
+      const approvedRun = await postJson(base + "/api/prompt", { prompt: "anything about pending" }, token);
+      expect(approvedRun.status, approvedRun.raw).toBe(200);
+      const approvedBodies = JSON.stringify(stub.calls.slice(beforeApproved).map((call) => call.body));
+      expect(approvedBodies, approvedBodies.slice(0, 4000)).toContain(proposalMarker);
     } finally {
       await stopServer();
       await rm(home, { recursive: true, force: true });
