@@ -574,12 +574,13 @@ git commit -m "feat(memory): add the proposals table schema v2 (p10f)"
 Create `packages/plugins/dsh-balbes-memory/tests/proposals.test.ts`:
 
 ```ts
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { openMemoryDatabase } from "../src/schema.js";
+import { createProposalStore } from "../src/proposals.js";
 import { createMemoryService } from "../src/service.js";
 import type { BalbesMemoryService } from "../src/types.js";
 
@@ -649,9 +650,18 @@ describe("balbesMemory proposals", () => {
   });
 
   it("lists pending proposals FIFO and filters by scope, type, tag and limit", async () => {
-    const first = await service.propose({ ...proposalDraft, text: "first", tags: ["ops"] });
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    await service.propose({ ...proposalDraft, text: "second", type: "note", scope: { kind: "project", name: "alpha" } });
+    // Ordering must not depend on the wall clock: the tie-break is a random
+    // UUID, so pin `proposed_at` with fake timers instead of sleeping.
+    vi.useFakeTimers();
+    let first;
+    try {
+      vi.setSystemTime(new Date("2026-09-30T00:00:00.000Z"));
+      first = await service.propose({ ...proposalDraft, text: "first", tags: ["ops"] });
+      vi.setSystemTime(new Date("2026-09-30T00:00:05.000Z"));
+      await service.propose({ ...proposalDraft, text: "second", type: "note", scope: { kind: "project", name: "alpha" } });
+    } finally {
+      vi.useRealTimers();
+    }
 
     const pending = await service.listProposals();
     expect(pending.map((entry) => entry.text)).toEqual(["first", "second"]);
@@ -1048,6 +1058,29 @@ Append to `packages/plugins/dsh-balbes-memory/tests/proposals.test.ts` inside th
     expect(await service.count()).toBe(0);
   });
 
+  it("rolls the memory insert back when the promotion fails inside the transaction", async () => {
+    // The secret case above throws BEFORE `BEGIN`, so on its own it would stay
+    // green even if the whole transaction disappeared. This test fails inside
+    // the transaction and pins the guarantee: no memory row, no decision, and
+    // the connection is left usable.
+    const proposal = await service.propose(proposalDraft);
+    const failing = createProposalStore(db, {
+      insertMemoryRecord() {
+        throw new Error("insert boom");
+      },
+      loadRecord: () => undefined
+    });
+    await expect(failing.approve(proposal.id)).rejects.toThrowError("insert boom");
+
+    expect(await service.count()).toBe(0);
+    expect((await service.getProposal(proposal.id))?.status).toBe("proposed");
+
+    // A leaked transaction would make the next decision fail.
+    const { record } = await service.approve(proposal.id);
+    expect(record.text).toBe(proposalDraft.text);
+    expect(await service.count()).toBe(1);
+  });
+
   it("keeps the audit row on rejection without creating a record", async () => {
     const proposal = await service.propose(proposalDraft);
     const decided = await service.reject(proposal.id);
@@ -1078,10 +1111,23 @@ Append to `packages/plugins/dsh-balbes-memory/tests/proposals.test.ts` inside th
   });
 
   it("widens the queue to decided proposals only when status is explicit", async () => {
-    const pending = await service.propose({ ...proposalDraft, text: "still pending" });
-    const second = await service.propose({ ...proposalDraft, text: "to reject", type: "note" });
+    // Same clock discipline as the FIFO test: the queue order is asserted
+    // exactly, so `proposed_at` must not be left to millisecond luck.
+    vi.useFakeTimers();
+    let pending;
+    let second;
+    let accepted;
+    try {
+      vi.setSystemTime(new Date("2026-09-30T01:00:00.000Z"));
+      pending = await service.propose({ ...proposalDraft, text: "still pending" });
+      vi.setSystemTime(new Date("2026-09-30T01:00:05.000Z"));
+      second = await service.propose({ ...proposalDraft, text: "to reject", type: "note" });
+      vi.setSystemTime(new Date("2026-09-30T01:00:10.000Z"));
+      accepted = await service.propose({ ...proposalDraft, text: "to accept", tags: ["ops"] });
+    } finally {
+      vi.useRealTimers();
+    }
     await service.reject(second.id);
-    const accepted = await service.propose({ ...proposalDraft, text: "to accept", tags: ["ops"] });
     await service.approve(accepted.id);
 
     expect((await service.listProposals()).map((entry) => entry.id)).toEqual([pending.id]);
@@ -1115,9 +1161,11 @@ In `packages/plugins/dsh-balbes-memory/src/proposals.ts`, import `normalizeDecis
     if (patch.type !== undefined && patch.type !== proposal.type) return true;
     if (patch.text !== undefined && patch.text !== proposal.text) return true;
     if (patch.tags !== undefined) {
-      const same =
-        patch.tags.length === proposal.tags.length &&
-        patch.tags.every((tag, index) => tag === proposal.tags[index]);
+      // Tags are a SET in the truth table (`memory_tags` PK is (memory_id, tag)
+      // and reads come back ORDER BY tag), so a reordered list is not an edit.
+      const before = [...proposal.tags].sort();
+      const after = [...patch.tags].sort();
+      const same = before.length === after.length && before.every((tag, index) => tag === after[index]);
       if (!same) return true;
     }
     return false;
