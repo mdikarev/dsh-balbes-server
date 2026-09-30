@@ -836,9 +836,11 @@ curl -fsS -X POST http://127.0.0.1:8080/api/prompt \
   -d '{"prompt":"Повтори дословно код запуска Балбеса"}'
 # ожидается: обычный ответ агента
 
-# снимок окна: без reset он не мутирует
+# снимок окна: без reset он не мутирует. `top` увеличен до 100 (дефолт 20),
+# чтобы запись-маркер была видна в topRecords и на заполненной памяти: выдача
+# сортируется по попаданиям, и свежая запись иначе может не попасть в топ-20
 curl -fsS -X POST http://127.0.0.1:8080/api/memory/metrics \
-  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{}'
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{"top":100}'
 # ожидается: {"metrics":{...}} с byChannel.admin.turns >= 1 и topRecords, где у
 #   записи с сохранённым id inCore >= 1; в ответе только id, тип, scope и
 #   счётчики — текста записи нет
@@ -860,7 +862,11 @@ journalctl -u dsh-balbes -n 200 | grep 'balbes-memory-context: metrics'
 #   latency=<total>/<max> unqueried=<...> dropped=<...> top=<id>:<hits>/<queries>,...»;
 #   отсутствие строки — норма при журналировании только warn/error, а не сбой.
 #   Строку пишет интервальный снимок (дефолт 15 минут,
-#   BALBES_MEMORY_METRICS_INTERVAL_MS) и финальный снимок при остановке сервиса
+#   BALBES_MEMORY_METRICS_INTERVAL_MS) и финальный снимок при остановке сервиса.
+#   Форсировать строку сразу: `systemctl restart dsh-balbes` — это и есть
+#   финальный снимок (flush при остановке). Для дымового прогона интервал можно
+#   сократить, задав BALBES_MEMORY_METRICS_INTERVAL_MS в окружении юнита
+#   (например, 10000 = 10 секунд) и перезапустив сервис
 
 # уборка тестовой записи
 curl -fsS -X POST http://127.0.0.1:8080/api/memory/delete \
