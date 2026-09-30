@@ -1,10 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import MemoryPage from "../src/pages/MemoryPage";
 import { ApiError, type AdminApi } from "../src/api/client";
-import type { MemoryRecord, MemorySaveRequest } from "dsh-balbes-contracts";
+import type { MemoryListRequest, MemoryRecord, MemorySaveRequest, WorkspaceListResponse } from "dsh-balbes-contracts";
 
 afterEach(cleanup);
+
+const WORKSPACES: WorkspaceListResponse = {
+  home: { path: "/h/agent" },
+  projects: [{ name: "alpha", path: "/p/alpha" }]
+};
 
 function record(overrides: Partial<MemoryRecord> = {}): MemoryRecord {
   return {
@@ -145,5 +150,94 @@ describe("MemoryPage", () => {
     await waitFor(() => expect(screen.queryByTestId("memory-form-text")).toBeNull());
     expect(screen.queryByTestId("memory-form-error")).toBeNull();
     await waitFor(() => expect(api.listMemory).toHaveBeenCalledTimes(2));
+  });
+
+  it("lists every level without a scope filter when «Все» is selected", async () => {
+    const listMemory = vi.fn(async (_request: MemoryListRequest) => ({ records: [record()] }));
+    const api = makeApi([], { listWorkspaces: vi.fn(async () => WORKSPACES), listMemory });
+    render(<MemoryPage api={api} />);
+    await screen.findByTestId("memory-row:m-1");
+    fireEvent.change(screen.getByTestId("memory-level"), { target: { value: "all" } });
+    await waitFor(() => expect(listMemory).toHaveBeenCalledTimes(2));
+    const request = listMemory.mock.calls[1]![0]!;
+    expect(request).not.toHaveProperty("scope");
+  });
+
+  it("still sends the concrete project scope when a project level is selected", async () => {
+    const listMemory = vi.fn(async (_request: MemoryListRequest) => ({ records: [record()] }));
+    const api = makeApi([], { listWorkspaces: vi.fn(async () => WORKSPACES), listMemory });
+    render(<MemoryPage api={api} />);
+    await screen.findByRole("option", { name: "alpha" });
+    fireEvent.change(screen.getByTestId("memory-level"), { target: { value: "project:alpha" } });
+    await waitFor(() => expect(listMemory).toHaveBeenCalledTimes(2));
+    expect(listMemory.mock.calls[1]![0]!).toEqual(
+      expect.objectContaining({ scope: { kind: "project", name: "alpha" } })
+    );
+  });
+
+  it("shows the level badge on a record from every level", async () => {
+    const api = makeApi([record(), record({ id: "m-p", scope: { kind: "project", name: "alpha" } })]);
+    render(<MemoryPage api={api} />);
+    const homeRow = await screen.findByTestId("memory-row:m-1");
+    const projectRow = screen.getByTestId("memory-row:m-p");
+    expect(within(homeRow).getByTestId("memory-row-level").textContent).toBe("Дом");
+    expect(within(projectRow).getByTestId("memory-row-level").textContent).toBe("alpha");
+  });
+
+  it("creates in the level chosen in the modal when «Все» is selected", async () => {
+    const saveMemory = vi.fn(async (_request: MemorySaveRequest) => ({ record: record() }));
+    const api = makeApi([], { listWorkspaces: vi.fn(async () => WORKSPACES), saveMemory });
+    render(<MemoryPage api={api} />);
+    await screen.findByTestId("memory-empty");
+    fireEvent.change(screen.getByTestId("memory-level"), { target: { value: "all" } });
+    fireEvent.click(screen.getByTestId("memory-add"));
+    const levelSelect = screen.getByTestId("memory-form-level") as HTMLSelectElement;
+    expect(levelSelect.value).toBe("global");
+    fireEvent.change(levelSelect, { target: { value: "project:alpha" } });
+    fireEvent.change(screen.getByTestId("memory-form-text"), { target: { value: "from the all-levels view" } });
+    fireEvent.click(screen.getByTestId("memory-form-save"));
+    await waitFor(() => expect(saveMemory).toHaveBeenCalled());
+    expect(saveMemory).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: { kind: "project", name: "alpha" } })
+    );
+  });
+
+  it("creates in the selected concrete level without a level picker", async () => {
+    const saveMemory = vi.fn(async (_request: MemorySaveRequest) => ({ record: record() }));
+    const api = makeApi([], { listWorkspaces: vi.fn(async () => WORKSPACES), saveMemory });
+    render(<MemoryPage api={api} />);
+    await screen.findByRole("option", { name: "alpha" });
+    fireEvent.change(screen.getByTestId("memory-level"), { target: { value: "project:alpha" } });
+    fireEvent.click(screen.getByTestId("memory-add"));
+    expect(screen.queryByTestId("memory-form-level")).toBeNull();
+    fireEvent.change(screen.getByTestId("memory-form-text"), { target: { value: "concrete level note" } });
+    fireEvent.click(screen.getByTestId("memory-form-save"));
+    await waitFor(() => expect(saveMemory).toHaveBeenCalled());
+    expect(saveMemory).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: { kind: "project", name: "alpha" } })
+    );
+  });
+
+  it("defaults the create modal to «Дом» after leaving a project level for «Все»", async () => {
+    const api = makeApi([], { listWorkspaces: vi.fn(async () => WORKSPACES) });
+    render(<MemoryPage api={api} />);
+    await screen.findByRole("option", { name: "alpha" });
+    fireEvent.change(screen.getByTestId("memory-level"), { target: { value: "project:alpha" } });
+    fireEvent.change(screen.getByTestId("memory-level"), { target: { value: "all" } });
+    fireEvent.click(screen.getByTestId("memory-add"));
+    expect((screen.getByTestId("memory-form-level") as HTMLSelectElement).value).toBe("global");
+  });
+
+  it("shows the edited record's own level when opened from the «Все» view", async () => {
+    const api = makeApi([record({ id: "m-p", scope: { kind: "project", name: "alpha" } })], {
+      listWorkspaces: vi.fn(async () => WORKSPACES)
+    });
+    render(<MemoryPage api={api} />);
+    await screen.findByTestId("memory-row:m-p");
+    fireEvent.change(screen.getByTestId("memory-level"), { target: { value: "all" } });
+    fireEvent.click(screen.getByTestId("memory-edit:m-p"));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toContain("Уровень: alpha");
+    expect(within(dialog).queryByTestId("memory-form-level")).toBeNull();
   });
 });

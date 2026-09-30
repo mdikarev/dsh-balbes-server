@@ -18,10 +18,22 @@ const ORIGIN_LABELS: Record<MemoryRecord["origin"], string> = {
 };
 
 type Level = MemoryScope;
+/** The toolbar selection: a concrete level, or the «Все» pseudo-level listing every scope. */
+type LevelSelection = Level | { kind: "all" };
 type Editor = { mode: "create" } | { mode: "edit"; record: MemoryRecord };
 
-function levelKey(level: Level): string {
+function levelKey(level: LevelSelection): string {
+  if (level.kind === "all") return "all";
   return level.kind === "global" ? "global" : "project:" + level.name;
+}
+
+function levelLabel(level: Level): string {
+  return level.kind === "global" ? "Дом" : level.name;
+}
+
+/** Parses a concrete level option value; «Все» is not a concrete level. */
+function parseScope(value: string): Level {
+  return value === "global" ? { kind: "global" } : { kind: "project", name: value.slice("project:".length) };
 }
 
 function parseTags(raw: string): string[] {
@@ -51,7 +63,7 @@ function formatTime(iso: string): string {
 export default function MemoryPage({ api }: { api: AdminApi }) {
   const [projects, setProjects] = useState<WorkspaceProject[]>([]);
   const [projectsLoaded, setProjectsLoaded] = useState(false);
-  const [level, setLevel] = useState<Level>({ kind: "global" });
+  const [level, setLevel] = useState<LevelSelection>({ kind: "global" });
   const [records, setRecords] = useState<MemoryRecord[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -63,6 +75,7 @@ export default function MemoryPage({ api }: { api: AdminApi }) {
   const [editor, setEditor] = useState<Editor | null>(null);
   const [toDelete, setToDelete] = useState<MemoryRecord | null>(null);
   const [formType, setFormType] = useState<MemoryType>("note");
+  const [formLevel, setFormLevel] = useState<Level>({ kind: "global" });
   const [formText, setFormText] = useState("");
   const [formTags, setFormTags] = useState("");
   const [formPinned, setFormPinned] = useState(false);
@@ -72,7 +85,8 @@ export default function MemoryPage({ api }: { api: AdminApi }) {
     setLoadError(null);
     try {
       const res = await api.listMemory({
-        scope: level,
+        // «Все» sends no scope at all, so the server lists every level
+        ...(level.kind === "all" ? {} : { scope: level }),
         ...(type === "all" ? {} : { type }),
         ...(tag.trim() === "" ? {} : { tag: tag.trim() }),
         ...(pinnedOnly ? { pinned: true } : {}),
@@ -107,6 +121,7 @@ export default function MemoryPage({ api }: { api: AdminApi }) {
 
   function openCreate(): void {
     setFormType("note");
+    setFormLevel(level.kind === "all" ? { kind: "global" } : level);
     setFormText("");
     setFormTags("");
     setFormPinned(false);
@@ -143,7 +158,8 @@ export default function MemoryPage({ api }: { api: AdminApi }) {
     setFormError(null);
     try {
       if (editor.mode === "create") {
-        await api.saveMemory({ scope: level, type: formType, text: formText, tags: parseTags(formTags), pinned: formPinned });
+        // a concrete view level is immutable context; «Все» picks the scope in the modal
+        await api.saveMemory({ scope: level.kind === "all" ? formLevel : level, type: formType, text: formText, tags: parseTags(formTags), pinned: formPinned });
       } else {
         await api.saveMemory({ id: editor.record.id, type: formType, text: formText, tags: parseTags(formTags), pinned: formPinned });
       }
@@ -195,13 +211,14 @@ export default function MemoryPage({ api }: { api: AdminApi }) {
           value={levelKey(level)}
           onChange={(event) => {
             const value = event.target.value;
-            setLevel(value === "global" ? { kind: "global" } : { kind: "project", name: value.slice("project:".length) });
+            setLevel(value === "all" ? { kind: "all" } : parseScope(value));
           }}
         >
           <option value="global">Дом</option>
           {projects.map((project) => (
             <option key={project.name} value={"project:" + project.name}>{project.name}</option>
           ))}
+          <option value="all">Все</option>
         </select>
 
         <input
@@ -277,6 +294,7 @@ export default function MemoryPage({ api }: { api: AdminApi }) {
             <li className="memory-row" key={record.id} data-testid={"memory-row:" + record.id}>
               <div className="memory-row-head">
                 <span className="memory-type">{TYPE_LABELS[record.type]}</span>
+                <span className="memory-level-badge" title="Уровень" data-testid="memory-row-level">{levelLabel(record.scope)}</span>
                 {record.pinned && <span className="memory-pin" title="пиннуто">★</span>}
                 <span className="memory-provenance">{ORIGIN_LABELS[record.origin]} · {formatTime(record.updatedAt)}</span>
                 <span className="memory-row-actions">
@@ -297,10 +315,30 @@ export default function MemoryPage({ api }: { api: AdminApi }) {
 
       {editor !== null && (
         <Modal title={editor.mode === "create" ? "Добавить запись" : "Изменить запись"} onClose={() => setEditor(null)}>
-          <p className="memory-scope-line">
-            Уровень: <b>{level.kind === "global" ? "Дом" : level.name}</b>
-            {editor.mode === "edit" && " (не меняется)"}
-          </p>
+          {editor.mode === "edit" ? (
+            // the edited record's own level, never the current filter/view
+            <p className="memory-scope-line">
+              Уровень: <b>{levelLabel(editor.record.scope)}</b> (не меняется)
+            </p>
+          ) : level.kind === "all" ? (
+            // «Все» is a view mode: the new record's level is chosen here
+            <select
+              className="memory-type-select"
+              aria-label="Уровень записи"
+              data-testid="memory-form-level"
+              value={levelKey(formLevel)}
+              onChange={(event) => setFormLevel(parseScope(event.target.value))}
+            >
+              <option value="global">Дом</option>
+              {projects.map((project) => (
+                <option key={project.name} value={"project:" + project.name}>{project.name}</option>
+              ))}
+            </select>
+          ) : (
+            <p className="memory-scope-line">
+              Уровень: <b>{levelLabel(level)}</b>
+            </p>
+          )}
           <select
             className="memory-type-select"
             aria-label="Тип записи"
