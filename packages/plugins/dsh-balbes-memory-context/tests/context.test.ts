@@ -8,6 +8,7 @@ import {
   MEMORY_SECTION_ORDER
 } from "../src/context.js";
 import { createMemoryMetricsLedger } from "../src/metrics.js";
+import { renderCore, renderMap, renderPush } from "../src/render.js";
 import type { LlmClassifierSeat } from "../src/classify.js";
 import type { StreamChunk } from "@deepseek-ai/dsh-llm";
 import type {
@@ -222,16 +223,13 @@ describe("createMemoryContext", () => {
 });
 
 describe("createMemoryContext metrics", () => {
-  it("records one delivery event with the path ids and the omitted counts", async () => {
+  it("records one delivery event with the path ids, the omitted counts and the block sizes", async () => {
     const ledger = createMemoryMetricsLedger();
-    const h = harness(
-      [
-        record({ id: "core", text: "Pinned deploy rule", pinned: true }),
-        record({ id: "push", text: "deploy rollback procedure" })
-      ],
-      {},
-      ledger
-    ) as HarnessWithAttach;
+    const records = [
+      record({ id: "core", text: "Pinned deploy rule", pinned: true }),
+      record({ id: "push", text: "deploy rollback procedure" })
+    ];
+    const h = harness(records, {}, ledger) as HarnessWithAttach;
     const attachment = h.attach(h.agentCtx, { kind: "global" }, { channel: "admin", sessionId: "s1" });
     await attachment.prepare("deploy");
     const snap: MemoryMetricsSnapshot = ledger.snapshot();
@@ -243,6 +241,41 @@ describe("createMemoryContext metrics", () => {
     expect(core).toMatchObject({ type: "fact", scope: "global", inCore: 1, inMap: 0, inPush: 0 });
     expect(push).toMatchObject({ inCore: 0, inMap: 1, inPush: 1 });
     expect(snap.unqueriedDelivered).toBe(2);
+    // chars must be the summed size of the rendered blocks the production code
+    // delivered, so a `chars: 0` regression cannot slip through.
+    const coreBlock = renderCore(records.filter((entry) => entry.pinned));
+    const mapBlock = renderMap(records, records.length, new Set(coreBlock.shown));
+    const pushBlock = renderPush(
+      records.filter((entry) => entry.text.includes("deploy")).map((entry) => ({ record: entry, rank: -1 })),
+      new Set(coreBlock.shown)
+    );
+    const expectedChars = coreBlock.text.length + mapBlock.text.length + pushBlock.text.length;
+    expect(expectedChars).toBeGreaterThan(0);
+    expect(ledger.windowChars()).toBe(expectedChars);
+  });
+
+  it("keeps the rendered blocks when the delivery sink throws", async () => {
+    const throwing: MemoryMetricsSink = {
+      recordDelivery() {
+        throw new Error("sink exploded");
+      },
+      recordRecall() {}
+    };
+    const h = harness(
+      [
+        record({ id: "core", text: "Pinned deploy rule", pinned: true }),
+        record({ id: "push", text: "deploy rollback procedure" })
+      ],
+      {},
+      throwing
+    ) as HarnessWithAttach;
+    const attachment = h.attach(h.agentCtx, { kind: "global" }, { channel: "admin", sessionId: "s1" });
+    await expect(attachment.prepare("deploy")).resolves.toBeUndefined();
+    expect(h.sections[0]!.text()).toContain("Pinned deploy rule");
+    expect(h.contexts[0]!.text()).toContain("deploy rollback procedure");
+    expect(h.warnings.join("\n")).toMatch(/metrics/);
+    expect(h.warnings.join("\n")).not.toContain("prepare failed");
+    expect(h.warnings.join("\n")).not.toContain("deploy rollback procedure");
   });
 
   it("does not record a delivery when prepare fails", async () => {
@@ -261,12 +294,6 @@ describe("createMemoryContext metrics", () => {
     const snap = ledger.snapshot();
     expect(snap.window.turns).toBe(0);
     expect(snap.topRecords).toEqual([]);
-  });
-
-  it("keeps working without a metrics sink", async () => {
-    const h = harness([record({ id: "a", text: "deploy note" })]) as HarnessWithAttach;
-    const attachment = h.attach(h.agentCtx, { kind: "global" }, { channel: "admin", sessionId: "s1" });
-    await expect(attachment.prepare("deploy")).resolves.toBeUndefined();
   });
 
   it("tags an unattributed delivery as project-less and unknown channel", async () => {

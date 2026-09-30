@@ -103,7 +103,7 @@ export interface BalbesMemoryContextService {
   attach(agentCtx: unknown, scope: MemoryContextScope, write?: MemoryWriteContext): MemoryContextAttachment;
 }
 
-/** Тег уровня записи в метриках: "global" или "project:<name>". */
+/** Тег области доставки хода/запроса в метриках: "global" или "project:<name>". */
 export type MemoryMetricsScopeTag = string;
 
 /** Канал, обслуживший ход или запрос: "admin" (POST /api/prompt) или "telegram". */
@@ -112,6 +112,7 @@ export type MemoryMetricsChannel = string;
 /** Минимум о записи для топ-выдачи метрик: текста памяти тут нет by design. */
 export interface MemoryRecordRef {
   type: string;
+  /** Тег области доставки хода/запроса, принёсшего запись; не scope самой записи. */
   scope: MemoryMetricsScopeTag;
 }
 

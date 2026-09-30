@@ -52,7 +52,7 @@ export function scopesFor(scope: MemoryContextScope): MemoryScope[] {
   return scope.kind === "global" ? [{ kind: "global" }] : [{ kind: "global" }, { kind: "project", name: scope.name }];
 }
 
-/** Тег уровня для метрик: "global" либо "project:<name>". */
+/** Тег области доставки для метрик: "global" либо "project:<name>". */
 export function scopeTag(scope: MemoryContextScope): string {
   return scope.kind === "global" ? "global" : "project:" + scope.name;
 }
@@ -78,7 +78,7 @@ export function createMemoryContext(
       const state = { coreMap: "", push: "" };
       systemPrompt.section({ name: MEMORY_SECTION_NAME, order: MEMORY_SECTION_ORDER, text: () => state.coreMap });
       systemPrompt.context({ name: MEMORY_CONTEXT_NAME, order: MEMORY_CONTEXT_ORDER, text: () => state.push });
-      tools.register(buildRecallTool(memory, scopes, metrics, { channel, scope: scopeName }));
+      tools.register(buildRecallTool(memory, scopes, metrics, { channel, scope: scopeName }, logger));
       const writable = memory as BalbesMemoryReadSlice & Partial<MemoryWriteSlice> & Partial<MemoryProposalSlice>;
       let extraction: MemoryExtractionHandle | undefined;
       if (typeof writable.save === "function" && write !== undefined) {
@@ -175,14 +175,23 @@ export function createMemoryContext(
             const refs = Object.fromEntries(
               shownRecords.map((record) => [record.id, { type: record.type, scope: scopeName }])
             ) as Record<string, MemoryRecordRef>;
-            metrics?.recordDelivery({
-              channel,
-              scope: scopeName,
-              core: { delivered: core.shown, omitted: core.omitted, chars: core.text.length },
-              map: { delivered: map.shown, omitted: map.omitted, chars: map.text.length },
-              push: { delivered: push.shown, omitted: push.omitted, chars: push.text.length },
-              records: refs
-            });
+            // A misbehaving sink must not blank the turn's rendered blocks:
+            // the event is a signal, not a delivery dependency.
+            try {
+              metrics?.recordDelivery({
+                channel,
+                scope: scopeName,
+                core: { delivered: core.shown, omitted: core.omitted, chars: core.text.length },
+                map: { delivered: map.shown, omitted: map.omitted, chars: map.text.length },
+                push: { delivered: push.shown, omitted: push.omitted, chars: push.text.length },
+                records: refs
+              });
+            } catch (error) {
+              logger.warn(
+                "balbes-memory-context: delivery metrics failed: " +
+                  (error instanceof Error ? error.message : String(error))
+              );
+            }
             logger.debug?.(
               "balbes-memory-context: scope=" + scopeName +
                 " core=" + core.shown.length +

@@ -1,6 +1,6 @@
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import type { MemoryRecord, MemoryScope } from "dsh-balbes-contracts";
-import type { BalbesMemoryReadSlice, MemoryRecallEvent } from "./types.js";
+import type { BalbesMemoryReadSlice, MemoryMetricsLogger, MemoryRecallEvent } from "./types.js";
 import { buildFtsQuery } from "./query.js";
 import { originLabel, scopeLabel } from "./render.js";
 
@@ -37,8 +37,21 @@ export function buildRecallTool(
   memory: BalbesMemoryReadSlice,
   scopes: MemoryScope[],
   metrics?: MemoryRecallSink,
-  tag?: { channel: string; scope: string }
+  tag?: { channel: string; scope: string },
+  logger?: MemoryMetricsLogger
 ) {
+  // A misbehaving sink must not turn a successful search into the stable
+  // failure path (nor replace it), so every event is isolated. The warning
+  // carries only the sink's message, never memory text.
+  const safeRecord = (event: MemoryRecallEvent): void => {
+    try {
+      metrics?.recordRecall(event);
+    } catch (error) {
+      logger?.warn(
+        "balbes-memory-context: recall metrics failed: " + (error instanceof Error ? error.message : String(error))
+      );
+    }
+  };
   return defineTool({
     name: "recall",
     description: DESCRIPTION,
@@ -109,7 +122,7 @@ export function buildRecallTool(
       const scopeTag = tag?.scope ?? "unknown";
       const query = buildFtsQuery(args.query);
       if (query === "") {
-        metrics?.recordRecall({ channel, scope: scopeTag, outcome: "empty", latencyMs: 0 });
+        safeRecord({ channel, scope: scopeTag, outcome: "empty", latencyMs: 0 });
         return { records: [] };
       }
       const filter: { scopes: MemoryScope[]; type?: MemoryRecord["type"]; tag?: string; pinned?: boolean } = {
@@ -123,7 +136,7 @@ export function buildRecallTool(
         const hits = await memory.search({ query, filter, limit: clampRecallLimit(args.limit) });
         const latencyMs = performance.now() - startedAt;
         const records = hits.map((hit) => hit.record);
-        metrics?.recordRecall({
+        safeRecord({
           channel,
           scope: scopeTag,
           outcome: records.length === 0 ? "empty" : "ok",
@@ -133,7 +146,7 @@ export function buildRecallTool(
         });
         return { records };
       } catch {
-        metrics?.recordRecall({ channel, scope: scopeTag, outcome: "failed", latencyMs: performance.now() - startedAt });
+        safeRecord({ channel, scope: scopeTag, outcome: "failed", latencyMs: performance.now() - startedAt });
         throw new Error("recall failed: memory search is unavailable");
       }
     }

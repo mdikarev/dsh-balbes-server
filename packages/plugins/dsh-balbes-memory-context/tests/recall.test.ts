@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MemoryRecord } from "dsh-balbes-contracts";
 import { buildRecallTool, clampRecallLimit, RECALL_DEFAULT_LIMIT, RECALL_MAX_LIMIT } from "../src/recall.js";
+import type { MemoryRecallSink } from "../src/recall.js";
 import { createMemoryMetricsLedger } from "../src/metrics.js";
 import type { BalbesMemoryReadSlice } from "../src/types.js";
 
@@ -104,8 +105,14 @@ describe("buildRecallTool", () => {
 });
 
 describe("buildRecallTool metrics", () => {
-  it("records ok with the delivered ids and the latency", async () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("records ok with the delivered ids and a measured latency", async () => {
     const ledger = createMemoryMetricsLedger();
+    let clock = 1000;
+    vi.spyOn(performance, "now").mockImplementation(() => (clock += 5));
     const memory: BalbesMemoryReadSlice = {
       list: async () => [],
       count: async () => 0,
@@ -116,7 +123,8 @@ describe("buildRecallTool metrics", () => {
     const snap = ledger.snapshot();
     expect(snap.recall.calls).toBe(1);
     expect(snap.recall.empty).toBe(0);
-    expect(snap.recall.latencyMs.max).toBeGreaterThanOrEqual(0);
+    expect(snap.recall.latencyMs.total).toBeGreaterThan(0);
+    expect(snap.recall.latencyMs.max).toBe(snap.recall.latencyMs.total);
     expect(snap.topRecords.find((entry) => entry.id === "a")).toMatchObject({
       type: "fact",
       scope: "project:proj",
@@ -161,6 +169,49 @@ describe("buildRecallTool metrics", () => {
     const snap = ledger.snapshot();
     expect(snap.recall.failed).toBe(1);
     expect(snap.recall.empty).toBe(0);
+  });
+
+  it("returns records even when the recall sink throws", async () => {
+    const throwing: MemoryRecallSink = {
+      recordRecall() {
+        throw new Error("sink exploded");
+      }
+    };
+    const warnings: string[] = [];
+    const memory: BalbesMemoryReadSlice = {
+      list: async () => [],
+      count: async () => 0,
+      search: async () => [{ record: record("a", "deploy procedure"), rank: -1 }]
+    };
+    const tool = buildRecallTool(memory, [{ kind: "global" }], throwing, { channel: "admin", scope: "global" }, {
+      warn: (message) => warnings.push(message)
+    });
+    const value = (await tool.execute({ query: "deploy" }, {} as never)) as { records: MemoryRecord[] };
+    expect(value.records.map((entry) => entry.id)).toEqual(["a"]);
+    expect(warnings.join("\n")).toMatch(/metrics/);
+    expect(warnings.join("\n")).not.toContain("deploy procedure");
+  });
+
+  it("keeps the stable tool error and the empty short-circuit when the recall sink throws", async () => {
+    const throwing: MemoryRecallSink = {
+      recordRecall() {
+        throw new Error("sink exploded");
+      }
+    };
+    const failing: BalbesMemoryReadSlice = {
+      list: async () => [],
+      count: async () => 0,
+      search: async () => {
+        throw new Error("db down");
+      }
+    };
+    const logger = { warn: () => {} };
+    const failingTool = buildRecallTool(failing, [{ kind: "global" }], throwing, { channel: "admin", scope: "global" }, logger);
+    await expect(failingTool.execute({ query: "deploy" }, {} as never)).rejects.toThrow(
+      new Error("recall failed: memory search is unavailable")
+    );
+    const blankTool = buildRecallTool(failing, [{ kind: "global" }], throwing, { channel: "admin", scope: "global" }, logger);
+    await expect(blankTool.execute({ query: "!!!" }, {} as never)).resolves.toEqual({ records: [] });
   });
 });
 

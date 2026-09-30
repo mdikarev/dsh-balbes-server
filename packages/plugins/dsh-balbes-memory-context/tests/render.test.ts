@@ -29,6 +29,8 @@ describe("renderCore", () => {
       record({ id: "b", text: "Prefer pnpm", type: "preference", origin: "agent", scope: { kind: "project", name: "proj" }, pinned: true })
     ]);
     expect(result.shown).toEqual(["a", "b"]);
+    expect(result.records.map((entry) => entry.id)).toEqual(result.shown);
+    expect(result.records[0]!.text).toBe("Deploy via install.sh");
     expect(result.text).toContain("## Long-term memory (pinned)");
     expect(result.text).toContain("- [fact · владелец] (дом) Deploy via install.sh #deploy");
     expect(result.text).toContain("- [preference · агент] (проект proj) Prefer pnpm");
@@ -65,6 +67,7 @@ describe("renderMap", () => {
     ];
     const result = renderMap(records, 3, new Set(["a"]));
     expect(result.shown).toEqual(["b", "c"]);
+    expect(result.records.map((entry) => entry.id)).toEqual(result.shown);
     expect(result.text).toContain("## Memory map");
     expect(result.text).not.toContain("core");
   });
@@ -94,6 +97,8 @@ describe("renderPush", () => {
       new Set(["a"])
     );
     expect(result.shown).toEqual(["b"]);
+    expect(result.records.map((entry) => entry.id)).toEqual(result.shown);
+    expect(result.records[0]!.text).toBe("relevant deploy note");
     expect(result.text).toContain("- [fact · владелец] (дом) relevant deploy note #deploy");
   });
 
