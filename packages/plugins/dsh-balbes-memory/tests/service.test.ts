@@ -13,7 +13,7 @@ let service: BalbesMemoryService;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "balbes-memory-service-"));
-  db = await openMemoryDatabase(join(dir, "memory.sqlite"));
+  db = (await openMemoryDatabase(join(dir, "memory.sqlite"))).db;
   service = createMemoryService(db);
 });
 
@@ -109,7 +109,7 @@ describe("balbesMemory service", () => {
   it("persists across a close and reopen", async () => {
     const saved = await service.save({ ...globalDraft, tags: ["durable"] });
     db.close();
-    db = await openMemoryDatabase(join(dir, "memory.sqlite"));
+    db = (await openMemoryDatabase(join(dir, "memory.sqlite"))).db;
     service = createMemoryService(db);
     expect((await service.get(saved.id))?.tags).toEqual(["durable"]);
   });

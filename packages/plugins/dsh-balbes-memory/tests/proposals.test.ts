@@ -14,7 +14,7 @@ let service: BalbesMemoryService;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "balbes-memory-proposals-"));
-  db = await openMemoryDatabase(join(dir, "memory.sqlite"));
+  db = (await openMemoryDatabase(join(dir, "memory.sqlite"))).db;
   service = createMemoryService(db);
 });
 

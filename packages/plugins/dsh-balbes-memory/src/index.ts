@@ -13,7 +13,7 @@ export const Config = z.object({
 interface CtxLike {
   provide(key: string, value: unknown): void;
   effect(callback: () => (() => void) | void, label?: string): void;
-  logger: { warn(message: string): void };
+  logger: { warn(message: string): void; info?(message: string): void };
 }
 
 interface MemoryConfig {
@@ -29,13 +29,19 @@ interface MemoryConfig {
 export async function apply(ctx: CtxLike, config: MemoryConfig): Promise<void> {
   const dshHome = config.dshHome ?? process.env.DSH_HOME ?? join(process.env.HOME ?? ".", ".dsh");
   const dbPath = config.memoryPath ?? join(dshHome, "storages", "memory.sqlite");
-  let db;
+  let opened: Awaited<ReturnType<typeof openMemoryDatabase>>;
   try {
-    db = await openMemoryDatabase(dbPath);
+    opened = await openMemoryDatabase(dbPath);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     ctx.logger.warn("balbes-memory: failed to open " + dbPath + ": " + message);
     return;
+  }
+  const { db, changes } = opened;
+  if (changes > 0) {
+    // Canon: the count of rows the v3 purge removed is observable at info level,
+    // without the text of any proposal.
+    ctx.logger.info?.("balbes-memory: migration removed " + changes + " rejected proposal(s)");
   }
   try {
     const service = createMemoryService(db);

@@ -84,13 +84,29 @@ export const DDL_V3 = "DELETE FROM memory_proposals WHERE status = 'rejected'";
 
 export interface Migration {
   version: number;
-  up: (db: DatabaseSync) => void;
+  /** Returns the number of rows changed, or nothing when it changes no rows. */
+  up: (db: DatabaseSync) => number | void;
+}
+
+/** The v3 behaviour, prepared so `changes` reports how many rows it removed. */
+function purgeLegacyRejectedProposals(db: DatabaseSync): number {
+  // A corrupt file may claim v1/v2 without either table. Deleting first would
+  // surface a raw SQLite "no such table" error out of migrate(); returning 0
+  // leaves the refusal to the post-migration validateMemorySchema, which owns
+  // it as a MemoryError. A genuine v1 database has `memories` (created by v1)
+  // and gains `memory_proposals` from v2 before this runs, so it still purges.
+  const tables = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('memories','memory_proposals')")
+    .all()
+    .map((row) => String(row.name));
+  if (!tables.includes("memories") || !tables.includes("memory_proposals")) return 0;
+  return Number(db.prepare(DDL_V3).run().changes);
 }
 
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, up: (db) => db.exec(DDL_V1) },
   { version: 2, up: (db) => db.exec(DDL_V2) },
-  { version: 3, up: (db) => db.exec(DDL_V3) }
+  { version: 3, up: purgeLegacyRejectedProposals }
 ];
 
 export function latestVersion(migrations: readonly Migration[]): number {
@@ -106,7 +122,10 @@ export function readUserVersion(db: DatabaseSync): number {
 }
 
 /** Apply pending migrations in one transaction. Idempotent. */
-export function migrate(db: DatabaseSync, migrations: readonly Migration[] = MIGRATIONS): number {
+export function migrate(
+  db: DatabaseSync,
+  migrations: readonly Migration[] = MIGRATIONS
+): { version: number; changes: number } {
   const current = readUserVersion(db);
   const target = latestVersion(migrations);
   if (current > target) {
@@ -115,15 +134,17 @@ export function migrate(db: DatabaseSync, migrations: readonly Migration[] = MIG
       "database schema v" + current + " is newer than supported v" + target
     );
   }
-  if (current === target) return current;
+  if (current === target) return { version: current, changes: 0 };
   const pending = migrations
     .filter((migration) => migration.version > current)
     .slice()
     .sort((a, b) => a.version - b.version);
+  let changes = 0;
   db.exec("BEGIN");
   try {
     for (const migration of pending) {
-      migration.up(db);
+      const changed = migration.up(db);
+      changes += typeof changed === "number" ? changed : 0;
       db.exec("PRAGMA user_version = " + migration.version);
     }
     db.exec("COMMIT");
@@ -131,7 +152,7 @@ export function migrate(db: DatabaseSync, migrations: readonly Migration[] = MIG
     db.exec("ROLLBACK");
     throw error;
   }
-  return target;
+  return { version: target, changes };
 }
 
 const REQUIRED_SCHEMA_OBJECTS: ReadonlyArray<{ type: string; name: string }> = [
@@ -181,11 +202,15 @@ function probeUserVersion(path: string): number | null {
   }
 }
 
-/** Open the database, back up before any pending migration, then migrate. */
+/**
+ * Open the database, back up before any pending migration, then migrate.
+ * `changes` is the total number of rows changed while applying pending
+ * migrations; it is 0 when nothing was pending.
+ */
 export async function openMemoryDatabase(
   path: string,
   options?: { migrations?: readonly Migration[] }
-): Promise<DatabaseSync> {
+): Promise<{ db: DatabaseSync; changes: number }> {
   const migrations = options?.migrations ?? MIGRATIONS;
   const target = latestVersion(migrations);
   mkdirSync(dirname(path), { recursive: true });
@@ -218,14 +243,15 @@ export async function openMemoryDatabase(
       validateMemorySchema(db);
     }
     db.exec("PRAGMA journal_mode=WAL");
+    let changes = 0;
     if (current < target) {
       if (current > 0) {
         await backup(db, path + ".bak-v" + current);
       }
-      migrate(db, migrations);
+      changes = migrate(db, migrations).changes;
       if (target > 0) validateMemorySchema(db);
     }
-    return db;
+    return { db, changes };
   } catch (error) {
     db.close();
     throw error;

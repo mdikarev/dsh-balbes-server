@@ -13,7 +13,7 @@ let service: BalbesMemoryService;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "balbes-memory-search-"));
-  db = await openMemoryDatabase(join(dir, "memory.sqlite"));
+  db = (await openMemoryDatabase(join(dir, "memory.sqlite"))).db;
   service = createMemoryService(db);
   await service.save({ scope: { kind: "global" }, type: "fact", text: "Deployment runs under systemd on the VPS", origin: "owner", tags: ["ops"] });
   await service.save({ scope: { kind: "global" }, type: "preference", text: "Owner prefers concise answers in Russian", origin: "owner", tags: ["style"] });
