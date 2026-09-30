@@ -2484,7 +2484,9 @@ git commit -m "feat(admin): add the memory review queue (p10f)"
 
     fireEvent.click(screen.getByTestId("memory-tab-review"));
     expect(await screen.findByTestId("memory-review-empty")).toBeTruthy();
-    expect(api.listMemoryReview).toHaveBeenCalled();
+    // The mount seed already called this, so a bare toHaveBeenCalled() would pass
+    // even if the queue never fetched. The queue requests its default level.
+    expect(api.listMemoryReview).toHaveBeenCalledWith({ scope: { kind: "global" } });
 
     fireEvent.click(screen.getByTestId("memory-tab-records"));
     expect(await screen.findByTestId("memory-row:m-1")).toBeTruthy();
@@ -2605,11 +2607,19 @@ Keep every existing JSX block for the records tab verbatim inside the fragment; 
 Run: `cd packages/frontend/dsh-balbes-admin && npx vitest run tests/MemoryPage.test.tsx tests/MemoryReviewQueue.test.tsx`
 Expected: PASS — including every pre-existing MemoryPage test.
 
-Append the badge rule to `packages/frontend/dsh-balbes-admin/src/styles.css`:
+In `packages/frontend/dsh-balbes-admin/src/styles.css`, the tab rules arrived with Task 9 but this task is their first consumer, and `.memory-tab` declares **no** `color` — buttons do not inherit it, so the UA `buttontext` system colour applies and the tab bar is unreadable (`buttontext` resolves to black under the default light UA scheme: 1.11:1 on `--bg #0e1116`). Follow the file's own convention for inactive controls (`.nav-item`, `.ws-tab`: inactive `--text-dim`, hover/active `--text`) and give both badge states an explicit, contrast-checked pair:
 
 ```css
-.memory-tab-count { margin-left: 6px; padding: 0 6px; border-radius: 8px; background: rgba(255, 255, 255, 0.25); font-size: 12px; }
+.memory-tab { background: transparent; border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; cursor: pointer; color: var(--text-dim); }
+.memory-tab:hover { color: var(--text); }
+.memory-tab-active { background: var(--accent); color: #fff; border-color: var(--accent); }
+/* Inactive tab: dark digit on the accent pill (5.9:1). Active tab: the button is already
+   the accent, so the chip inverts to a dark pill with light text (16:1). */
+.memory-tab-count { margin-left: 6px; padding: 0 6px; border-radius: 8px; background: var(--accent); color: var(--bg); font-size: 12px; }
+.memory-tab-active .memory-tab-count { background: var(--bg); color: var(--text); }
 ```
+
+The active tab's own label stays white on `var(--accent)`, exactly like `.btn`: that pair is the app's existing primary-button convention, and changing it here would make the memory tabs the odd ones out.
 
 - [ ] **Step 5: Commit**
 
