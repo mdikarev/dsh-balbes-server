@@ -520,12 +520,18 @@ describe.skipIf(!realEnabled)("REAL extraction composition (fake Bot API + LLM s
   const EXTRACTION_PROPOSAL_TEXT = "Балбес: smoke-задача p10g доходит до очереди ревью";
   const EXTRACTION_DONE_REPLY = "предложил";
   const EXTRACTION_CHAT_REPLY = "привет";
+  const EXTRACTION_SECRET_TASK_PROMPT = "Прочитай extraction-smoke.txt и скажи, что там про ключ";
+  const EXTRACTION_SECRET_TASK_REPLY = "ключ не сохраняю";
+  /** A token the p10a detector matches (provider-key + assignment rules). */
+  const EXTRACTION_SECRET_TEXT = "api_key = sk-live-1234567890abcdef";
 
   /**
    * p10g end to end: a task that does real tool work triggers the service
    * extraction turn, whose `propose_memory` call lands a proposal in the review
    * queue with the channel provenance and NOT in memory; a chat-only task
-   * spends exactly one model request, so no extraction turn happened.
+   * spends exactly one model request, so no extraction turn happened; a repeat
+   * of the same task stages nothing (dedup) and a secret-shaped candidate is
+   * refused by the p10a detector.
    */
   it("extraction proposes after tool work, and a chat-only task proposes nothing", async () => {
     if (home === undefined) throw new Error("beforeAll did not initialize home");
@@ -595,6 +601,16 @@ describe.skipIf(!realEnabled)("REAL extraction composition (fake Bot API + LLM s
         ((body as { tools?: Array<{ name?: string }> }).tools ?? []).map((tool) => tool.name ?? "");
       const isExtractionRequest = (call: StubCall): boolean =>
         JSON.stringify(call.body.messages ?? []).includes("Служебный шаг после успешной задачи");
+      /**
+       * The service turn's own request: the directive alone is not enough. The
+       * directive message is durable session history, so every LATER task-turn
+       * request carries it too; only the service turn's surface offers
+       * `propose_memory` (the task surface offers `remember` instead), which is
+       * what makes a request-count guard wait for the turn instead of matching
+       * the task's own two requests.
+       */
+      const isServiceTurnRequest = (call: StubCall): boolean =>
+        isExtractionRequest(call) && toolNames(call.body).includes("propose_memory");
       const extractionCall = await waitFor(
         () => llm.calls.find(isExtractionRequest),
         "the extraction turn's model request"
@@ -660,6 +676,71 @@ describe.skipIf(!realEnabled)("REAL extraction composition (fake Bot API + LLM s
       expect(llm.calls.length - callsBefore).toBe(1);
       const pendingAfter = (await reviewList()).map((proposal) => proposal.id).sort();
       expect(pendingAfter).toEqual(pendingBefore);
+
+      // (f) dedup: the SAME task prompt with the SAME proposal text must stage
+      // nothing new — the service turn reads the real dedup index, sees the
+      // pending proposal and answers `duplicate` instead of proposing again.
+      //
+      // FRESH `from`: this task's answer text is identical to the first task's,
+      // so a stale snapshot would match the old message instantly. The guard
+      // snapshot is taken before the task is enqueued (never after the answer:
+      // the service turn's first request may already be in flight by then).
+      const fromDedup = server.outbound.length;
+      const serviceTurnBeforeDedup = llm.calls.filter(isServiceTurnRequest).length;
+      const pendingBeforeDedup = (await reviewList()).map((proposal) => proposal.id).sort();
+      llm.setScript([
+        { toolCall: { name: "read", arguments: JSON.stringify({ file_path: "extraction-smoke.txt" }) } },
+        { text: EXTRACTION_TASK_REPLY },
+        { toolCall: { name: "propose_memory", arguments: JSON.stringify({ text: EXTRACTION_PROPOSAL_TEXT, type: "fact", tags: ["p10g"] }) } },
+        { text: EXTRACTION_DONE_REPLY }
+      ]);
+      server.enqueueMessage({ fromId: OWNER_USER_ID, text: EXTRACTION_TASK_PROMPT });
+      await waitForOutbound(
+        (entry) => entry.method === "sendMessage" && entry.body.text === EXTRACTION_TASK_REPLY,
+        "the dedup task answer",
+        fromDedup,
+        180_000
+      );
+      // The service turn spends TWO of its own requests: the propose request and
+      // the closing one that replays the `duplicate` tool result.
+      await waitFor(
+        () => (llm.calls.filter(isServiceTurnRequest).length >= serviceTurnBeforeDedup + 2 ? true : undefined),
+        "the dedup extraction turn to close"
+      );
+      const pendingAfterDedup = (await reviewList()).map((proposal) => proposal.id).sort();
+      expect(pendingAfterDedup).toEqual(pendingBeforeDedup);
+
+      // (g) secret candidate: the service turn calls `propose_memory` with a
+      // text the p10a detector matches; the store refuses it and nothing reaches
+      // the review queue.
+      //
+      // WAIVER (controller ruling): the spec's "counter in the journal" half of
+      // this leg is waived — the daemon logs warn/error by default, so the `info`
+      // counter line written by dsh-balbes-memory-context cannot be read from the
+      // spawned process. The observable claim is "no proposal appears", which
+      // this leg asserts; the counters stay covered by the layer unit tests.
+      const fromSecret = server.outbound.length;
+      const serviceTurnBeforeSecret = llm.calls.filter(isServiceTurnRequest).length;
+      const pendingBeforeSecret = (await reviewList()).map((proposal) => proposal.id).sort();
+      llm.setScript([
+        { toolCall: { name: "read", arguments: JSON.stringify({ file_path: "extraction-smoke.txt" }) } },
+        { text: EXTRACTION_SECRET_TASK_REPLY },
+        { toolCall: { name: "propose_memory", arguments: JSON.stringify({ text: EXTRACTION_SECRET_TEXT, type: "fact", tags: ["p10g"] }) } },
+        { text: EXTRACTION_DONE_REPLY }
+      ]);
+      server.enqueueMessage({ fromId: OWNER_USER_ID, text: EXTRACTION_SECRET_TASK_PROMPT });
+      await waitForOutbound(
+        (entry) => entry.method === "sendMessage" && entry.body.text === EXTRACTION_SECRET_TASK_REPLY,
+        "the secret-candidate task answer",
+        fromSecret,
+        180_000
+      );
+      await waitFor(
+        () => (llm.calls.filter(isServiceTurnRequest).length >= serviceTurnBeforeSecret + 2 ? true : undefined),
+        "the secret-candidate extraction turn to close"
+      );
+      const pendingAfterSecret = (await reviewList()).map((proposal) => proposal.id).sort();
+      expect(pendingAfterSecret).toEqual(pendingBeforeSecret);
     } finally {
       await stopServer();
     }

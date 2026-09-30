@@ -195,6 +195,27 @@ describe("agentTask memory extraction", () => {
     expect(state.warnings).toEqual([]);
   });
 
+  it("settles the task answer before the service turn finishes", async () => {
+    const seat = extractionSeat();
+    const state = makeDeps({ extraction: seat.handle, toolCall: true });
+    const runner = createAgentTaskRunner(state.deps);
+
+    const result = await runner.run(REF, "сделай работу");
+
+    // The caller's await resumed with the service turn already STARTED but not
+    // finished: `begin` ran synchronously inside `runExtractionTurn`, while
+    // `end` waits on the turn's own awaits. The fake's `whenIdle` yields (an
+    // async function returning an already-resolved promise), so the order is
+    // deterministic: reversing it in src (awaiting the extraction turn before
+    // `task.resolve`) makes `end` 1 here and turns this test red.
+    expect(seat.calls.begin).toBe(1);
+    expect(seat.calls.end).toBe(0);
+    expect(result).toMatchObject({ ok: true, text: "answer 1" });
+
+    await waitForServiceTurn(seat);
+    expect(seat.calls.end).toBe(1);
+  });
+
   it("does not extract when the task used no tool", async () => {
     const seat = extractionSeat();
     const state = makeDeps({ extraction: seat.handle, toolCall: false });
@@ -306,5 +327,54 @@ describe("agentTask memory extraction", () => {
     expect(seat.calls.end).toBe(1);
     const next = await runner.run(REF, "следующая задача");
     expect(next.ok).toBe(true);
+  });
+
+  it("queues the next task while the service turn is still running", async () => {
+    const seat = extractionSeat();
+    const state = makeDeps({ extraction: seat.handle, toolCall: true });
+    const runner = createAgentTaskRunner(state.deps);
+
+    const first = await runner.run(REF, "сделай работу");
+    expect(first).toMatchObject({ ok: true, text: "answer 1" });
+    // The service turn is in flight: the workspace is still busy, so the next
+    // task must queue instead of interleaving as a second turn.
+    expect(seat.calls.begin).toBe(1);
+    expect(seat.calls.end).toBe(0);
+
+    const secondPromise = runner.run(REF, "следующая задача");
+    await waitForServiceTurn(seat);
+    const second = await secondPromise;
+
+    expect(second).toMatchObject({ ok: true, text: "answer 3" });
+    // Exactly one followup per task and one for the directive, in order: the
+    // second task was serialized AFTER the service turn, never inside it.
+    expect(state.handle.calls).toEqual(["сделай работу", seat.calls.messages[0], "следующая задача"]);
+    expect(seat.calls.begin).toBe(1);
+  });
+
+  it("contains a reset landing during the extraction turn and starts a fresh agent", async () => {
+    const seat = extractionSeat();
+    let runner!: ReturnType<typeof createAgentTaskRunner>;
+    const state = makeDeps({
+      extraction: seat.handle,
+      toolCall: true,
+      onCall: (index) => {
+        if (index === 2) void runner.reset(REF);
+      }
+    });
+    runner = createAgentTaskRunner(state.deps);
+
+    const result = await runner.run(REF, "сделай работу");
+    expect(result).toMatchObject({ ok: true, text: "answer 1" });
+
+    await waitForServiceTurn(seat);
+
+    // The retired path still restores the surface (`finally`), and reset alone
+    // owns the disposal — the extraction turn must not dispose the handle twice.
+    expect(seat.calls.end).toBe(1);
+    expect(state.handle.disposed).toBe(true);
+    const next = await runner.run(REF, "новая задача");
+    expect(next.ok).toBe(true);
+    expect(state.creates()).toBe(2);
   });
 });
