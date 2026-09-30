@@ -1554,6 +1554,19 @@ const EXTRACTION_CHAT_REPLY = "привет";
     const llm = requireStub();
     const token = await bootServer();
     try {
+      // (a0) the fresh home owns no Telegram credential and the fake Bot API
+      // can deliver nothing until the owner path enables it: token to the
+      // credential store, allowlist, polling started. The shared suite's
+      // scenario 1 does the same; this file owns its own home and cannot
+      // inherit that store.
+      const saved = await tgPost(
+        "/api/telegram/save",
+        { token: BOT_TOKEN, allowedUserId: OWNER_USER_ID, enabled: true },
+        token
+      );
+      expect(saved.status, saved.text).toBe(200);
+      await waitForConnected(token, true);
+
       // (a) the agent home is the active workspace for this scenario
       const from = server.outbound.length;
       const menu = await openMenu(from);
@@ -1595,8 +1608,14 @@ const EXTRACTION_CHAT_REPLY = "привет";
       // write memory immediately; the task turn is the mirror image.
       const toolNames = (body: unknown): string[] =>
         ((body as { tools?: Array<{ name?: string }> }).tools ?? []).map((tool) => tool.name ?? "");
-      const extractionCall = llm.calls.find((call) =>
-        JSON.stringify(call.body.messages ?? []).includes("Служебный шаг после успешной задачи")
+      const isExtractionRequest = (call: StubCall): boolean =>
+        JSON.stringify(call.body.messages ?? []).includes("Служебный шаг после успешной задачи");
+      // The task promise settles BEFORE the service turn (spec step 2), so the
+      // extraction request may still be in flight when the answer is asserted:
+      // wait for it (the same bounded-wait discipline Task 3 pinned).
+      const extractionCall = await waitFor(
+        () => llm.calls.find(isExtractionRequest),
+        "the extraction turn's model request"
       );
       expect(extractionCall, "the extraction turn's model request").toBeDefined();
       expect(toolNames(extractionCall!.body)).toContain("propose_memory");
@@ -1626,6 +1645,14 @@ const EXTRACTION_CHAT_REPLY = "привет";
 
       // (e) a chat-only task spends exactly ONE model request (an extraction
       // turn would spend another) and stages nothing
+      // The service turn's CLOSING model request is issued right after the
+      // proposal, and a count that still has it in flight would charge it to the
+      // chat task. The turn ends with a request that replays the
+      // `propose_memory` tool result, so wait for that second extraction request.
+      await waitFor(
+        () => (llm.calls.filter(isExtractionRequest).length >= 2 ? true : undefined),
+        "the extraction turn to close"
+      );
       const pendingBefore = (
         (await post(`${baseUrl()}/api/memory/review/list`, { status: ["proposed"] }, token)).json as {
           proposals: unknown[];
