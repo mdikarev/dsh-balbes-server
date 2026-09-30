@@ -17,7 +17,9 @@
   `models.catalog`, `models.save`, `models.delete`, `models.default`,
   `telegram.status`,
   `telegram.save`, `telegram.test`, `telegram.disable`, `telegram.clear-token`,
-  `sessions.list`, `sessions.read`, `memory.list`, `memory.save`, `memory.delete`.
+  `sessions.list`, `sessions.read`, `memory.list`, `memory.save`, `memory.delete`,
+  `memory.propose`, `memory.review/list`, `memory.review/approve`,
+  `memory.review/reject`.
 - Вне scope: статика SPA (не API), внутренние сервисные интерфейсы Cordis
   (в т.ч. сервис `balbesModels` и командная поверхность Telegram-канала),
   streaming-доставка ответов модели (Telegram отправляет финальные сообщения и
@@ -433,7 +435,52 @@
 - errors: 400 (`bad-request`: нет/пустой `id`), 401, 500, 503 (`memory-unavailable`)
 - notes: идемпотентна: повторное удаление отвечает `{deleted: false}`; других побочных эффектов нет.
 
+### memory.propose — предложить запись памяти (шов пайплайна)
+- method: POST
+- path: /api/memory/propose
+- auth: bearer
+- request: `{scope: {kind: "global"} | {kind: "project", name: string}, type: "fact"|"preference"|"decision"|"note", text: string, tags?: string[], originRef?: string}`
+- response: `{proposal: MemoryProposal}`
+- errors: 400 (`bad-request`: форма тела/scope), 400 (`invalid-record`/`invalid-scope` при неверном значении, `secret-detected`: текст похож на секрет — ничего не пишется), 401, 500 (`internal`), 503 (`memory-unavailable`)
+- notes: сервер принудительно пишет `origin: "agent"` и `status: "proposed"`; значения `origin`/`status`/`decided*` из тела игнорируются, поля `pinned` в контракте нет вовсе. Предложение живёт в `memory_proposals` и не появляется в `memories`, поэтому доставке не видно.
+
+### memory.review/list — очередь ревью предложенных записей
+- method: POST
+- path: /api/memory/review/list
+- auth: bearer
+- request: `{scope?: {kind: "global"} | {kind: "project", name: string}, type?: "fact"|"preference"|"decision"|"note", tag?: string, status?: ("proposed"|"accepted"|"rejected")[], limit?: number, offset?: number}`
+- response: `{proposals: MemoryProposal[], policy: MemoryAutonomyPolicy}`
+- errors: 400 (`bad-request`: форма тела/scope/фильтров), 400 (`invalid-filter`/`invalid-scope` при неверном значении), 401, 500 (`internal`), 503 (`memory-unavailable`)
+- notes: FIFO (`proposedAt ASC` — старое предложение не голодает), лимиты сервисные (по умолчанию 100, максимум 500); без `status` отдаются только `proposed`, явный `status` показывает решённые. `policy` — константа сервера и единый источник описания автономии для UI.
+
+### memory.review/approve — одобрить предложение (промоушен в запись)
+- method: POST
+- path: /api/memory/review/approve
+- auth: bearer
+- request: `{id: string, type?: "fact"|"preference"|"decision"|"note", text?: string, tags?: string[], pinned?: boolean}` (патч необязателен)
+- response: `{proposal: MemoryProposal, record: MemoryRecord}`
+- errors: 400 (`bad-request`: форма тела/пустой `id`), 400 (`secret-detected`/`invalid-record`), 400 (`invalid-status`: предложение уже решено), 401, 404 (`not-found`), 500, 503 (`memory-unavailable`)
+- notes: промоушен атомарен — запись в `memories` (провенанс предложившего
+  сохраняется: `origin: "agent"`, `originRef` из предложения) и пометка
+  предложения `accepted` идут одной транзакцией; ошибка откатывает её, и
+  предложение остаётся `proposed`. Патч меняет только содержание
+  (`type`/`text`/`tags`) и `pinned`; `decidedEdit` истинно только при изменении
+  содержания.
+
+### memory.review/reject — отклонить предложение
+- method: POST
+- path: /api/memory/review/reject
+- auth: bearer
+- request: `{id: string (непустой)}`
+- response: `{proposal: MemoryProposal}`
+- errors: 400 (`bad-request`: нет/пустой `id`), 400 (`invalid-status`: предложение уже решено), 401, 404 (`not-found`), 500, 503 (`memory-unavailable`)
+- notes: строка сохраняется как аудит (`status: "rejected"`, `decidedAt`, `decidedBy: "owner"`), запись в `memories` не создаётся; обратных переходов нет — повторное решение всегда `invalid-status`.
+
 `MemoryRecord`: `id`, `scope`, `type`, `tags`, `pinned`, `origin` (`"owner"|"agent"`), `originRef: string | null`, `createdAt`/`updatedAt` (ISO). Компиляторный SoT — `packages/contracts/src/index.ts`.
+
+`MemoryProposal`: `id`, `scope`, `type`, `text`, `tags`, `origin` (в v1 всегда `"agent"`), `originRef: string | null`, `status` (`"proposed"|"accepted"|"rejected"`), `proposedAt`, `decidedAt: string | null`, `decidedBy: string | null` (в v1 всегда `"owner"`), `decidedEdit: boolean`, `memoryId: string | null` (промоутированная запись). `MemoryAutonomyPolicy`: `immediate: ("owner"|"remember")[]`, `review: ("pipeline")[]`, `autoApprove: "none"`.
+
+Коды ошибок сервиса памяти: `secret-detected`, `invalid-record`, `invalid-scope`, `invalid-filter`, `invalid-query`, `invalid-status`, `not-found`. `MemoryRecord` не меняется: у истины нет статуса ревью.
 
 ## Rules & invariants
 
