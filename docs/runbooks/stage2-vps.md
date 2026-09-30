@@ -792,7 +792,7 @@ node --no-warnings -e 'const{DatabaseSync}=require("node:sqlite");const db=new D
 # бэкап перед миграцией: имя файла — прежняя версия схемы, поэтому у базы с v2
 # это memory.sqlite.bak-v2, а у старой v1 — memory.sqlite.bak-v1
 # (на новой БД апгрейда нет, поэтому файла не будет — это не ошибка)
-ls -l "$HOME/.dsh/storages/memory.sqlite.bak-v2" "$HOME/.dsh/storages/memory.sqlite.bak-v1" 2>/dev/null || echo "бэкапа нет (новая БД) — ожидаемо"
+ls -l "$HOME/.dsh/storages/memory.sqlite.bak-v2" 2>/dev/null || ls -l "$HOME/.dsh/storages/memory.sqlite.bak-v1" 2>/dev/null || echo "бэкапа нет (новая БД) — ожидаемо"
 # ожидается: строка бэкапа с прежней версией базы; иначе «бэкапа нет (новая БД) — ожидаемо»
 # в журнале при этом одна строка info без текста предложений:
 #   «balbes-memory: migration removed N rejected proposal(s)» — она печатается,
@@ -1388,7 +1388,7 @@ HTTP-ручек он не добавляет и сам схему памяти �
 Инструмент `remember` (p10e) — часть того же плагина: новых пакетов, миграций и
 HTTP-ручек он не добавляет, поэтому отдельного шага обновления у него тоже нет.
 Ревью предложений (p10f) — четыре ручки пакета `dsh-balbes-memory-admin`; новых
-пакетов у них нет, но появляется миграция схемы v1→v2 (см. «Миграции памяти»).
+пакетов у них нет, но появляются миграции схемы v2 и v3 (см. «Миграции памяти»).
 
 ### Миграции памяти
 
@@ -1784,7 +1784,7 @@ Web-агента: `bash`, `web_fetch`, `skill`, субагенты и остал
 
 ```bash
 sudo systemctl stop dsh-balbes
-cp "$HOME/.dsh/storages/memory.sqlite.bak-v1" "$HOME/.dsh/storages/memory.sqlite"
+cp "$HOME/.dsh/storages/memory.sqlite.bak-v2" "$HOME/.dsh/storages/memory.sqlite"
 rm -f "$HOME/.dsh/storages/memory.sqlite-wal" "$HOME/.dsh/storages/memory.sqlite-shm"
 sudo systemctl start dsh-balbes
 ```
@@ -1867,9 +1867,9 @@ ls -l "$HOME/.dsh/storages/memory.sqlite"*
 - `storages/memory.sqlite` — долговременная память: SQLite-БД плагина
   `dsh-balbes-memory` (WAL-режим). Перед миграцией схемы рядом создаётся
   предмиграционный бэкап `storages/memory.sqlite.bak-v<прежняя версия>`;
-  на свежей БД переход 0→2 идёт без бэкапа, поэтому `bak-v1` появляется только
-  при апгрейде уже существовавшей v1-базы, а не после первой миграции как
-  таковой;
+  на свежей БД переход 0→3 идёт без бэкапа, поэтому файл появляется только при
+  апгрейде уже существовавшей базы (`.bak-v2` у v2, `.bak-v1` у старой v1), а не
+  после первой миграции как таковой;
 - `balbes/ui/` — собранный SPA админки, который раздаёт сервер;
 - `profiles/balbes/cordis.patch.yml` — **настройки dsh на 0.2.0**: базовый
   список плагинов профиля плюс верхнеуровневые записи `- id: …` с

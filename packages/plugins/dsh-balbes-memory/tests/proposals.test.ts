@@ -241,7 +241,8 @@ describe("balbesMemory proposals", () => {
       decidedEdit: false,
       memoryId: null
     });
-    expect(decided.decidedAt).not.toBeNull();
+    expect(decided.decidedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(decided.decidedAt! >= proposal.proposedAt).toBe(true);
     // Строки больше нет ни в общем списке, ни по id, ни под фильтром rejected.
     expect(await service.getProposal(proposal.id)).toBeUndefined();
     expect(await service.listProposals({ status: ["rejected"] })).toEqual([]);

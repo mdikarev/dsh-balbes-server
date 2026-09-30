@@ -231,6 +231,20 @@ export const MIGRATIONS: readonly Migration[] = [
 ];
 ```
 
+**As-built отклонения (внесены по итогам ревью, коммит `a190f18`):**
+
+- v3 — не голый `db.exec`, а хелпер `purgeLegacyRejectedProposals`: он сначала
+  проверяет наличие ОБЕИХ таблиц (`memories` и `memory_proposals`) в
+  `sqlite_master` и при отсутствии любой возвращает 0, оставляя отказ
+  пост-миграционному `validateMemorySchema` (иначе битая база на v1/v2 падала
+  сырой ошибкой SQLite вместо `MemoryError`);
+- `Migration.up` теперь может возвращать число изменённых строк, `migrate`
+  возвращает `{version, changes}`, `openMemoryDatabase` — `{db, changes}`, а
+  плагин печатает одну строку `info` со счётчиком удалённых легаси-строк
+  (требование канона «количество удалённых строк логируется»);
+- тесты версий/вызовов обновлены механически (`LATEST_VERSION` 2 → 3,
+  `openMemoryDatabase(...).db`).
+
 - [ ] **Step 4: Прогнать тесты — убедиться, что проходят**
 
 Run: `cd packages/plugins/dsh-balbes-memory && ./node_modules/.bin/vitest run tests/schema.test.ts`
