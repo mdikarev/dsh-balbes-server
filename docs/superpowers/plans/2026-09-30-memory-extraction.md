@@ -1590,6 +1590,24 @@ const EXTRACTION_CHAT_REPLY = "привет";
         180_000
       );
 
+      // (b2) the model request of the service turn proves the surface switch on
+      // the REAL registry: during extraction the agent may propose and cannot
+      // write memory immediately; the task turn is the mirror image.
+      const toolNames = (body: unknown): string[] =>
+        ((body as { tools?: Array<{ name?: string }> }).tools ?? []).map((tool) => tool.name ?? "");
+      const extractionCall = llm.calls.find((call) =>
+        JSON.stringify(call.body.messages ?? []).includes("Служебный шаг после успешной задачи")
+      );
+      expect(extractionCall, "the extraction turn's model request").toBeDefined();
+      expect(toolNames(extractionCall!.body)).toContain("propose_memory");
+      expect(toolNames(extractionCall!.body)).not.toContain("remember");
+      const taskCall = llm.calls.find((call) =>
+        JSON.stringify(call.body.messages ?? []).includes(EXTRACTION_TASK_PROMPT)
+      );
+      expect(taskCall, "the task turn's model request").toBeDefined();
+      expect(toolNames(taskCall!.body)).toContain("remember");
+      expect(toolNames(taskCall!.body)).not.toContain("propose_memory");
+
       // (c) the proposal is staged for review with the channel provenance
       const staged = await waitFor(
         async () => {
