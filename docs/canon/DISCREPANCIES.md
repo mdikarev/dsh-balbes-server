@@ -20,15 +20,15 @@ _(нет открытых расхождений)_
 - **canon_paths:** docs/canon/ARCHITECTURE.md, docs/canon/API_CONTRACTS.md
 - **code_paths:** packages/plugins/dsh-balbes-memory-context/src/types.ts, packages/plugins/dsh-balbes-memory-context/src/render.ts, packages/plugins/dsh-balbes-memory-context/src/context.ts, packages/plugins/dsh-balbes-memory-context/src/metrics.ts
 - **evidence:** ARCHITECTURE.md (Memory layer, «Метрики попаданий и пользы (p10h)») перечислял в событии доставки
-  «число опущенных бюджетом записей», хотя `MemoryDeliveryEvent` (types.ts:123-125) нёс `omitted` только как поле
+  «число опущенных бюджетом записей», хотя `MemoryDeliveryEvent` (types.ts:120-127) нёс `omitted` только как поле
   события, которое не читал ни снимок, ни ручка, ни журнал; решение ревью — убрать `omitted` из события и
-  `RenderedBlock`, а текст футеров («… ещё N …») считать локально (render.ts:89, 108), поэтому canon приведён к
+  `RenderedBlock`, а текст футеров («… ещё N …») считать локально (render.ts:89, 109), поэтому canon приведён к
   событию из id и размеров блоков. Там же глосса `turns` из дизайна (spec L223: «сколько ходов дали доставку»)
   расходилась с кодом: `recordDelivery` инкрементит `turns` на каждом успешном `prepare`, включая пустой
-  (metrics.ts:172, 175), поэтому canon и `memory.metrics` теперь прямо говорят, что `turns=5, deliveries=0`
+  (metrics.ts:177, 180), поэтому canon и `memory.metrics` теперь прямо говорят, что `turns=5, deliveries=0`
   согласован. Дополнительно canon утверждал безграничный рост `dropped`, тогда как новое правило ревью ограничивает
-  его `MAX_TRACKED_RECORDS` (metrics.ts:148-151), и зафиксировано численное совпадение
-  `recallDelivered`/`recallQueries` (metrics.ts:199-200). Сторона расхождения однозначна — canon расходился с
+  его `MAX_TRACKED_RECORDS` (metrics.ts:154), и зафиксировано численное совпадение
+  `recallDelivered`/`recallQueries` (metrics.ts:204-205). Сторона расхождения однозначна — canon расходился с
   кодом, вопрос владельцу не требовался (`docs_stale`); canon пере-валидирован (`doc-canon validate`: ok, exit 0).
 - **finding_ids:** F2, F3, F6, F8
 
