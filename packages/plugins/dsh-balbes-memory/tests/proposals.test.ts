@@ -1,9 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { openMemoryDatabase } from "../src/schema.js";
+import { createProposalStore } from "../src/proposals.js";
 import { createMemoryService } from "../src/service.js";
 import type { BalbesMemoryService } from "../src/types.js";
 
@@ -71,9 +72,18 @@ describe("balbesMemory proposals", () => {
   });
 
   it("lists pending proposals FIFO and filters by scope, type, tag and limit", async () => {
-    const first = await service.propose({ ...proposalDraft, text: "first", tags: ["ops"] });
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    await service.propose({ ...proposalDraft, text: "second", type: "note", scope: { kind: "project", name: "alpha" } });
+    // Ordering must not depend on the wall clock: the tie-break is a random
+    // UUID, so pin `proposed_at` with fake timers instead of sleeping.
+    vi.useFakeTimers();
+    let first;
+    try {
+      vi.setSystemTime(new Date("2026-09-30T00:00:00.000Z"));
+      first = await service.propose({ ...proposalDraft, text: "first", tags: ["ops"] });
+      vi.setSystemTime(new Date("2026-09-30T00:00:05.000Z"));
+      await service.propose({ ...proposalDraft, text: "second", type: "note", scope: { kind: "project", name: "alpha" } });
+    } finally {
+      vi.useRealTimers();
+    }
 
     const pending = await service.listProposals();
     expect(pending.map((entry) => entry.text)).toEqual(["first", "second"]);
@@ -133,6 +143,15 @@ describe("balbesMemory proposals", () => {
     expect(pinned.proposal.decidedEdit).toBe(false);
   });
 
+  it("does not count a reordered tag list as an edit", async () => {
+    const proposal = await service.propose({ ...proposalDraft, tags: ["alpha", "beta"] });
+    const { proposal: decided, record } = await service.approve(proposal.id, { tags: ["beta", "alpha"] });
+
+    expect(decided.decidedEdit).toBe(false);
+    expect(record.tags).toEqual(["alpha", "beta"]);
+    expect(proposal.tags).toEqual(["alpha", "beta"]);
+  });
+
   it("rolls the whole promotion back when the edited text looks like a secret", async () => {
     const proposal = await service.propose(proposalDraft);
     await expect(service.approve(proposal.id, { text: "api_key: xyz" })).rejects.toMatchObject({
@@ -142,6 +161,56 @@ describe("balbesMemory proposals", () => {
     expect(stillPending?.status).toBe("proposed");
     expect(stillPending?.memoryId).toBeNull();
     expect(await service.count()).toBe(0);
+  });
+
+  it("rolls the memory insert back when the promotion fails inside the transaction", async () => {
+    // The secret case above throws BEFORE `BEGIN`, so on its own it would stay
+    // green even if the whole transaction disappeared. This test fails inside
+    // the transaction and pins the guarantee: no memory row, no decision, and
+    // the connection is left usable.
+    const proposal = await service.propose(proposalDraft);
+    const failing = createProposalStore(db, {
+      insertMemoryRecord() {
+        throw new Error("insert boom");
+      },
+      loadRecord: () => undefined
+    });
+    await expect(failing.approve(proposal.id)).rejects.toThrowError("insert boom");
+
+    expect(await service.count()).toBe(0);
+    expect((await service.getProposal(proposal.id))?.status).toBe("proposed");
+
+    // A leaked transaction would make the next decision fail.
+    const { record } = await service.approve(proposal.id);
+    expect(record.text).toBe(proposalDraft.text);
+    expect(await service.count()).toBe(1);
+  });
+
+  it("rolls a partial memory write back when the truth-table writer fails midway", async () => {
+    // Stronger than the test above: this injected writer really writes a row (as
+    // `insertRecordRow` does) before throwing, so it only passes if `approve` wraps
+    // the promotion in a transaction. Delete the BEGIN/COMMIT/ROLLBACK block and
+    // the partial row survives, failing `count()` below.
+    const proposal = await service.propose(proposalDraft);
+    const failing = createProposalStore(db, {
+      insertMemoryRecord(id) {
+        const now = new Date().toISOString();
+        db.prepare(
+          "INSERT INTO memories (id, scope_kind, scope_name, type, text, pinned, origin, origin_ref, created_at, updated_at) " +
+            "VALUES (?, 'global', NULL, 'fact', ?, 0, 'agent', NULL, ?, ?)"
+        ).run(id, proposalDraft.text, now, now);
+        throw new Error("insert boom after write");
+      },
+      loadRecord: () => undefined
+    });
+    await expect(failing.approve(proposal.id)).rejects.toThrowError("insert boom after write");
+
+    expect(await service.count()).toBe(0);
+    expect((await service.getProposal(proposal.id))?.status).toBe("proposed");
+
+    const { record } = await service.approve(proposal.id);
+    expect(await service.count()).toBe(1);
+    expect(record.text).toBe(proposalDraft.text);
   });
 
   it("keeps the audit row on rejection without creating a record", async () => {
@@ -174,10 +243,23 @@ describe("balbesMemory proposals", () => {
   });
 
   it("widens the queue to decided proposals only when status is explicit", async () => {
-    const pending = await service.propose({ ...proposalDraft, text: "still pending" });
-    const second = await service.propose({ ...proposalDraft, text: "to reject", type: "note" });
+    // Same clock discipline as the FIFO test: the queue order is asserted
+    // exactly, so `proposed_at` must not be left to millisecond luck.
+    vi.useFakeTimers();
+    let pending;
+    let second;
+    let accepted;
+    try {
+      vi.setSystemTime(new Date("2026-09-30T01:00:00.000Z"));
+      pending = await service.propose({ ...proposalDraft, text: "still pending" });
+      vi.setSystemTime(new Date("2026-09-30T01:00:05.000Z"));
+      second = await service.propose({ ...proposalDraft, text: "to reject", type: "note" });
+      vi.setSystemTime(new Date("2026-09-30T01:00:10.000Z"));
+      accepted = await service.propose({ ...proposalDraft, text: "to accept", tags: ["ops"] });
+    } finally {
+      vi.useRealTimers();
+    }
     await service.reject(second.id);
-    const accepted = await service.propose({ ...proposalDraft, text: "to accept", tags: ["ops"] });
     await service.approve(accepted.id);
 
     expect((await service.listProposals()).map((entry) => entry.id)).toEqual([pending.id]);

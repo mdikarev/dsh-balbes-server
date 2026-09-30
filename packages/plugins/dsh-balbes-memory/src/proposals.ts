@@ -189,9 +189,11 @@ export function createProposalStore(db: DatabaseSync, deps: ProposalWriterDeps):
     if (patch.type !== undefined && patch.type !== proposal.type) return true;
     if (patch.text !== undefined && patch.text !== proposal.text) return true;
     if (patch.tags !== undefined) {
-      const same =
-        patch.tags.length === proposal.tags.length &&
-        patch.tags.every((tag, index) => tag === proposal.tags[index]);
+      // Tags are a SET in the truth table (`memory_tags` PK is (memory_id, tag)
+      // and reads come back ORDER BY tag), so a reordered list is not an edit.
+      const before = [...proposal.tags].sort();
+      const after = [...patch.tags].sort();
+      const same = before.length === after.length && before.every((tag, index) => tag === after[index]);
       if (!same) return true;
     }
     return false;
