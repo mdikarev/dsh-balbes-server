@@ -357,7 +357,7 @@ export function normalizeProposalFilter(filter: unknown): MemoryProposalFilter {
   }
   if (f.tag !== undefined) {
     if (typeof f.tag !== "string") throw new MemoryError("invalid-filter", "tag must be a string");
-    out.tag = normalizeTag(f.tag);
+    out.tag = normalizeTag(f.tag, "invalid-filter");
   }
   if (f.status !== undefined) {
     if (!Array.isArray(f.status)) throw new MemoryError("invalid-filter", "status must be an array");
