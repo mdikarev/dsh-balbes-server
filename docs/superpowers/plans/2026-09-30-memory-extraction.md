@@ -593,7 +593,9 @@ function record(partial: Partial<MemoryRecord> & { id: string; text: string }): 
  * The tools seat keeps its registrations addressable by name, so the surface
  * switch is asserted the way the model sees it: by tool names, not by calls.
  */
-function harness(options: { propose?: boolean; failProposeRegistration?: boolean } = {}) {
+function harness(
+  options: { propose?: boolean; failProposeRegistration?: boolean; failRememberRegistration?: boolean } = {}
+) {
   const registered = new Map<string, unknown>();
   const proposals: unknown[] = [];
   const infos: string[] = [];
@@ -627,11 +629,18 @@ function harness(options: { propose?: boolean; failProposeRegistration?: boolean
           listProposals: async () => []
         })
   };
+  let rememberRegistrations = 0;
   const tools = {
     register: (definition: unknown) => {
       const name = (definition as { name: string }).name;
       if (name === "propose_memory" && options.failProposeRegistration === true) {
         throw new Error("reserved tool name");
+      }
+      if (name === "remember" && options.failRememberRegistration === true) {
+        // The first registration is the attach-time one; the second is the
+        // re-registration from end(), which a dead agent scope rejects.
+        rememberRegistrations += 1;
+        if (rememberRegistrations > 1) throw new Error("INACTIVE_EFFECT");
       }
       registered.set(name, definition);
       return () => {
@@ -721,6 +730,23 @@ describe("extraction seat", () => {
     expect(h.names()).toEqual(["recall", "remember"]);
     expect(() => h.attachment.extraction!.end()).not.toThrow();
     expect(h.names()).toEqual(["recall", "remember"]);
+  });
+
+  it("still logs the counters when the agent scope is already gone", () => {
+    const h = harness({ failRememberRegistration: true });
+    const turn = h.attachment.extraction!;
+    turn.begin();
+    turn.end();
+    // A dead scope must not let end() throw out of the channel's `finally`...
+    expect(() => turn.end()).not.toThrow();
+    // ...the surface degrades honestly (the registration died with the scope)...
+    expect(h.names()).toEqual(["recall"]);
+    // ...and the per-turn record survives, because that is the path it documents.
+    const logged = h.infos.filter((line) => line.includes("extraction"));
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toContain("channel=telegram");
+    expect(logged[0]).toContain("scope=project:alpha");
+    expect(logged[0]).toContain("proposed=0 duplicate=0 secret=0 limit=0");
   });
 });
 ```
@@ -844,7 +870,14 @@ import type {
                 safeDispose(proposeDispose);
                 proposeDispose = undefined;
               }
-              rememberDispose = registerRemember();
+              // The agent scope may already be gone (reset/dispose): registering
+              // into a dead scope throws INACTIVE_EFFECT, and that must neither
+              // escape the turn's `finally` nor swallow the counter line below.
+              try {
+                rememberDispose = registerRemember();
+              } catch {
+                /* the registration died with the scope */
+              }
               logger.info?.(
                 "balbes-memory-context: extraction channel=" + writeContext.channel +
                   " scope=" + scopeTag(scope) +
