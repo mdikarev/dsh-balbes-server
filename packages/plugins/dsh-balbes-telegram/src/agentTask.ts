@@ -20,6 +20,23 @@ import { SessionSeq } from "@deepseek-ai/dsh-session";
  * @deepseek-ai/* is patched or imported beyond these entry helpers.
  */
 
+/**
+ * The producer-declared source kind of the extraction notice (p10g). This
+ * channel owns the message, so it declares its own kind in its own module —
+ * exactly what dsh's merge-extensible `MessageSourceMap` is for — and keeps the
+ * notice shape type-checked: `form` and its required `summary` cannot go
+ * missing or change silently.
+ */
+declare module "@deepseek-ai/dsh-llm" {
+  interface MessageSourceMap {
+    "balbes-memory-extraction": {
+      readonly kind: "balbes-memory-extraction";
+      readonly form: "notice";
+      readonly summary: string;
+    };
+  }
+}
+
 export type WorkspaceRef = { scope: "home" } | { scope: "project"; name: string };
 
 /** The state-mapping key for one workspace ("home" | "project:<name>"). */
@@ -771,13 +788,12 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
           content: [{ type: "text", text: directive }],
           // A producer-declared kind (MessageSourceMap is merge-extensible):
           // the session view renders the directive as context, never as an
-          // owner prompt. The harness's own map has no entry for this kind, so
-          // the source object is asserted while `content` above stays checked.
+          // owner prompt.
           source: {
             kind: "balbes-memory-extraction",
             form: "notice",
             summary: EXTRACTION_NOTICE_SUMMARY
-          } as never
+          }
         }) as never
       );
       await handle.agent.whenIdle();
