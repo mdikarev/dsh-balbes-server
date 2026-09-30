@@ -338,8 +338,8 @@ describe.skipIf(!realEnabled)("REAL composition (memory delivery)", () => {
         "type"
       ]);
       // Приватность: ни текст памяти, ни originRef в снимок не попадают.
-      // Ручка отдаёт снимок трижды (окно, reset и пустое окно после reset) —
-      // сканируем каждый ответ, а не только первый.
+      // Ручка отдаёт снимок четырежды (окно, детальный снимок top:100, reset и
+      // пустое окно после reset) — сканируем каждый ответ, а не только первый.
       const expectPrivate = (label: string, raw: string): void => {
         for (const secret of [coreMarker, pushMarker, rememberMarker, proposalMarker, "originRef"]) {
           expect(raw, label).not.toContain(secret);
@@ -385,6 +385,7 @@ describe.skipIf(!realEnabled)("REAL composition (memory delivery)", () => {
       const recalled = recallDetail.topRecords.find((entry) => entry.id === recalledId);
       expect(recalled, JSON.stringify(recallDetail.topRecords)).toBeDefined();
       expect(recalled!.recallDelivered).toBeGreaterThanOrEqual(1);
+      expectPrivate("recall detail window (top:100)", recallDetailRes.raw);
       // reset закрыл окно: следующий вызов видит пустое окно и сохранённые тоталы.
       const afterReset = await postJson(base + "/api/memory/metrics", {}, token);
       expect(afterReset.status, afterReset.raw).toBe(200);
