@@ -91,23 +91,44 @@ describe("MemoryReviewQueue", () => {
   });
 
   it("rejects after confirmation and refreshes the queue", async () => {
-    const api = makeApi({ proposals: [proposal()], policy: POLICY });
+    // A rejection deletes the proposal row server-side, so the refreshed queue no
+    // longer contains it.
+    let listed = 0;
+    const api = makeApi({ proposals: [proposal()], policy: POLICY }, {
+      listMemoryReview: vi.fn(async () => {
+        listed += 1;
+        return listed === 1 ? { proposals: [proposal()], policy: POLICY } : { proposals: [], policy: POLICY };
+      })
+    });
     render(<MemoryReviewQueue api={api} />);
     fireEvent.click(await screen.findByTestId("memory-review-reject:p-1"));
     fireEvent.click(await screen.findByTestId("memory-review-reject-confirm"));
     await waitFor(() => expect(api.rejectMemoryReview).toHaveBeenCalledWith({ id: "p-1" }));
+    await waitFor(() => expect(screen.queryByTestId("memory-review-row:p-1")).toBeNull());
     expect(api.listMemoryReview).toHaveBeenCalledTimes(2);
   });
 
-  it("shows decided proposals with their verdict when the toggle is on", async () => {
-    const decided = proposal({ id: "p-2", status: "rejected", decidedAt: "2026-09-30T02:00:00.000Z", decidedBy: "owner" });
-    const api = makeApi({ proposals: [decided], policy: POLICY });
+  it("shows only accepted decisions when the toggle is on", async () => {
+    const decided = proposal({
+      id: "p-2",
+      status: "accepted",
+      text: "kept knowledge",
+      decidedAt: "2026-09-30T02:00:00.000Z",
+      decidedBy: "owner"
+    });
+    const api = makeApi({ proposals: [], policy: POLICY }, {
+      listMemoryReview: vi.fn(async (req: MemoryReviewListRequest) =>
+        req.status === undefined ? { proposals: [], policy: POLICY } : { proposals: [decided], policy: POLICY }
+      )
+    });
     render(<MemoryReviewQueue api={api} />);
     fireEvent.click(await screen.findByTestId("memory-review-decided-toggle"));
-    await waitFor(() =>
-      expect(api.listMemoryReview).toHaveBeenCalledWith(expect.objectContaining({ status: ["accepted", "rejected"] }))
-    );
-    expect(await screen.findByTestId("memory-review-status:p-2")).toBeTruthy();
+    expect(await screen.findByText("kept knowledge")).toBeTruthy();
+    const row = await screen.findByTestId("memory-review-row:p-2");
+    expect(row.textContent).toContain("принято");
+    expect(api.listMemoryReview).toHaveBeenCalledWith(expect.objectContaining({ status: ["accepted"] }));
+    // Rejected rows do not exist: a rejection deletes the proposal.
+    expect(screen.queryByText("отклонено")).toBeNull();
   });
 
   it("reports a decision once after a successful approve", async () => {

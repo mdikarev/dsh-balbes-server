@@ -75,7 +75,9 @@ export default function MemoryReviewQueue({
         ...(level.kind === "all" ? {} : { scope: level }),
         ...(type === "all" ? {} : { type }),
         ...(tag.trim() === "" ? {} : { tag: tag.trim() }),
-        ...(showDecided ? { status: ["accepted", "rejected"] as MemoryProposal["status"][] } : {})
+        // Отклонённых предложений в таблице не бывает: отказ удаляет строку,
+        // поэтому «решённые» — это только принятые.
+        ...(showDecided ? { status: ["accepted"] as MemoryProposal["status"][] } : {})
       });
       setProposals(res.proposals);
       setPolicy(res.policy);
