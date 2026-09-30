@@ -90,4 +90,101 @@ describe("balbesMemory proposals", () => {
     expect(await service.getProposal(proposal.id)).toEqual(proposal);
     expect(await service.getProposal("nope")).toBeUndefined();
   });
+
+  it("promotes a proposal on approval and preserves agent provenance", async () => {
+    const proposal = await service.propose({ ...proposalDraft, tags: ["ops"] });
+    const { proposal: decided, record } = await service.approve(proposal.id, { pinned: true });
+
+    expect(decided.status).toBe("accepted");
+    expect(decided.decidedEdit).toBe(false);
+    expect(decided.decidedBy).toBe("owner");
+    expect(decided.decidedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(decided.memoryId).toBe(record.id);
+
+    expect(record.text).toBe(proposalDraft.text);
+    expect(record.origin).toBe("agent");
+    expect(record.originRef).toBe(proposalDraft.originRef);
+    expect(record.tags).toEqual(["ops"]);
+    expect(record.pinned).toBe(true);
+    expect(await service.get(record.id)).toEqual(record);
+  });
+
+  it("applies an edit at approval and records it as edited", async () => {
+    const proposal = await service.propose(proposalDraft);
+    const { proposal: decided, record } = await service.approve(proposal.id, {
+      text: "deploy runs under systemd (verified)",
+      type: "decision",
+      tags: ["ops"]
+    });
+    expect(decided.decidedEdit).toBe(true);
+    expect(record.text).toBe("deploy runs under systemd (verified)");
+    expect(record.type).toBe("decision");
+    expect(record.tags).toEqual(["ops"]);
+    expect(record.origin).toBe("agent");
+  });
+
+  it("does not count identical or pinned-only patches as an edit", async () => {
+    const first = await service.propose(proposalDraft);
+    const identical = await service.approve(first.id, { text: proposalDraft.text });
+    expect(identical.proposal.decidedEdit).toBe(false);
+
+    const second = await service.propose(proposalDraft);
+    const pinned = await service.approve(second.id, { pinned: true });
+    expect(pinned.proposal.decidedEdit).toBe(false);
+  });
+
+  it("rolls the whole promotion back when the edited text looks like a secret", async () => {
+    const proposal = await service.propose(proposalDraft);
+    await expect(service.approve(proposal.id, { text: "api_key: xyz" })).rejects.toMatchObject({
+      code: "secret-detected"
+    });
+    const stillPending = await service.getProposal(proposal.id);
+    expect(stillPending?.status).toBe("proposed");
+    expect(stillPending?.memoryId).toBeNull();
+    expect(await service.count()).toBe(0);
+  });
+
+  it("keeps the audit row on rejection without creating a record", async () => {
+    const proposal = await service.propose(proposalDraft);
+    const decided = await service.reject(proposal.id);
+    expect(decided.status).toBe("rejected");
+    expect(decided.decidedBy).toBe("owner");
+    expect(decided.decidedEdit).toBe(false);
+    expect(decided.memoryId).toBeNull();
+    expect(await service.count()).toBe(0);
+    expect((await service.getProposal(proposal.id))?.status).toBe("rejected");
+  });
+
+  it("refuses a second decision and an unknown id", async () => {
+    const proposal = await service.propose(proposalDraft);
+    await service.reject(proposal.id);
+    await expect(service.approve(proposal.id)).rejects.toMatchObject({ code: "invalid-status" });
+    await expect(service.reject(proposal.id)).rejects.toMatchObject({ code: "invalid-status" });
+    await expect(service.approve("nope")).rejects.toMatchObject({ code: "not-found" });
+    await expect(service.reject("nope")).rejects.toMatchObject({ code: "not-found" });
+  });
+
+  it("clears memoryId when the promoted record is deleted", async () => {
+    const proposal = await service.propose(proposalDraft);
+    const { record } = await service.approve(proposal.id);
+    expect(await service.delete(record.id)).toBe(true);
+    const after = await service.getProposal(proposal.id);
+    expect(after?.status).toBe("accepted");
+    expect(after?.memoryId).toBeNull();
+  });
+
+  it("widens the queue to decided proposals only when status is explicit", async () => {
+    const pending = await service.propose({ ...proposalDraft, text: "still pending" });
+    const second = await service.propose({ ...proposalDraft, text: "to reject", type: "note" });
+    await service.reject(second.id);
+    const accepted = await service.propose({ ...proposalDraft, text: "to accept", tags: ["ops"] });
+    await service.approve(accepted.id);
+
+    expect((await service.listProposals()).map((entry) => entry.id)).toEqual([pending.id]);
+    expect((await service.listProposals({ status: ["rejected"] })).map((entry) => entry.id)).toEqual([second.id]);
+    expect((await service.listProposals({ status: ["accepted"] })).map((entry) => entry.id)).toEqual([accepted.id]);
+    expect((await service.listProposals({ status: ["proposed", "accepted", "rejected"] })).map((entry) => entry.id))
+      .toEqual([pending.id, second.id, accepted.id]);
+    expect((await service.listProposals({ status: ["proposed", "rejected"], tag: "ops" })).length).toBe(0);
+  });
 });

@@ -9,7 +9,7 @@ import type {
 } from "dsh-balbes-contracts";
 import { MemoryError } from "./errors.js";
 import { detectSecret } from "./secrets.js";
-import { normalizeProposalDraft, normalizeProposalFilter } from "./validate.js";
+import { normalizeDecisionPatch, normalizeProposalDraft, normalizeProposalFilter } from "./validate.js";
 import {
   LIMITS,
   type MemoryDecisionPatch,
@@ -177,15 +177,86 @@ export function createProposalStore(db: DatabaseSync, deps: ProposalWriterDeps):
     return rows.map(toProposal);
   }
 
+  const decideProposal = db.prepare(
+    "UPDATE memory_proposals SET status = ?, decided_at = ?, decided_by = ?, decided_edit = ?, memory_id = ? WHERE id = ? AND status = 'proposed'"
+  );
+
+  /** Content-only edit detection: pinning is an owner action, not an edit. */
+  function isContentEdit(
+    proposal: MemoryProposal,
+    patch: MemoryDecisionPatch
+  ): boolean {
+    if (patch.type !== undefined && patch.type !== proposal.type) return true;
+    if (patch.text !== undefined && patch.text !== proposal.text) return true;
+    if (patch.tags !== undefined) {
+      const same =
+        patch.tags.length === proposal.tags.length &&
+        patch.tags.every((tag, index) => tag === proposal.tags[index]);
+      if (!same) return true;
+    }
+    return false;
+  }
+
   async function approve(
     id: string,
-    patch?: MemoryDecisionPatch
+    rawPatch?: MemoryDecisionPatch
   ): Promise<{ proposal: MemoryProposal; record: MemoryRecord }> {
-    throw new MemoryError("invalid-status", "approve is implemented in Task 5");
+    const proposal = load(id);
+    if (proposal === undefined) throw new MemoryError("not-found", "proposal not found: " + id);
+    if (proposal.status !== "proposed") {
+      throw new MemoryError("invalid-status", "proposal is already " + proposal.status + ": " + id);
+    }
+    const patch = normalizeDecisionPatch(rawPatch ?? {});
+    const text = patch.text ?? proposal.text;
+    const secret = detectSecret(text);
+    if (secret !== null) {
+      throw new MemoryError("secret-detected", 'text matches secret rule "' + secret.rule + '"');
+    }
+    const edited = isContentEdit(proposal, patch);
+    const now = new Date().toISOString();
+    // The id is minted here so every post-commit read works on a plain local.
+    const memoryId = randomUUID();
+    db.exec("BEGIN");
+    try {
+      deps.insertMemoryRecord(memoryId, {
+        scope: proposal.scope,
+        type: patch.type ?? proposal.type,
+        text,
+        tags: patch.tags ?? proposal.tags,
+        pinned: patch.pinned ?? false,
+        origin: proposal.origin,
+        originRef: proposal.originRef
+      });
+      const result = decideProposal.run("accepted", now, "owner", edited ? 1 : 0, memoryId, id);
+      if (Number(result.changes) !== 1) {
+        throw new MemoryError("invalid-status", "proposal was decided concurrently: " + id);
+      }
+      db.exec("COMMIT");
+    } catch (error) {
+      // Inside the transaction: the promotion and the decision stand or fall together.
+      db.exec("ROLLBACK");
+      throw error;
+    }
+    const record = deps.loadRecord(memoryId);
+    if (record === undefined) throw new MemoryError("not-found", "memory vanished after promotion: " + memoryId);
+    const decided = load(id);
+    if (decided === undefined) throw new MemoryError("not-found", "proposal vanished after approval: " + id);
+    return { proposal: decided, record };
   }
 
   async function reject(id: string): Promise<MemoryProposal> {
-    throw new MemoryError("invalid-status", "reject is implemented in Task 5");
+    const proposal = load(id);
+    if (proposal === undefined) throw new MemoryError("not-found", "proposal not found: " + id);
+    if (proposal.status !== "proposed") {
+      throw new MemoryError("invalid-status", "proposal is already " + proposal.status + ": " + id);
+    }
+    const result = decideProposal.run("rejected", new Date().toISOString(), "owner", 0, null, id);
+    if (Number(result.changes) !== 1) {
+      throw new MemoryError("invalid-status", "proposal was decided concurrently: " + id);
+    }
+    const decided = load(id);
+    if (decided === undefined) throw new MemoryError("not-found", "proposal vanished after rejection: " + id);
+    return decided;
   }
 
   return { propose, getProposal: async (id) => load(id), listProposals, approve, reject };
