@@ -1,14 +1,12 @@
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, mkdir, cp, rm, readFile, readdir, stat, writeFile } from "node:fs/promises";
-import { existsSync, type Dirent } from "node:fs";
+import { mkdtemp, mkdir, cp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAdminAuth, writeAdminAuth } from "../../../bundles/dsh-balbes-host/src/core.js";
-import { TELEGRAM_COMMANDS } from "../src/commands.js";
 
 /**
  * REAL extraction composition of the Telegram channel (p10g). The harness is
@@ -62,20 +60,10 @@ const FAKE_BOT_API_URL = new URL("./helpers/fake-bot-api.mjs", import.meta.url).
 
 const BOT_TOKEN = "123:FAKE";
 const OWNER_USER_ID = 777_000_123;
-const FOREIGN_USER_ID = OWNER_USER_ID + 1;
 const GROUP_CHAT_ID = -1_000_123_456;
 const BOT_USERNAME = "balbes_test_bot";
 
 const STUB_REPLY = "ok from stub";
-
-/**
- * Bot API methods that are NOT a delivery to a chat: the background identity
- * refresh of `src/index.ts`. Everything else the plugin sends is a delivery,
- * and is asserted as one — a DENY-list, so an unexpected method (a message the
- * owner would actually receive, or a refused call) can never be filtered out
- * of a "nothing was delivered" assertion.
- */
-const NON_DELIVERY_METHODS = new Set(["getMe", "setMyCommands", "setChatMenuButton"]);
 
 interface StubCall {
   path: string;
@@ -159,15 +147,6 @@ interface HttpResult {
   status: number;
   json: unknown;
   text: string;
-}
-
-interface TelegramStateLike {
-  version: number;
-  sessions: Record<string, string>;
-  activeWorkspace?: string;
-  offset?: number;
-  /** Per-workspace ids hidden from the active session list (Task 2). */
-  archived?: Record<string, string[]>;
 }
 
 async function startStubLlm(): Promise<StubLlm> {
@@ -280,101 +259,7 @@ async function waitFor<T>(
   }
 }
 
-/** Read a file that may legitimately be absent (e.g. a cleared credential). */
-async function readIfPresent(path: string): Promise<string> {
-  try {
-    return await readFile(path, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
-    throw error;
-  }
-}
-
-/** True when `value` carries a property NAMED exactly `key` at any depth. */
-function hasKeyDeep(value: unknown, key: string): boolean {
-  if (Array.isArray(value)) return value.some((entry) => hasKeyDeep(entry, key));
-  if (typeof value === "object" && value !== null) {
-    return Object.entries(value as Record<string, unknown>).some(
-      ([name, child]) => name === key || hasKeyDeep(child, key)
-    );
-  }
-  return false;
-}
-
-/**
- * Every file under `dir` whose contents contain `needle`, skipping the
- * credential store (which legitimately holds the token), symlinks, and
- * `node_modules` mirrors of installed packages. Bounded by a file-count and a
- * per-file size cap, and returns the number of files actually read so a caller
- * can assert the scan was not vacuous.
- */
-async function scanTreeForText(
-  dir: string,
-  needle: string
-): Promise<{ scanned: number; skippedLarge: number; hits: string[] }> {
-  const MAX_FILES = 2000;
-  const MAX_BYTES = 2 * 1024 * 1024;
-  const hits: string[] = [];
-  let scanned = 0;
-  let skippedLarge = 0;
-  const stack: string[] = [dir];
-  while (stack.length > 0 && scanned < MAX_FILES) {
-    const current = stack.pop()!;
-    let entries: Dirent[];
-    try {
-      entries = await readdir(current, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (scanned >= MAX_FILES) break;
-      // Never follow symlinks: a link into the dsh install would drag
-      // third-party code (and the whole store) into the scan.
-      if (entry.isSymbolicLink()) continue;
-      const full = join(current, entry.name);
-      if (entry.isDirectory()) {
-        if (entry.name === "node_modules") continue;
-        stack.push(full);
-        continue;
-      }
-      if (!entry.isFile()) continue;
-      if (full === join(dir, ".credentials.yaml")) continue;
-      const size = await stat(full).then(
-        (info) => info.size,
-        () => Number.POSITIVE_INFINITY
-      );
-      if (size > MAX_BYTES) {
-        skippedLarge += 1;
-        continue;
-      }
-      scanned += 1;
-      const text = await readFile(full, "utf8").catch(() => "");
-      if (text.includes(needle)) hits.push(full);
-    }
-  }
-  return { scanned, skippedLarge, hits };
-}
-
-/**
- * One entry of a `dsh --dump-config` render, from its `- id: <id>` line up to
- * the next entry (or the next `# ==` layer comment). Returns "" when the entry
- * is absent, so `expect(dumpEntry(...)).toContain(...)` fails loudly instead of
- * matching a path label somewhere else in the dump.
- */
-function dumpEntry(stdout: string, id: string): string {
-  const lines = stdout.split("\n");
-  const start = lines.findIndex((line) => line.trim() === `- id: ${id}`);
-  if (start === -1) return "";
-  const out: string[] = [lines[start]!];
-  for (let i = start + 1; i < lines.length; i++) {
-    const line = lines[i]!;
-    if (line.startsWith("- ") || line.startsWith("#")) break;
-    out.push(line);
-  }
-  return out.join("\n");
-}
-
-const runReal = (process.env.RUN_REAL ?? "").trim() !== "";
+const runReal = (process.env.RUN_REAL ?? "").trim() === "1";
 const realEnabled = runReal ? await hasDsh() : false;
 
 describe.skipIf(!realEnabled)("REAL extraction composition (fake Bot API + LLM stub)", () => {
@@ -387,15 +272,11 @@ describe.skipIf(!realEnabled)("REAL extraction composition (fake Bot API + LLM s
   let password: string;
   let auth: Awaited<ReturnType<typeof createAdminAuth>> | undefined;
   let child: ReturnType<typeof spawn> | null = null;
-  /** Logs of the CURRENT boot (diagnostics) and of every boot (secret scan). */
+  /** Logs of the CURRENT boot, for the failure diagnostics of waitForHealth. */
   let childOut = "";
   let childErr = "";
-  let allOut = "";
-  let allErr = "";
   /** Every temp home created here, removed in afterAll. */
   const homes: string[] = [];
-  /** Raw text of every `/api/telegram/*` response, for the secret scan. */
-  const telegramResponses: string[] = [];
 
   const childLog = (): string => `--- dsh stdout ---\n${childOut}\n--- dsh stderr ---\n${childErr}`;
 
@@ -508,16 +389,13 @@ describe.skipIf(!realEnabled)("REAL extraction composition (fake Bot API + LLM s
     childErr = "";
     const spawned = spawn("dsh", ["--profile", PROFILE], { env, cwd: home, stdio: ["ignore", "pipe", "pipe"] });
     child = spawned;
-    // Every boot's output is kept twice: per-boot for diagnostics, and in a
-    // union that is never reset, so the secret scan covers ALL boots (the token
-    // is first submitted during the first one, not the last).
+    // Keep this boot's output for the failure diagnostics of waitForHealth
+    // (childLog) — the health timeout is the one place a boot log is reported.
     spawned.stdout?.on("data", (chunk: Buffer) => {
       childOut += chunk.toString();
-      allOut += chunk.toString();
     });
     spawned.stderr?.on("data", (chunk: Buffer) => {
       childErr += chunk.toString();
-      allErr += chunk.toString();
     });
     await waitForHealth(port, spawned);
     const loginRes = await post(`${baseUrl()}/api/auth/login`, { login, password });
@@ -552,11 +430,9 @@ describe.skipIf(!realEnabled)("REAL extraction composition (fake Bot API + LLM s
     child = null;
   }
 
-  /** POST one `/api/telegram/*` route and record the raw body for the secret scan. */
+  /** POST one `/api/telegram/*` route. */
   async function tgPost(path: string, body: unknown, token: string): Promise<HttpResult> {
-    const result = await post(`${baseUrl()}${path}`, body, token);
-    telegramResponses.push(result.text);
-    return result;
+    return post(`${baseUrl()}${path}`, body, token);
   }
 
   async function tgStatus(token: string): Promise<TgStatus> {
@@ -573,19 +449,6 @@ describe.skipIf(!realEnabled)("REAL extraction composition (fake Bot API + LLM s
       if (expectUsername && status.botUsername !== BOT_USERNAME) return undefined;
       return status;
     }, "telegram state connected", 60_000);
-  }
-
-  /**
-   * Every recorded Bot API call from `from` on that is not the background
-   * identity refresh: i.e. everything that is (or would be) a delivery to a
-   * chat, plus any refused call. Deny-list by design (see
-   * NON_DELIVERY_METHODS): a "nothing was delivered" assertion must not be able
-   * to filter an unexpected call away.
-   */
-  function deliveredFrom(from: number): OutboundCall[] {
-    return requireApi()
-      .outbound.slice(from)
-      .filter((entry) => !NON_DELIVERY_METHODS.has(entry.method));
   }
 
   /** Wait for one recorded Bot API call after `from`. */
@@ -615,60 +478,6 @@ describe.skipIf(!realEnabled)("REAL extraction composition (fake Bot API + LLM s
     }
   }
 
-  /** Every text sent to the owner from `from` on. */
-  function sentTexts(from: number): string[] {
-    return deliveredFrom(from)
-      .filter((entry) => entry.method === "sendMessage")
-      .map((entry) => String(entry.body.text ?? ""));
-  }
-
-  /**
-   * Wait for one delivered message whose text satisfies `predicate` — a message
-   * the owner receives (`sendMessage`) or one of their own messages re-rendered
-   * in place (`editMessageText`) — and report the text together with the message
-   * id it was delivered in and the recorded call. The id is what lets a caller
-   * press a button of that very message, or watch the message be edited later.
-   */
-  async function waitForMessage(
-    predicate: (text: string) => boolean,
-    description: string,
-    from: number,
-    timeoutMs = 30_000
-  ): Promise<{ text: string; messageId: number; entry: OutboundCall }> {
-    const entry = await waitForOutbound(
-      (candidate) =>
-        (candidate.method === "sendMessage" || candidate.method === "editMessageText") &&
-        predicate(String(candidate.body.text ?? "")),
-      description,
-      from,
-      timeoutMs
-    );
-    return { text: String(entry.body.text ?? ""), messageId: sentMessageId(entry), entry };
-  }
-
-  /**
-   * The default model the models service reports (the persisted
-   * `agent-default-model` selection). Read through the API on purpose: dsh
-   * 0.1.7-rc.1 imports the legacy `$DSH_HOME/settings.yaml` into the active
-   * profile patch and renames the file, so the old settings document is no
-   * longer the live store.
-   */
-  async function readDefaultModel(token: string): Promise<{ provider?: string; model?: string }> {
-    const res = await post(`${baseUrl()}/api/models/list`, {}, token);
-    if (res.status !== 200) throw new Error(`models/list ${res.status}: ${res.text}`);
-    return (res.json as { default?: { provider?: string; model?: string } } | undefined)?.default ?? {};
-  }
-
-  /**
-   * Long polls the fake refused as a concurrent-poll conflict. The fake answers
-   * a second simultaneous `getUpdates` with Telegram's 409 (and records it), so
-   * a duplicate poller — the regression this composition must never develop —
-   * shows up here instead of being absorbed by a permissive fake.
-   */
-  function refusedPolls(): OutboundCall[] {
-    return requireApi().outbound.filter((entry) => entry.method === "getUpdates" && entry.error !== undefined);
-  }
-
   /** The message id the fake Bot API assigned to one recorded sendMessage. */
   function sentMessageId(entry: OutboundCall): number {
     const result = entry.result;
@@ -689,38 +498,6 @@ describe.skipIf(!realEnabled)("REAL extraction composition (fake Bot API + LLM s
   /** The flat button row of one rendered view. */
   function buttonsOf(entry: OutboundCall): InlineKeyboardButton[] {
     return markupOf(entry).inline_keyboard.flat();
-  }
-
-  /**
-   * The persisted channel state. A missing file is the empty state (the same
-   * rule `TelegramState.load` applies): a fresh home legitimately has no file
-   * until the first acknowledged batch or session write.
-   */
-  async function readState(): Promise<TelegramStateLike> {
-    if (home === undefined) throw new Error("home not initialized");
-    try {
-      return JSON.parse(await readFile(join(home, "telegram-state.json"), "utf8")) as TelegramStateLike;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, sessions: {} };
-      throw error;
-    }
-  }
-
-  /** Wait until the persisted state document satisfies `predicate`. */
-  function waitForState(
-    predicate: (state: TelegramStateLike) => boolean,
-    description: string,
-    timeoutMs = 20_000
-  ): Promise<TelegramStateLike> {
-    return waitFor<TelegramStateLike>(async () => {
-      let state: TelegramStateLike;
-      try {
-        state = await readState();
-      } catch {
-        return undefined; // mid-write: the store renames atomically, so retry
-      }
-      return predicate(state) ? state : undefined;
-    }, description, timeoutMs);
   }
 
   /** `/start` through the fake update channel; returns the menu card message call. */
@@ -822,9 +599,8 @@ describe.skipIf(!realEnabled)("REAL extraction composition (fake Bot API + LLM s
         () => llm.calls.find(isExtractionRequest),
         "the extraction turn's model request"
       );
-      expect(extractionCall, "the extraction turn's model request").toBeDefined();
-      expect(toolNames(extractionCall!.body)).toContain("propose_memory");
-      expect(toolNames(extractionCall!.body)).not.toContain("remember");
+      expect(toolNames(extractionCall.body)).toContain("propose_memory");
+      expect(toolNames(extractionCall.body)).not.toContain("remember");
       const taskCall = llm.calls.find((call) =>
         JSON.stringify(call.body.messages ?? []).includes(EXTRACTION_TASK_PROMPT)
       );
@@ -833,19 +609,27 @@ describe.skipIf(!realEnabled)("REAL extraction composition (fake Bot API + LLM s
       expect(toolNames(taskCall!.body)).not.toContain("propose_memory");
 
       // (c) the proposal is staged for review with the channel provenance
+      const reviewList = async (): Promise<Array<{ id: string; text: string; originRef: string | null }>> => {
+        const response = await post(`${baseUrl()}/api/memory/review/list`, { status: ["proposed"] }, token);
+        expect(response.status, response.text).toBe(200);
+        const body = response.json as { proposals?: Array<{ id: string; text: string; originRef: string | null }> };
+        expect(Array.isArray(body.proposals), response.text).toBe(true);
+        return body.proposals ?? [];
+      };
       const staged = await waitFor(
-        async () => {
-          const response = await post(`${baseUrl()}/api/memory/review/list`, { status: ["proposed"] }, token);
-          const proposals =
-            (response.json as { proposals?: Array<{ text: string; originRef: string | null }> }).proposals ?? [];
-          return proposals.find((candidate) => candidate.text === EXTRACTION_PROPOSAL_TEXT);
-        },
+        async () => (await reviewList()).find((candidate) => candidate.text === EXTRACTION_PROPOSAL_TEXT),
         "the extraction proposal in the review queue"
       );
-      expect(staged.originRef).toMatch(/^telegram session:/);
+      expect(staged.originRef).toMatch(/^telegram session:.+$/);
 
-      // (d) staged means staged: the record list does not carry it
+      // (d) staged means staged: the record list does not carry it. The negative
+      // assertion is only meaningful on a WELL-FORMED 200 records response — an
+      // error body (or an absent `records`) must fail here instead of satisfying
+      // "the text is not there".
       const records = await post(`${baseUrl()}/api/memory/list`, { query: "smoke" }, token);
+      expect(records.status, records.text).toBe(200);
+      const recordList = (records.json as { records?: Array<{ text: string }> }).records;
+      expect(Array.isArray(recordList), records.text).toBe(true);
       expect(records.text).not.toContain(EXTRACTION_PROPOSAL_TEXT);
 
       // (e) a chat-only task spends exactly ONE model request (an extraction
@@ -860,11 +644,10 @@ describe.skipIf(!realEnabled)("REAL extraction composition (fake Bot API + LLM s
         () => (llm.calls.filter(isExtractionRequest).length >= 2 ? true : undefined),
         "the extraction turn to close"
       );
-      const pendingBefore = (
-        (await post(`${baseUrl()}/api/memory/review/list`, { status: ["proposed"] }, token)).json as {
-          proposals: unknown[];
-        }
-      ).proposals.length;
+      // Compare the identities of the pending proposals, not their count: a
+      // chat-only turn that staged one proposal while another disappeared would
+      // keep the count equal and must still fail.
+      const pendingBefore = (await reviewList()).map((proposal) => proposal.id).sort();
       const callsBefore = llm.calls.length;
       llm.setScript([{ text: EXTRACTION_CHAT_REPLY }]);
       server.enqueueMessage({ fromId: OWNER_USER_ID, text: "привет" });
@@ -875,12 +658,8 @@ describe.skipIf(!realEnabled)("REAL extraction composition (fake Bot API + LLM s
         180_000
       );
       expect(llm.calls.length - callsBefore).toBe(1);
-      const pendingAfter = (
-        (await post(`${baseUrl()}/api/memory/review/list`, { status: ["proposed"] }, token)).json as {
-          proposals: unknown[];
-        }
-      ).proposals.length;
-      expect(pendingAfter).toBe(pendingBefore);
+      const pendingAfter = (await reviewList()).map((proposal) => proposal.id).sort();
+      expect(pendingAfter).toEqual(pendingBefore);
     } finally {
       await stopServer();
     }
