@@ -648,7 +648,7 @@ curl -fsS -X POST http://127.0.0.1:8080/api/memory/delete \
 
 Память: ревью предложенных записей (p10f) — пайплайн предлагает, владелец решает.
 Шаги продолжают тот же `TOKEN`; версию схемы проверяет блок «Артефакт БД» ниже
-(ожидается `user_version: 2`).
+(ожидается `user_version: 3`).
 
 ```bash
 # 0) уборка следов прошлого оборванного прогона (штатно чистит последний шаг)
@@ -702,15 +702,40 @@ curl -sS -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8080/api/memo
 # ожидается: 400 (тело {"error":{"code":"invalid-status",
 #   "message":"proposal is already accepted: <proposal-id>"}})
 
-# 6) след ревью в журнале — без текста памяти
+# 6) отказ удаляет предложение — заведите для него отдельное предложение,
+#    чтобы не трогать уже принятую запись выше
+curl -fsS -X POST http://127.0.0.1:8080/api/memory/propose \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"scope":{"kind":"global"},"type":"note","text":"Отклоняемый маркер — p10frejectmarker7d31","originRef":"pipeline:smoke"}'
+# ожидается: {"proposal":{...,"status":"proposed",...}}; сохраните <reject-id>
+
+# 7) отказ: ответ описывает удалённую строку, аудита не остаётся
+curl -fsS -X POST http://127.0.0.1:8080/api/memory/review/reject \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{"id":"<reject-id>"}'
+# ожидается: {"proposal":{...,"status":"rejected","decidedAt":"<время>",
+#   "decidedBy":"owner","decidedEdit":false,"memoryId":null}} — снимок строки ДО
+#   удаления: самой строки в таблице уже нет
+
+# 8) отклонённых строк в таблице нет, повторить отказ нельзя
+curl -fsS -X POST http://127.0.0.1:8080/api/memory/review/list \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{"status":["rejected"]}'
+# ожидается: {"proposals":[],"policy":{...}}
+curl -sS -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8080/api/memory/review/reject \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{"id":"<reject-id>"}'
+# ожидается: 404 (тело {"error":{"code":"not-found",...}})
+# заодно: «Показать решённые» (status:["accepted"]) отклонённого не показывает —
+# там только принятые
+
+# 9) след ревью в журнале — без текста памяти
 journalctl -u dsh-balbes -n 200 | grep balbes-memory-admin
 # строки мутаций пишутся уровнем info, а демон по умолчанию журналирует только
 # warn/error (как у счётчиков доставки выше): отсутствие строк — норма, а не
 # сбой. Если уровень логирования включает info, ожидаются
-# «balbes-memory-admin: propose id=... scope=global» и
-# «balbes-memory-admin: approve id=... edited=true»; текста записи в них нет
+# «balbes-memory-admin: propose id=... scope=global»,
+# «balbes-memory-admin: approve id=... edited=true» и
+# «balbes-memory-admin: reject id=...»; текста записи в них нет
 
-# 7) уборка: удаляется запись-истина, предложение остаётся решённым
+# 10) уборка: удаляется запись-истина, принятое предложение с шага 3 остаётся
 curl -fsS -X POST http://127.0.0.1:8080/api/memory/delete \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{"id":"<record-id>"}'
 # ожидается: {"deleted":true}
@@ -758,15 +783,20 @@ curl -fsS -X POST http://127.0.0.1:8080/api/memory/delete \
 Артефакт БД (та же память на диске):
 
 ```bash
-# память: файл БД создан и схема на v2 (p10f: таблица memory_proposals)
+# память: файл БД создан и схема на v3 (p10f: таблица memory_proposals,
+# p10f-отказ удаляет строки — накопленные `rejected` снимает миграция)
 ls -l "$HOME/.dsh/storages/memory.sqlite"
 node --no-warnings -e 'const{DatabaseSync}=require("node:sqlite");const db=new DatabaseSync(process.env.HOME+"/.dsh/storages/memory.sqlite");console.log("user_version:",db.prepare("PRAGMA user_version").get().user_version)'
-# ожидается: файл существует, user_version: 2
+# ожидается: файл существует, user_version: 3
 
-# бэкап перед миграцией v1→v2: есть только если БД уже была на v1
+# бэкап перед миграцией: имя файла — прежняя версия схемы, поэтому у базы с v2
+# это memory.sqlite.bak-v2, а у старой v1 — memory.sqlite.bak-v1
 # (на новой БД апгрейда нет, поэтому файла не будет — это не ошибка)
-ls -l "$HOME/.dsh/storages/memory.sqlite.bak-v1" 2>/dev/null || echo "бэкапа нет (новая БД) — ожидаемо"
-# ожидается: строка бэкапа, если БД была на v1; иначе «бэкапа нет (новая БД) — ожидаемо»
+ls -l "$HOME/.dsh/storages/memory.sqlite.bak-v2" "$HOME/.dsh/storages/memory.sqlite.bak-v1" 2>/dev/null || echo "бэкапа нет (новая БД) — ожидаемо"
+# ожидается: строка бэкапа с прежней версией базы; иначе «бэкапа нет (новая БД) — ожидаемо»
+# в журнале при этом одна строка info без текста предложений:
+#   «balbes-memory: migration removed N rejected proposal(s)» — она печатается,
+#   только если миграция действительно удалила легаси-отклонённые (N > 0)
 ```
 
 Доставка памяти в модель (плагин `balbes-memory-context`):
@@ -1370,13 +1400,15 @@ HTTP-ручек он не добавляет, поэтому отдельног�
 миграция падает, плагин пишет ошибку в журнал и **не** предоставляет сервис
 `balbesMemory`, но сервер продолжает работать.
 
-Миграция v1→v2 (p10f) — единственная на сегодня: `CREATE TABLE memory_proposals`
-и два индекса к ней. Она **аддитивная**: таблица `memories`, её теги и
-FTS-триггеры не трогаются, поэтому существующие записи не переписываются и
-ручной шаг не нужен. При первом же старте на v1-базе плагин сам снимает
-WAL-безопасный бэкап `$DSH_HOME/storages/memory.sqlite.bak-v1` и только потом
-применяет миграцию; на новой БД (v0→v2) апгрейда нет, и файла бэкапа не будет.
-Откат — восстановление из `memory.sqlite.bak-v1` (см. «Устранение неполадок»).
+Миграции p10f: v2 — `CREATE TABLE memory_proposals` и два индекса к ней
+(аддитивная: таблица `memories`, её теги и FTS-триггеры не трогаются); v3 —
+данные, а не схема: удаление накопленных строк `status='rejected'`, потому что
+отказ предложения теперь строку удаляет. Ручной шаг не нужен. При первом старте
+на базе младше текущей версии плагин сам снимает WAL-безопасный бэкап
+`$DSH_HOME/storages/memory.sqlite.bak-v<прежняя версия>` (`.bak-v2` при апгрейде
+с v2, `.bak-v1` — со старой v1) и только потом применяет миграции; на новой БД
+(v0→v3) апгрейда нет, и файла бэкапа не будет. Откат — восстановление из
+подходящего `.bak-v<N>` (см. «Устранение неполадок»).
 
 ## Сброс пароля
 
@@ -1747,7 +1779,8 @@ Web-агента: `bash`, `web_fetch`, `skill`, субагенты и остал
 
 Восстановление из предмиграционного бэкапа (файл `memory.sqlite.bak-v<версия>`
 появляется только после первой фактически применённой миграции: на свежей
-БД переход 0→2 идёт без бэкапа):
+БД переход 0→3 идёт без бэкапа; имя файла — прежняя версия базы, поэтому у
+обновляемой с v2 это `.bak-v2`):
 
 ```bash
 sudo systemctl stop dsh-balbes
