@@ -279,6 +279,34 @@ describe("startMemoryMetrics", () => {
     }
   });
 
+  it("logs the summed block characters and the recall latency", () => {
+    vi.useFakeTimers();
+    try {
+      const infos: string[] = [];
+      const service = startMemoryMetrics({
+        intervalMs: 1_000,
+        logger: { info: (message) => infos.push(message), warn: () => {} }
+      });
+      service.recordDelivery({
+        channel: "admin",
+        scope: "global",
+        core: { delivered: ["a"], omitted: 0, chars: 10 },
+        map: { delivered: ["b"], omitted: 1, chars: 20 },
+        push: { delivered: ["c"], omitted: 0, chars: 5 }
+      });
+      service.recordRecall({ channel: "admin", scope: "global", outcome: "ok", latencyMs: 4 });
+      service.recordRecall({ channel: "admin", scope: "global", outcome: "empty", latencyMs: 9 });
+      vi.advanceTimersByTime(1_000);
+      service.dispose();
+      expect(infos[0]).toContain("chars=35");
+      expect(infos[0]).toContain("latency=13/9");
+      expect(infos[1]).toContain("chars=0");
+      expect(infos[1]).toContain("latency=0/0");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("unrefs the interval handle and creates no timer for unusable intervals", () => {
     const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
     try {

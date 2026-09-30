@@ -17,6 +17,10 @@ export interface RenderedBlock {
   text: string;
   /** Ids записей, реально попавших в текст, в порядке вывода. */
   shown: string[];
+  /** Сколько записей не поместилось в бюджет (для ядра — сколько pinned опущено). */
+  omitted: number;
+  /** Записи, реально попавшие в текст (для метрик и провенанса); пусто там, где рендер идёт строками. */
+  records: MemoryRecord[];
 }
 
 /** Fixed-point экранирование строгих {{variable}} в тексте владельца/агента. */
@@ -56,7 +60,7 @@ function mapLine(record: MemoryRecord): string {
 }
 
 export function renderCore(records: readonly MemoryRecord[]): RenderedBlock {
-  if (records.length === 0) return { text: "", shown: [] };
+  if (records.length === 0) return { text: "", shown: [], omitted: 0, records: [] };
   const lines = [CORE_HEADER, CORE_NOTE];
   const shown: string[] = [];
   let used = lines.join("\n").length;
@@ -81,7 +85,7 @@ export function renderCore(records: readonly MemoryRecord[]): RenderedBlock {
   }
   const omitted = records.length - shown.length;
   if (omitted > 0) lines.push("… ещё " + omitted + " закреплённых записей не поместились — ищи через recall.");
-  return { text: lines.join("\n"), shown };
+  return { text: lines.join("\n"), shown, omitted, records: records.filter((record) => shown.includes(record.id)) };
 }
 
 export function renderMap(records: readonly MemoryRecord[], total: number, coreShown: ReadonlySet<string>): RenderedBlock {
@@ -98,8 +102,8 @@ export function renderMap(records: readonly MemoryRecord[], total: number, coreS
   }
   const omitted = Math.max(0, total - coreShown.size - shown.length);
   if (omitted > 0) lines.push("… ещё " + omitted + " записей не показаны — уточни запрос через recall.");
-  if (shown.length === 0 && omitted === 0) return { text: "", shown: [] };
-  return { text: lines.join("\n"), shown };
+  if (shown.length === 0 && omitted === 0) return { text: "", shown: [], omitted: 0, records: [] };
+  return { text: lines.join("\n"), shown, omitted, records: records.filter((record) => shown.includes(record.id)) };
 }
 
 export function renderPush(hits: readonly MemorySearchHit[], coreShown: ReadonlySet<string>): RenderedBlock {
@@ -114,6 +118,11 @@ export function renderPush(hits: readonly MemorySearchHit[], coreShown: Readonly
     shown.push(hit.record.id);
     used += line.length + 1;
   }
-  if (shown.length === 0) return { text: "", shown: [] };
-  return { text: lines.join("\n"), shown };
+  if (shown.length === 0) return { text: "", shown: [], omitted: 0, records: [] };
+  return {
+    text: lines.join("\n"),
+    shown,
+    omitted: 0,
+    records: hits.map((hit) => hit.record).filter((record) => shown.includes(record.id))
+  };
 }

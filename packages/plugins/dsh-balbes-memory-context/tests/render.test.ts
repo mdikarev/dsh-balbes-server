@@ -35,7 +35,7 @@ describe("renderCore", () => {
   });
 
   it("is empty for no records", () => {
-    expect(renderCore([])).toEqual({ text: "", shown: [] });
+    expect(renderCore([])).toEqual({ text: "", shown: [], omitted: 0, records: [] });
   });
 
   it("omits records that do not fit and counts them", () => {
@@ -77,7 +77,9 @@ describe("renderMap", () => {
   it("is empty when nothing remains", () => {
     expect(renderMap([record({ id: "a", text: "core", pinned: true })], 1, new Set(["a"]))).toEqual({
       text: "",
-      shown: []
+      shown: [],
+      omitted: 0,
+      records: []
     });
   });
 });
@@ -96,7 +98,7 @@ describe("renderPush", () => {
   });
 
   it("is empty with no hits", () => {
-    expect(renderPush([], new Set())).toEqual({ text: "", shown: [] });
+    expect(renderPush([], new Set())).toEqual({ text: "", shown: [], omitted: 0, records: [] });
   });
 });
 

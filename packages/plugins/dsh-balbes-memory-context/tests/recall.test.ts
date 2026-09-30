@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { MemoryRecord } from "dsh-balbes-contracts";
 import { buildRecallTool, clampRecallLimit, RECALL_DEFAULT_LIMIT, RECALL_MAX_LIMIT } from "../src/recall.js";
+import { createMemoryMetricsLedger } from "../src/metrics.js";
 import type { BalbesMemoryReadSlice } from "../src/types.js";
 
 function record(id: string, text: string): MemoryRecord {
@@ -99,6 +100,67 @@ describe("buildRecallTool", () => {
     expect(text).toContain("deploy procedure");
     expect(text).toContain("id: a");
     expect(text).toContain("владелец");
+  });
+});
+
+describe("buildRecallTool metrics", () => {
+  it("records ok with the delivered ids and the latency", async () => {
+    const ledger = createMemoryMetricsLedger();
+    const memory: BalbesMemoryReadSlice = {
+      list: async () => [],
+      count: async () => 0,
+      search: async () => [{ record: record("a", "deploy procedure"), rank: -1 }]
+    };
+    const tool = buildRecallTool(memory, [{ kind: "global" }], ledger, { channel: "telegram", scope: "project:proj" });
+    await tool.execute({ query: "deploy" }, {} as never);
+    const snap = ledger.snapshot();
+    expect(snap.recall.calls).toBe(1);
+    expect(snap.recall.empty).toBe(0);
+    expect(snap.recall.latencyMs.max).toBeGreaterThanOrEqual(0);
+    expect(snap.topRecords.find((entry) => entry.id === "a")).toMatchObject({
+      type: "fact",
+      scope: "project:proj",
+      recallDelivered: 1,
+      recallQueries: 1
+    });
+  });
+
+  it("records empty for a blank query without touching the store", async () => {
+    const ledger = createMemoryMetricsLedger();
+    const memory: BalbesMemoryReadSlice = {
+      list: async () => [],
+      count: async () => 0,
+      search: async () => {
+        throw new Error("search must not be called");
+      }
+    };
+    const tool = buildRecallTool(memory, [{ kind: "global" }], ledger, { channel: "admin", scope: "global" });
+    await tool.execute({ query: "!!!" }, {} as never);
+    expect(ledger.snapshot().recall.empty).toBe(1);
+  });
+
+  it("records empty when the search returns nothing", async () => {
+    const ledger = createMemoryMetricsLedger();
+    const memory: BalbesMemoryReadSlice = { list: async () => [], count: async () => 0, search: async () => [] };
+    const tool = buildRecallTool(memory, [{ kind: "global" }], ledger, { channel: "admin", scope: "global" });
+    await tool.execute({ query: "deploy" }, {} as never);
+    expect(ledger.snapshot().recall.empty).toBe(1);
+  });
+
+  it("records failed and still surfaces the tool error", async () => {
+    const ledger = createMemoryMetricsLedger();
+    const memory: BalbesMemoryReadSlice = {
+      list: async () => [],
+      count: async () => 0,
+      search: async () => {
+        throw new Error("db down");
+      }
+    };
+    const tool = buildRecallTool(memory, [{ kind: "global" }], ledger, { channel: "admin", scope: "global" });
+    await expect(tool.execute({ query: "deploy" }, {} as never)).rejects.toThrow(/recall failed/);
+    const snap = ledger.snapshot();
+    expect(snap.recall.failed).toBe(1);
+    expect(snap.recall.empty).toBe(0);
   });
 });
 

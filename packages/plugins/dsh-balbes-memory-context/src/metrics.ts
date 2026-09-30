@@ -44,6 +44,8 @@ interface WindowState {
   byScope: Map<string, MemoryMetricsChannelTotals>;
   records: Map<string, TrackedRecord>;
   recall: WindowRecall;
+  /** Суммарные символы блоков ядра/карты/push за окно — только для строки журнала. */
+  chars: number;
   /** id, которые не влезли в cap: множество — один id считается один раз за окно. */
   dropped: Set<string>;
 }
@@ -63,6 +65,7 @@ function freshWindow(now: number): WindowState {
     byScope: new Map(),
     records: new Map(),
     recall: { calls: 0, empty: 0, failed: 0, latencyTotal: 0, latencyMax: 0 },
+    chars: 0,
     dropped: new Set()
   };
 }
@@ -111,6 +114,11 @@ function asIdList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : [];
 }
 
+/** Размер блока в символах; мусор считается нулём, событие остаётся валидным. */
+function charCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
 /** Карта ref-ов записи; мусорные элементы отбрасываются — событие остаётся валидным. */
 function asRefMap(value: unknown): Record<string, MemoryRecordRef> | undefined {
   const source = asRecord(value);
@@ -123,7 +131,9 @@ function asRefMap(value: unknown): Record<string, MemoryRecordRef> | undefined {
   return refs;
 }
 
-export function createMemoryMetricsLedger(options: { now?: () => number } = {}): MemoryMetricsService {
+export function createMemoryMetricsLedger(
+  options: { now?: () => number } = {}
+): MemoryMetricsService & { windowChars(): number } {
   const now = options.now ?? (() => Date.now());
   const startedAt = now();
   const processTotals: MemoryMetricsTotals = { turns: 0, deliveries: 0 };
@@ -151,20 +161,24 @@ export function createMemoryMetricsLedger(options: { now?: () => number } = {}):
 
   const recordDelivery = (event: MemoryDeliveryEvent): void => {
     const source = asRecord(event);
-    const core = asIdList(asRecord(source?.core)?.delivered);
-    const map = asIdList(asRecord(source?.map)?.delivered);
-    const push = asIdList(asRecord(source?.push)?.delivered);
+    const core = asRecord(source?.core);
+    const mapBlock = asRecord(source?.map);
+    const push = asRecord(source?.push);
+    const coreIds = asIdList(core?.delivered);
+    const mapIds = asIdList(mapBlock?.delivered);
+    const pushIds = asIdList(push?.delivered);
     const records = asRefMap(source?.records);
-    const deliveries = core.length + map.length + push.length;
+    const deliveries = coreIds.length + mapIds.length + pushIds.length;
     state.window.turns += 1;
     state.window.deliveries += deliveries;
+    state.chars += charCount(core?.chars) + charCount(mapBlock?.chars) + charCount(push?.chars);
     processTotals.turns += 1;
     processTotals.deliveries += deliveries;
     bump(state.byChannel, asString(source?.channel), deliveries);
     bump(state.byScope, asString(source?.scope), deliveries);
-    for (const id of core) onDelivered(id, "inCore", records);
-    for (const id of map) onDelivered(id, "inMap", records);
-    for (const id of push) onDelivered(id, "inPush", records);
+    for (const id of coreIds) onDelivered(id, "inCore", records);
+    for (const id of mapIds) onDelivered(id, "inMap", records);
+    for (const id of pushIds) onDelivered(id, "inPush", records);
   };
 
   const recordRecall = (event: MemoryRecallEvent): void => {
@@ -239,7 +253,7 @@ export function createMemoryMetricsLedger(options: { now?: () => number } = {}):
     return value;
   };
 
-  return { recordDelivery, recordRecall, snapshot, dispose: () => {} };
+  return { recordDelivery, recordRecall, snapshot, windowChars: () => state.chars, dispose: () => {} };
 }
 
 export interface MemoryMetricsOptions {
@@ -250,7 +264,7 @@ export interface MemoryMetricsOptions {
   windowKey?: string;
 }
 
-function logSnapshot(logger: MemoryMetricsLogger | undefined, snapshot: MemoryMetricsSnapshot, windowKey: string): void {
+function logSnapshot(logger: MemoryMetricsLogger | undefined, snapshot: MemoryMetricsSnapshot, windowKey: string, chars: number): void {
   if (logger?.info === undefined) return;
   const seconds = Math.round(snapshot.window.durationMs / 1000);
   const top = snapshot.topRecords
@@ -262,7 +276,9 @@ function logSnapshot(logger: MemoryMetricsLogger | undefined, snapshot: MemoryMe
       " window=" + seconds + "s" +
       " turns=" + snapshot.window.turns +
       " deliveries=" + snapshot.window.deliveries +
+      " chars=" + chars +
       " recall=" + snapshot.recall.calls + "/" + snapshot.recall.empty + "/" + snapshot.recall.failed +
+      " latency=" + snapshot.recall.latencyMs.total + "/" + snapshot.recall.latencyMs.max +
       " unqueried=" + snapshot.unqueriedDelivered +
       " dropped=" + snapshot.dropped +
       (top === "" ? "" : " top=" + top)
@@ -281,7 +297,10 @@ export function startMemoryMetrics(options: MemoryMetricsOptions = {}): MemoryMe
   let timer: ReturnType<typeof setInterval> | undefined;
   let closed = false;
   const flush = (): void => {
-    logSnapshot(logger, ledger.snapshot({ reset: true }), windowKey);
+    // The character total belongs to the window being closed, so read it
+    // before the snapshot resets the window.
+    const chars = ledger.windowChars();
+    logSnapshot(logger, ledger.snapshot({ reset: true }), windowKey, chars);
   };
   const intervalMs = options.intervalMs ?? DEFAULT_METRICS_INTERVAL_MS;
   if (Number.isFinite(intervalMs) && intervalMs > 0) {

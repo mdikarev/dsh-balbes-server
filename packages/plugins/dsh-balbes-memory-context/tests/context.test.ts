@@ -7,9 +7,16 @@ import {
   MEMORY_SECTION_NAME,
   MEMORY_SECTION_ORDER
 } from "../src/context.js";
+import { createMemoryMetricsLedger } from "../src/metrics.js";
 import type { LlmClassifierSeat } from "../src/classify.js";
 import type { StreamChunk } from "@deepseek-ai/dsh-llm";
-import type { BalbesMemoryReadSlice, MemoryReadFilter, MemoryWriteContext } from "../src/types.js";
+import type {
+  BalbesMemoryReadSlice,
+  MemoryMetricsSnapshot,
+  MemoryMetricsSink,
+  MemoryReadFilter,
+  MemoryWriteContext
+} from "../src/types.js";
 
 function record(partial: Partial<MemoryRecord> & { id: string; text: string }): MemoryRecord {
   return {
@@ -37,19 +44,22 @@ interface Harness {
   tools: unknown[];
   warnings: string[];
   infos: string[];
+  debugs: string[];
   /** Drafts the fake store's save received, in call order. */
   drafts: Array<Record<string, unknown>>;
 }
 
 function harness(
   records: MemoryRecord[],
-  options: { withoutTools?: boolean; writable?: boolean; llm?: LlmClassifierSeat } = {}
+  options: { withoutTools?: boolean; writable?: boolean; llm?: LlmClassifierSeat } = {},
+  metrics?: MemoryMetricsSink
 ): Harness {
   const sections: SectionSpec[] = [];
   const contexts: SectionSpec[] = [];
   const tools: unknown[] = [];
   const warnings: string[] = [];
   const infos: string[] = [];
+  const debugs: string[] = [];
   const drafts: Array<Record<string, unknown>> = [];
   const memory = {
     list: async (_filter?: MemoryReadFilter) => records,
@@ -92,11 +102,15 @@ function harness(
       return undefined;
     }
   };
-  const service = createMemoryContext({
-    warn: (message) => warnings.push(message),
-    info: (message) => infos.push(message)
-  });
-  const harnessValue: Harness = { agentCtx, sections, contexts, tools, warnings, infos, drafts };
+  const service = createMemoryContext(
+    {
+      warn: (message) => warnings.push(message),
+      info: (message) => infos.push(message),
+      debug: (message) => debugs.push(message)
+    },
+    metrics
+  );
+  const harnessValue: Harness = { agentCtx, sections, contexts, tools, warnings, infos, debugs, drafts };
   Object.defineProperty(harnessValue, "attach", {
     value: service.attach.bind(service),
     enumerable: false
@@ -132,7 +146,8 @@ describe("createMemoryContext", () => {
     expect(h.sections[0]!.text()).toContain("Pinned deploy rule");
     expect(h.sections[0]!.text()).toContain("## Memory map");
     expect(h.contexts[0]!.text()).toContain("deploy rollback procedure");
-    expect(h.infos.join("\n")).toContain("scope=global");
+    expect(h.debugs.join("\n")).toContain("scope=global");
+    expect(h.infos.join("\n")).not.toContain("scope=global");
   });
 
   it("escapes {{ in memory text", async () => {
@@ -203,5 +218,64 @@ describe("createMemoryContext", () => {
     expect(h.drafts).toHaveLength(1);
     expect(h.drafts[0]).toMatchObject({ scope: { kind: "global" }, text: "owner prefers Russian" });
     expect(h.infos.join("\n")).toContain("classified=true");
+  });
+});
+
+describe("createMemoryContext metrics", () => {
+  it("records one delivery event with the path ids and the omitted counts", async () => {
+    const ledger = createMemoryMetricsLedger();
+    const h = harness(
+      [
+        record({ id: "core", text: "Pinned deploy rule", pinned: true }),
+        record({ id: "push", text: "deploy rollback procedure" })
+      ],
+      {},
+      ledger
+    ) as HarnessWithAttach;
+    const attachment = h.attach(h.agentCtx, { kind: "global" }, { channel: "admin", sessionId: "s1" });
+    await attachment.prepare("deploy");
+    const snap: MemoryMetricsSnapshot = ledger.snapshot();
+    expect(snap.window.turns).toBe(1);
+    expect(snap.byChannel.admin).toEqual({ turns: 1, deliveries: 3 });
+    expect(snap.byScope.global).toEqual({ turns: 1, deliveries: 3 });
+    const core = snap.topRecords.find((entry) => entry.id === "core");
+    const push = snap.topRecords.find((entry) => entry.id === "push");
+    expect(core).toMatchObject({ type: "fact", scope: "global", inCore: 1, inMap: 0, inPush: 0 });
+    expect(push).toMatchObject({ inCore: 0, inMap: 1, inPush: 1 });
+    expect(snap.unqueriedDelivered).toBe(2);
+  });
+
+  it("does not record a delivery when prepare fails", async () => {
+    const ledger = createMemoryMetricsLedger();
+    const h = harness([], {}, ledger) as HarnessWithAttach;
+    const failing = {
+      get(key: string): unknown {
+        if (key === "balbesMemory") {
+          return { list: async () => { throw new Error("db down"); }, count: async () => 0, search: async () => [] };
+        }
+        return (h.agentCtx as { get(key: string): unknown }).get(key);
+      }
+    };
+    const attachment = h.attach(failing, { kind: "global" }, { channel: "admin", sessionId: "s1" });
+    await attachment.prepare("x");
+    const snap = ledger.snapshot();
+    expect(snap.window.turns).toBe(0);
+    expect(snap.topRecords).toEqual([]);
+  });
+
+  it("keeps working without a metrics sink", async () => {
+    const h = harness([record({ id: "a", text: "deploy note" })]) as HarnessWithAttach;
+    const attachment = h.attach(h.agentCtx, { kind: "global" }, { channel: "admin", sessionId: "s1" });
+    await expect(attachment.prepare("deploy")).resolves.toBeUndefined();
+  });
+
+  it("tags an unattributed delivery as project-less and unknown channel", async () => {
+    const ledger = createMemoryMetricsLedger();
+    const h = harness([record({ id: "a", text: "anything" })], {}, ledger) as HarnessWithAttach;
+    const attachment = h.attach(h.agentCtx, { kind: "project", name: "proj" });
+    await attachment.prepare("anything");
+    const snap = ledger.snapshot();
+    expect(snap.byChannel.unknown).toEqual({ turns: 1, deliveries: 1 });
+    expect(snap.byScope["project:proj"]).toEqual({ turns: 1, deliveries: 1 });
   });
 });

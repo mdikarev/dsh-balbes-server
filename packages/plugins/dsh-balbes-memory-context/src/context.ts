@@ -2,7 +2,7 @@ import type { MemoryRecord, MemoryScope } from "dsh-balbes-contracts";
 import { createLlmClassifier, type LlmClassifierSeat } from "./classify.js";
 import { buildFtsQuery } from "./query.js";
 import { buildRememberTool } from "./remember.js";
-import { escapeInterpolation, renderCore, renderMap, renderPush } from "./render.js";
+import { escapeInterpolation, renderCore, renderMap, renderPush, type RenderedBlock } from "./render.js";
 import { buildRecallTool } from "./recall.js";
 import {
   buildProposeTool,
@@ -17,7 +17,9 @@ import type {
   MemoryContextScope,
   MemoryExtractionHandle,
   MemoryExtractionSlice,
+  MemoryMetricsSink,
   MemoryProposalSlice,
+  MemoryRecordRef,
   MemoryWriteContext,
   MemoryWriteSlice
 } from "./types.js";
@@ -42,6 +44,7 @@ interface AgentCtxLike {
 export interface MemoryContextLogger {
   warn(message: string): void;
   info?(message: string): void;
+  debug?(message: string): void;
 }
 
 /** Scope-фильтр чтений: дом всегда, проект — только текущий. */
@@ -49,11 +52,15 @@ export function scopesFor(scope: MemoryContextScope): MemoryScope[] {
   return scope.kind === "global" ? [{ kind: "global" }] : [{ kind: "global" }, { kind: "project", name: scope.name }];
 }
 
-function scopeTag(scope: MemoryContextScope): string {
+/** Тег уровня для метрик: "global" либо "project:<name>". */
+export function scopeTag(scope: MemoryContextScope): string {
   return scope.kind === "global" ? "global" : "project:" + scope.name;
 }
 
-export function createMemoryContext(logger: MemoryContextLogger): BalbesMemoryContextService {
+export function createMemoryContext(
+  logger: MemoryContextLogger,
+  metrics?: MemoryMetricsSink
+): BalbesMemoryContextService {
   return {
     attach(agentCtx: unknown, scope: MemoryContextScope, write?: MemoryWriteContext) {
       const ctx = agentCtx as AgentCtxLike;
@@ -66,10 +73,12 @@ export function createMemoryContext(logger: MemoryContextLogger): BalbesMemoryCo
         return { prepare: async (): Promise<void> => {} };
       }
       const scopes = scopesFor(scope);
+      const channel = write?.channel ?? "unknown";
+      const scopeName = scopeTag(scope);
       const state = { coreMap: "", push: "" };
       systemPrompt.section({ name: MEMORY_SECTION_NAME, order: MEMORY_SECTION_ORDER, text: () => state.coreMap });
       systemPrompt.context({ name: MEMORY_CONTEXT_NAME, order: MEMORY_CONTEXT_ORDER, text: () => state.push });
-      tools.register(buildRecallTool(memory, scopes));
+      tools.register(buildRecallTool(memory, scopes, metrics, { channel, scope: scopeName }));
       const writable = memory as BalbesMemoryReadSlice & Partial<MemoryWriteSlice> & Partial<MemoryProposalSlice>;
       let extraction: MemoryExtractionHandle | undefined;
       if (typeof writable.save === "function" && write !== undefined) {
@@ -155,15 +164,27 @@ export function createMemoryContext(logger: MemoryContextLogger): BalbesMemoryCo
             const coreShown = new Set(core.shown);
             const map = renderMap(records, total, coreShown);
             const query = buildFtsQuery(taskText);
-            let push: { text: string; shown: string[] } = { text: "", shown: [] };
+            let push: RenderedBlock = { text: "", shown: [], omitted: 0, records: [] };
             if (query !== "") {
               const hits = await memory.search({ query, filter: { scopes }, limit: PUSH_SEARCH_LIMIT });
               push = renderPush(hits, coreShown);
             }
             state.coreMap = escapeInterpolation([core.text, map.text].filter((text) => text !== "").join("\n\n"));
             state.push = escapeInterpolation(push.text);
-            logger.info?.(
-              "balbes-memory-context: scope=" + scopeTag(scope) +
+            const shownRecords = [...core.records, ...map.records, ...push.records];
+            const refs = Object.fromEntries(
+              shownRecords.map((record) => [record.id, { type: record.type, scope: scopeName }])
+            ) as Record<string, MemoryRecordRef>;
+            metrics?.recordDelivery({
+              channel,
+              scope: scopeName,
+              core: { delivered: core.shown, omitted: core.omitted, chars: core.text.length },
+              map: { delivered: map.shown, omitted: map.omitted, chars: map.text.length },
+              push: { delivered: push.shown, omitted: push.omitted, chars: push.text.length },
+              records: refs
+            });
+            logger.debug?.(
+              "balbes-memory-context: scope=" + scopeName +
                 " core=" + core.shown.length +
                 " map=" + map.shown.length +
                 " push=" + push.shown.length

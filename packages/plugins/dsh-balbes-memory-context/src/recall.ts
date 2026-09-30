@@ -1,6 +1,6 @@
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import type { MemoryRecord, MemoryScope } from "dsh-balbes-contracts";
-import type { BalbesMemoryReadSlice } from "./types.js";
+import type { BalbesMemoryReadSlice, MemoryRecallEvent } from "./types.js";
 import { buildFtsQuery } from "./query.js";
 import { originLabel, scopeLabel } from "./render.js";
 
@@ -28,7 +28,17 @@ function renderRecord(record: MemoryRecord, index: number): string {
   );
 }
 
-export function buildRecallTool(memory: BalbesMemoryReadSlice, scopes: MemoryScope[]) {
+/** Структурный срез агрегатора метрик: инструмент пишет только события recall. */
+export interface MemoryRecallSink {
+  recordRecall(event: MemoryRecallEvent): void;
+}
+
+export function buildRecallTool(
+  memory: BalbesMemoryReadSlice,
+  scopes: MemoryScope[],
+  metrics?: MemoryRecallSink,
+  tag?: { channel: string; scope: string }
+) {
   return defineTool({
     name: "recall",
     description: DESCRIPTION,
@@ -95,18 +105,35 @@ export function buildRecallTool(memory: BalbesMemoryReadSlice, scopes: MemorySco
       }
     },
     execute: async (args) => {
+      const channel = tag?.channel ?? "unknown";
+      const scopeTag = tag?.scope ?? "unknown";
       const query = buildFtsQuery(args.query);
-      if (query === "") return { records: [] };
+      if (query === "") {
+        metrics?.recordRecall({ channel, scope: scopeTag, outcome: "empty", latencyMs: 0 });
+        return { records: [] };
+      }
       const filter: { scopes: MemoryScope[]; type?: MemoryRecord["type"]; tag?: string; pinned?: boolean } = {
         scopes
       };
       if (args.type !== undefined) filter.type = args.type;
       if (args.tag !== undefined) filter.tag = args.tag;
       if (args.pinned !== undefined) filter.pinned = args.pinned;
+      const startedAt = performance.now();
       try {
         const hits = await memory.search({ query, filter, limit: clampRecallLimit(args.limit) });
-        return { records: hits.map((hit) => hit.record) };
+        const latencyMs = performance.now() - startedAt;
+        const records = hits.map((hit) => hit.record);
+        metrics?.recordRecall({
+          channel,
+          scope: scopeTag,
+          outcome: records.length === 0 ? "empty" : "ok",
+          latencyMs,
+          delivered: records.map((record) => record.id),
+          records: Object.fromEntries(records.map((record) => [record.id, { type: record.type, scope: scopeTag }]))
+        });
+        return { records };
       } catch {
+        metrics?.recordRecall({ channel, scope: scopeTag, outcome: "failed", latencyMs: performance.now() - startedAt });
         throw new Error("recall failed: memory search is unavailable");
       }
     }
