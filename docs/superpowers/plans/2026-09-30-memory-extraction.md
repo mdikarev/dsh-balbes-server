@@ -1488,7 +1488,11 @@ git commit -m "feat(telegram): run the memory extraction turn after a working ta
 `packages/plugins/dsh-balbes-telegram/tests/extraction.real.test.ts` и сделать
 ровно следующее:
 
-1. удалить все блоки `it(...)` (каркас нужен целиком, сценарии — нет);
+1. удалить все блоки `it(...)`, затем ПОДРЕЗАТЬ каркас до достижимой
+   поверхности: оставить только те хелперы, импорты и константы, до которых
+   дотягивается единственный сценарий, тела живых хелперов сохранить
+   байт-в-байт как в `integration.test.ts` (первое ревью нашло ~25% файла
+   недостижимым; вынос каркаса в общий модуль — вне этой итерации);
 2. удалить константы чужих сценариев (`PROMPT_ONE/TWO`, `MEMORY_*`, `LONG_PROMPT`,
    `FOLLOW_UP_*`, `SESSION_B_*`, `HOLD_MS`, `APPROVAL_*`) и их комментарии —
    кроме `BOT_TOKEN`, `OWNER_USER_ID`, `FOREIGN_USER_ID`, `GROUP_CHAT_ID`,
@@ -1500,7 +1504,9 @@ const fixtureProfile = join(here, "fixtures", "balbes-telegram-extraction-profil
 const PROFILE = "balbes-telegram-extraction-test";
 ```
 
-4. рядом с `modelsPkgRoot` добавить корни memory-пакетов:
+4. заменить гейт REAL-набора на строгий `(process.env.RUN_REAL ?? "").trim() === "1"`
+   (унаследованная проверка «непусто» включала бы набор при `RUN_REAL=0`);
+5. рядом с `modelsPkgRoot` добавить корни memory-пакетов:
 
 ```ts
 const memoryPkgRoot = join(pkgRoot, "..", "dsh-balbes-memory");
@@ -1508,7 +1514,7 @@ const memoryContextPkgRoot = join(pkgRoot, "..", "dsh-balbes-memory-context");
 const memoryAdminPkgRoot = join(pkgRoot, "..", "dsh-balbes-memory-admin");
 ```
 
-5. в `buildPackages()` добавить их сборку (иначе профиль загрузит отсутствующий
+6. в `buildPackages()` добавить их сборку (иначе профиль загрузит отсутствующий
    `lib/`):
 
 ```ts
@@ -1517,7 +1523,7 @@ const memoryAdminPkgRoot = join(pkgRoot, "..", "dsh-balbes-memory-admin");
     [memoryAdminPkgRoot, "tsconfig.build.json"],
 ```
 
-6. в списке копирования `prepareHome` (массив `[pkg, dirName]`) добавить:
+7. в списке копирования `prepareHome` (массив `[pkg, dirName]`) добавить:
 
 ```ts
       [memoryPkgRoot, "dsh-balbes-memory"],
@@ -1525,7 +1531,7 @@ const memoryAdminPkgRoot = join(pkgRoot, "..", "dsh-balbes-memory-admin");
       [memoryAdminPkgRoot, "dsh-balbes-memory-admin"],
 ```
 
-7. обновить шапку файла: это REAL-набор извлечения (p10g); каркас скопирован из
+8. обновить шапку файла: это REAL-набор извлечения (p10g); каркас скопирован из
    `integration.test.ts`, профиль — `balbes-telegram-extraction-profile`.
 
 - [ ] **Step 3: Написать REAL-сценарий**
@@ -1637,10 +1643,14 @@ const EXTRACTION_CHAT_REPLY = "привет";
         },
         "the extraction proposal in the review queue"
       );
-      expect(staged.originRef).toMatch(/^telegram session:/);
+      expect(staged.originRef).toMatch(/^telegram session:.+$/);
 
-      // (d) staged means staged: the record list does not carry it
+      // (d) staged means staged: the record list does not carry it. The status
+      // and the shape are asserted first, or an error body would satisfy the
+      // negative check.
       const records = await post(`${baseUrl()}/api/memory/list`, { query: "smoke" }, token);
+      expect(records.status, records.text).toBe(200);
+      expect(Array.isArray((records.json as { records?: unknown }).records)).toBe(true);
       expect(records.text).not.toContain(EXTRACTION_PROPOSAL_TEXT);
 
       // (e) a chat-only task spends exactly ONE model request (an extraction
@@ -1653,11 +1663,13 @@ const EXTRACTION_CHAT_REPLY = "привет";
         () => (llm.calls.filter(isExtractionRequest).length >= 2 ? true : undefined),
         "the extraction turn to close"
       );
-      const pendingBefore = (
-        (await post(`${baseUrl()}/api/memory/review/list`, { status: ["proposed"] }, token)).json as {
-          proposals: unknown[];
-        }
-      ).proposals.length;
+      const reviewIds = async (): Promise<string[]> => {
+        const response = await post(`${baseUrl()}/api/memory/review/list`, { status: ["proposed"] }, token);
+        expect(response.status, response.text).toBe(200);
+        const proposals = (response.json as { proposals?: Array<{ id: string }> }).proposals ?? [];
+        return proposals.map((proposal) => proposal.id).sort();
+      };
+      const pendingBefore = await reviewIds();
       const callsBefore = llm.calls.length;
       llm.setScript([{ text: EXTRACTION_CHAT_REPLY }]);
       server.enqueueMessage({ fromId: OWNER_USER_ID, text: "привет" });
@@ -1668,12 +1680,8 @@ const EXTRACTION_CHAT_REPLY = "привет";
         180_000
       );
       expect(llm.calls.length - callsBefore).toBe(1);
-      const pendingAfter = (
-        (await post(`${baseUrl()}/api/memory/review/list`, { status: ["proposed"] }, token)).json as {
-          proposals: unknown[];
-        }
-      ).proposals.length;
-      expect(pendingAfter).toBe(pendingBefore);
+      // Identities, not a count: an add+remove pair would pass a count check.
+      expect(await reviewIds()).toEqual(pendingBefore);
     } finally {
       await stopServer();
     }
