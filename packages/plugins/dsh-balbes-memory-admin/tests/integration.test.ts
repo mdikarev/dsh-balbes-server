@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAdminAuth, writeAdminAuth } from "../../../bundles/dsh-balbes-host/src/core.js";
+import type { MemoryAutonomyPolicy, MemoryProposal, MemoryRecord } from "dsh-balbes-contracts";
 
 const execFileP = promisify(execFile);
 const here = fileURLToPath(new URL(".", import.meta.url));
@@ -213,4 +214,87 @@ describe.skipIf(!realEnabled)("REAL composition (memory admin API)", () => {
     const listed = await api("/api/memory/list", { scope: { kind: "global" } });
     expect((listed.json as { records: Array<{ id: string }> }).records.some((r) => r.id === id)).toBe(true);
   }, 60_000);
+
+  it("proposes, reviews and approves without leaking proposals into memory", async () => {
+    // No hyphens: /api/memory/list feeds `query` into FTS5 MATCH verbatim and a
+    // bare hyphenated token is parsed as query syntax (the runbook's memory smoke
+    // says the same).
+    const marker = "p10freviewmarker4c19";
+
+    const proposed = await api("/api/memory/propose", {
+      scope: { kind: "global" },
+      type: "fact",
+      text: "proposed fact " + marker,
+      tags: ["Smoke"],
+      originRef: "pipeline:real-test",
+      // A hostile body must not be able to claim ownership or decide the proposal.
+      origin: "owner",
+      status: "accepted",
+      pinned: true
+    });
+    expect(proposed.status, proposed.raw).toBe(200);
+    const proposal = (proposed.json as { proposal: MemoryProposal }).proposal;
+    expect(proposal.status).toBe("proposed");
+    expect(proposal.origin).toBe("agent");
+    expect(proposal.tags).toEqual(["smoke"]);
+    // The proposal contract has no pinning field at all: the pipeline cannot stage one.
+    expect((proposal as unknown as Record<string, unknown>).pinned).toBeUndefined();
+    expect(proposal.decidedAt).toBeNull();
+    expect(proposal.memoryId).toBeNull();
+
+    const hidden = await api("/api/memory/list", { query: marker });
+    expect(hidden.status, hidden.raw).toBe(200);
+    expect((hidden.json as { records: unknown[] }).records).toEqual([]);
+
+    const queue = await api("/api/memory/review/list", {});
+    expect(queue.status, queue.raw).toBe(200);
+    const queueJson = queue.json as { proposals: MemoryProposal[]; policy: MemoryAutonomyPolicy };
+    expect(queueJson.proposals.some((entry) => entry.id === proposal.id)).toBe(true);
+    expect(queueJson.policy).toEqual({ immediate: ["owner", "remember"], review: ["pipeline"], autoApprove: "none" });
+
+    const approved = await api("/api/memory/review/approve", { id: proposal.id, text: "approved fact " + marker });
+    expect(approved.status, approved.raw).toBe(200);
+    const decided = approved.json as { proposal: MemoryProposal; record: MemoryRecord };
+    expect(decided.proposal.status).toBe("accepted");
+    expect(decided.proposal.decidedBy).toBe("owner");
+    expect(decided.proposal.decidedEdit).toBe(true);
+    expect(decided.proposal.memoryId).toBe(decided.record.id);
+    expect(decided.record.origin).toBe("agent");
+    expect(decided.record.originRef).toBe("pipeline:real-test");
+    expect(decided.record.tags).toEqual(["smoke"]);
+
+    const visible = await api("/api/memory/list", { query: marker });
+    expect((visible.json as { records: Array<{ id: string }> }).records.some((row) => row.id === decided.record.id)).toBe(true);
+
+    const decidedAgain = await api("/api/memory/review/approve", { id: proposal.id });
+    expect(decidedAgain.status).toBe(400);
+    expect((decidedAgain.json as { error: { code: string } }).error.code).toBe("invalid-status");
+
+    const cleanup = await api("/api/memory/delete", { id: decided.record.id });
+    expect(cleanup.status, cleanup.raw).toBe(200);
+    expect(cleanup.json).toEqual({ deleted: true });
+  });
+
+  it("rejects a proposal, keeps it out of memory and refuses secrets", async () => {
+    const marker = "p10frejectmarker8a02";
+    const proposed = await api("/api/memory/propose", { scope: { kind: "global" }, type: "note", text: "rejected fact " + marker });
+    const id = (proposed.json as { proposal: { id: string } }).proposal.id;
+
+    const rejected = await api("/api/memory/review/reject", { id });
+    expect(rejected.status, rejected.raw).toBe(200);
+    expect((rejected.json as { proposal: MemoryProposal }).proposal.status).toBe("rejected");
+    const listed = await api("/api/memory/list", { query: marker });
+    expect((listed.json as { records: unknown[] }).records).toEqual([]);
+
+    const decided = await api("/api/memory/review/list", { status: ["rejected"] });
+    expect((decided.json as { proposals: MemoryProposal[] }).proposals.some((entry) => entry.id === id)).toBe(true);
+
+    const secret = await api("/api/memory/propose", {
+      scope: { kind: "global" },
+      type: "note",
+      text: "token ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+    });
+    expect(secret.status).toBe(400);
+    expect((secret.json as { error: { code: string } }).error.code).toBe("secret-detected");
+  });
 });
