@@ -4,12 +4,18 @@ import TelegramPage from "../src/pages/TelegramPage";
 import { ApiError, type AdminApi } from "../src/api/client";
 import type { TelegramSaveRequest, TelegramSettingsStatus, TelegramState } from "dsh-balbes-contracts";
 
-const NOT_CONFIGURED: TelegramSettingsStatus = { state: "not-configured", tokenConfigured: false, enabled: false };
+const NOT_CONFIGURED: TelegramSettingsStatus = {
+  state: "not-configured",
+  tokenConfigured: false,
+  enabled: false,
+  streamAnswers: false
+};
 
 const CONNECTED: TelegramSettingsStatus = {
   state: "connected",
   tokenConfigured: true,
   enabled: true,
+  streamAnswers: true,
   allowedUserId: 7,
   botUsername: "balbes_bot",
   lastPollAt: "2026-09-10T10:00:00.000Z"
@@ -19,6 +25,7 @@ const DISABLED: TelegramSettingsStatus = {
   state: "disabled",
   tokenConfigured: true,
   enabled: false,
+  streamAnswers: false,
   allowedUserId: 7
 };
 
@@ -26,6 +33,7 @@ const FAILED: TelegramSettingsStatus = {
   state: "error",
   tokenConfigured: true,
   enabled: true,
+  streamAnswers: true,
   allowedUserId: 7,
   error: { code: "not-running", message: "polling is not running" }
 };
@@ -61,6 +69,7 @@ function makeApi(initial: TelegramSettingsStatus, overrides: Partial<AdminApi> =
     if (typeof req.token === "string" && req.token !== "") state.tokenConfigured = true;
     if (req.allowedUserId !== undefined) state.allowedUserId = req.allowedUserId;
     if (req.enabled !== undefined) state.enabled = req.enabled;
+    if (req.streamAnswers !== undefined) state.streamAnswers = req.streamAnswers;
     derive();
     return { status: { ...state } };
   });
@@ -133,7 +142,7 @@ describe("TelegramPage status card", () => {
   });
 
   it("renders «—» for the missing last poll and the bot name, and the safe error message in the error state", async () => {
-    render(<TelegramPage api={makeApi({ state: "error", tokenConfigured: true, enabled: false })} />);
+    render(<TelegramPage api={makeApi({ state: "error", tokenConfigured: true, enabled: false, streamAnswers: false })} />);
     await screen.findByTestId("telegram-state");
     expect(screen.getByTestId("telegram-last-poll").textContent).toBe("Последний успешный опрос: —");
     expect(screen.getByTestId("telegram-bot").textContent).toBe("Бот: —");
@@ -190,7 +199,12 @@ describe("TelegramPage save", () => {
     fireEvent.click(screen.getByTestId("telegram-save"));
 
     await waitFor(() =>
-      expect(vi.mocked(api.telegramSave)).toHaveBeenCalledWith({ token: "123:abc", allowedUserId: 42, enabled: true })
+      expect(vi.mocked(api.telegramSave)).toHaveBeenCalledWith({
+        token: "123:abc",
+        allowedUserId: 42,
+        enabled: true,
+        streamAnswers: false
+      })
     );
     // T11-7: the status is re-read instead of trusting the response body
     await waitFor(() => expect(vi.mocked(api.telegramStatus)).toHaveBeenCalledTimes(2));
@@ -211,7 +225,7 @@ describe("TelegramPage save", () => {
     fireEvent.click(screen.getByTestId("telegram-save"));
     await waitFor(() => expect(vi.mocked(api.telegramSave)).toHaveBeenCalledTimes(1));
     const req = vi.mocked(api.telegramSave).mock.calls[0]?.[0] as TelegramSaveRequest;
-    expect(req).toEqual({ enabled: true });
+    expect(req).toEqual({ enabled: true, streamAnswers: true });
     expect("token" in req).toBe(false);
     expect("allowedUserId" in req).toBe(false);
   });
@@ -234,7 +248,26 @@ describe("TelegramPage save", () => {
     fireEvent.change(screen.getByTestId("telegram-user-id-input"), { target: { value: "7" } });
     await waitFor(() => expect((screen.getByTestId("telegram-save") as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByTestId("telegram-save"));
-    await waitFor(() => expect(vi.mocked(api.telegramSave)).toHaveBeenCalledWith({ allowedUserId: 7, enabled: true }));
+    await waitFor(() =>
+      expect(vi.mocked(api.telegramSave)).toHaveBeenCalledWith({
+        allowedUserId: 7,
+        enabled: true,
+        streamAnswers: false
+      })
+    );
+  });
+
+  it("saves the answer-stream switch and restores it from the status", async () => {
+    const api = makeApi({ ...CONNECTED, streamAnswers: true });
+    render(<TelegramPage api={api} />);
+    const toggle = (await screen.findByTestId("telegram-stream-answers-input")) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByTestId("telegram-save"));
+
+    await waitFor(() => expect(api.telegramSave).toHaveBeenCalled());
+    expect(vi.mocked(api.telegramSave).mock.calls.at(-1)![0].streamAnswers).toBe(false);
   });
 
   it("blocks a non-positive User ID instead of sending it", async () => {

@@ -33,10 +33,11 @@ interface TelegramPageProps {
 }
 
 /**
- * «Telegram» page: the bot token, the allowlisted user id and the enabled
- * toggle, plus the live status card (state badge, bot username, last successful
- * poll, safe error message). Mirrors ModelsPage idioms: single role="alert"
- * banner, busy-locked buttons, Russian copy, data-testids.
+ * «Telegram» page: the bot token, the allowlisted user id, the enabled toggle
+ * and the answer-stream switch, plus the live status card (state badge, bot
+ * username, last successful poll, safe error message). Mirrors ModelsPage
+ * idioms: single role="alert" banner, busy-locked buttons, Russian copy,
+ * data-testids.
  *
  * Two server-side rules shape the flow:
  * - the token is write-only: an empty field means "keep the stored one" and no
@@ -55,21 +56,24 @@ export default function TelegramPage({ api }: TelegramPageProps) {
   const [token, setToken] = useState("");
   const [userId, setUserId] = useState("");
   const [enabled, setEnabled] = useState(false);
+  const [streamAnswers, setStreamAnswers] = useState(true);
 
   const [testUsername, setTestUsername] = useState<string | null>(null);
   const [confirmingClear, setConfirmingClear] = useState(false);
 
   /**
-   * Re-read the status. `syncForm` also pulls the enabled flag and empties the
-   * inputs, so the form reflects what the server actually stored — used on the
-   * first load and after every state-changing operation, never after the
-   * non-mutating connection test (that would discard what the user typed).
+   * Re-read the status. `syncForm` also pulls the enabled flag and the
+   * answer-stream switch and empties the inputs, so the form reflects what the
+   * server actually stored — used on the first load and after every
+   * state-changing operation, never after the non-mutating connection test
+   * (that would discard what the user typed).
    */
   const refresh = useCallback(async (syncForm: boolean): Promise<TelegramSettingsStatus> => {
     const res = await api.telegramStatus();
     setStatus(res.status);
     if (syncForm) {
       setEnabled(res.status.enabled);
+      setStreamAnswers(res.status.streamAnswers);
       setToken("");
       setUserId("");
     }
@@ -113,7 +117,7 @@ export default function TelegramPage({ api }: TelegramPageProps) {
    * 400 invalid-user-id).
    */
   function buildSaveRequest(): TelegramSaveRequest {
-    const req: TelegramSaveRequest = { enabled };
+    const req: TelegramSaveRequest = { enabled, streamAnswers };
     const nextToken = token.trim();
     if (nextToken !== "") req.token = nextToken;
     const nextUserId = typedUserId();
@@ -297,6 +301,20 @@ export default function TelegramPage({ api }: TelegramPageProps) {
               />
               <span>Включить бота</span>
             </label>
+
+            <label className="form-check">
+              <input
+                type="checkbox"
+                data-testid="telegram-stream-answers-input"
+                checked={streamAnswers}
+                onChange={(e) => setStreamAnswers(e.target.checked)}
+              />
+              <span>Потоковый ответ</span>
+            </label>
+            <span className="form-hint">
+              Показывать текст ответа модели по мере генерации в отдельном растущем сообщении. Выключено — ответ
+              приходит одним финальным сообщением, как раньше.
+            </span>
 
             {validationHint !== null && (
               <p className="form-hint telegram-hint" data-testid="telegram-validation-hint">

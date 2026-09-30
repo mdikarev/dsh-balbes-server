@@ -241,6 +241,7 @@ describe("api client", () => {
         state: "connected",
         tokenConfigured: true,
         enabled: true,
+        streamAnswers: true,
         allowedUserId: 7,
         botUsername: "balbes_bot",
         lastPollAt: "2026-09-10T10:00:00.000Z"
@@ -260,7 +261,9 @@ describe("api client", () => {
 
   it("telegramSave POSTs the request body to /api/telegram/save", async () => {
     localStorage.setItem(TOKEN_KEY, "tok-1");
-    const fetchMock = mockFetchOnce(200, { status: { state: "disabled", tokenConfigured: true, enabled: false } });
+    const fetchMock = mockFetchOnce(200, {
+      status: { state: "disabled", tokenConfigured: true, enabled: false, streamAnswers: false }
+    });
     vi.stubGlobal("fetch", fetchMock);
     const api = createApiClient();
     const req: TelegramSaveRequest = { token: "123:abc", allowedUserId: 7, enabled: false };

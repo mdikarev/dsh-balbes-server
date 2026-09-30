@@ -40,6 +40,7 @@ const TELEGRAM_OK: Reply = {
       state: "connected",
       tokenConfigured: true,
       enabled: true,
+      streamAnswers: true,
       allowedUserId: 7,
       botUsername: "balbes_bot",
       lastPollAt: "2026-09-10T10:00:00.000Z"
