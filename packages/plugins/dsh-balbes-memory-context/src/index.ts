@@ -8,24 +8,34 @@ export const Config = z.object({ intervalMs: z.number().required(false) });
 
 interface CtxLike {
   provide(key: string, value: unknown): void;
+  effect?(callback: () => (() => void) | void, label?: string): void;
   logger: MemoryContextLogger;
 }
 
 /**
  * Метрики — эффект процесса, а не агента: один сервис на сервер, интервал
- * сброса окна в журнал. Нечисловой/неположительный интервал выключает таймер,
- * но снимок на сброс остаётся.
+ * сброса окна в журнал. Приоритет: config.intervalMs, затем конечное значение
+ * BALBES_MEMORY_METRICS_INTERVAL_MS; отсутствующая, пустая или нечисловая
+ * переменная даёт дефолт 15 минут. Таймер выключает только конечное значение
+ * ≤ 0; снимок на сброс остаётся.
  */
 export function apply(ctx: CtxLike, config: { intervalMs?: number }): void {
-  const envInterval = Number(process.env.BALBES_MEMORY_METRICS_INTERVAL_MS);
+  const raw = process.env.BALBES_MEMORY_METRICS_INTERVAL_MS?.trim();
+  const envInterval = raw ? Number(raw) : Number.NaN;
   const intervalMs =
     typeof config.intervalMs === "number"
       ? config.intervalMs
-      : Number.isFinite(envInterval) && process.env.BALBES_MEMORY_METRICS_INTERVAL_MS !== undefined
+      : Number.isFinite(envInterval)
         ? envInterval
         : DEFAULT_METRICS_INTERVAL_MS;
   const metrics: MemoryMetricsService = startMemoryMetrics({ intervalMs, logger: ctx.logger });
   const service: BalbesMemoryContextService = createMemoryContext(ctx.logger, metrics);
   ctx.provide("balbesMemoryContext", service);
   ctx.provide("balbesMemoryMetrics", metrics);
+  ctx.effect?.(
+    () => () => {
+      metrics.dispose();
+    },
+    "balbesMemoryMetrics.dispose"
+  );
 }
