@@ -442,7 +442,7 @@
 - request: `{scope: {kind: "global"} | {kind: "project", name: string}, type: "fact"|"preference"|"decision"|"note", text: string, tags?: string[], originRef?: string}`
 - response: `{proposal: MemoryProposal}`
 - errors: 400 (`bad-request`: форма тела/scope), 400 (`invalid-record`/`invalid-scope` при неверном значении, `secret-detected`: текст похож на секрет — ничего не пишется), 401, 500 (`internal`), 503 (`memory-unavailable`)
-- notes: сервер принудительно пишет `origin: "agent"` и `status: "proposed"`; значения `origin`/`status`/`decided*` из тела игнорируются, поля `pinned` в контракте нет вовсе. Предложение живёт в `memory_proposals` и не появляется в `memories`, поэтому доставке не видно.
+- notes: сервер принудительно пишет `origin: "agent"` и `status: "proposed"`; значения `origin`/`status`/`decided*` из тела игнорируются, поля `pinned` в контракте нет вовсе. Предложение живёт в `memory_proposals` и не появляется в `memories`, поэтому доставке не видно. Тот же путь использует автоизвлечение (p10g) внутри процесса — инструментом `propose_memory`; новых ручек, полей и изменений контракта это не создаёт.
 
 ### memory.review/list — очередь ревью предложенных записей
 - method: POST
