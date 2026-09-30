@@ -2134,15 +2134,16 @@ function messageOf(error: unknown): string {
 
 export default function MemoryReviewQueue({
   api,
-  onPendingCount
+  onDecided
 }: {
   api: AdminApi;
   /**
-   * Reports how many proposals are waiting whenever the load used the default
-   * (pending) filter. The canon puts a pending counter on the tab label, and the
-   * queue is the only place that fetches the queue — the page must not fetch twice.
+   * Fired after a successful owner decision so the tab shell can refresh its
+   * pending counter. It deliberately reports NO number: this component's load is
+   * filter-dependent (the level selector defaults to «Дом»), and a filtered count
+   * must never reach a badge that canon defines as «счётчик ожидающих предложений».
    */
-  onPendingCount?: (count: number) => void;
+  onDecided?: () => void;
 }) {
   const [projects, setProjects] = useState<WorkspaceProject[]>([]);
   const [level, setLevel] = useState<LevelSelection>({ kind: "global" });
@@ -2172,11 +2173,10 @@ export default function MemoryReviewQueue({
       });
       setProposals(res.proposals);
       setPolicy(res.policy);
-      if (!showDecided) onPendingCount?.(res.proposals.length);
     } catch (error) {
       setLoadError(messageOf(error));
     }
-  }, [api, level, type, tag, showDecided, onPendingCount]);
+  }, [api, level, type, tag, showDecided]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2218,6 +2218,7 @@ export default function MemoryReviewQueue({
     setFormError(null);
     try {
       await api.approveMemoryReview(patch);
+      onDecided?.();
       setEditing(null);
       await load();
     } catch (error) {
@@ -2237,6 +2238,7 @@ export default function MemoryReviewQueue({
     setBusy(true);
     try {
       await api.rejectMemoryReview({ id: toReject.id });
+      onDecided?.();
       setToReject(null);
       await load();
     } catch (error) {
@@ -2437,7 +2439,6 @@ Append to `packages/frontend/dsh-balbes-admin/src/styles.css`:
 .memory-tab-active { background: var(--accent); color: #fff; border-color: var(--accent); }
 .memory-review-policy { margin: 0 0 12px; opacity: 0.8; font-size: 13px; }
 .memory-review-status { padding: 1px 6px; border-radius: 4px; font-size: 12px; }
-.memory-tab-count { margin-left: 6px; padding: 0 6px; border-radius: 8px; background: rgba(255, 255, 255, 0.25); font-size: 12px; }
 .memory-review-status-accepted { background: rgba(46, 160, 67, 0.18); }
 .memory-review-status-rejected { background: rgba(200, 60, 60, 0.18); }
 ```
@@ -2464,6 +2465,7 @@ git commit -m "feat(admin): add the memory review queue (p10f)"
 
 **Files:**
 - Modify: `packages/frontend/dsh-balbes-admin/src/pages/MemoryPage.tsx`
+- Modify: `packages/frontend/dsh-balbes-admin/src/styles.css`
 - Test: `packages/frontend/dsh-balbes-admin/tests/MemoryPage.test.tsx`
 
 **Interfaces:**
@@ -2538,17 +2540,20 @@ import {
   const [pendingCount, setPendingCount] = useState(0);
 ```
 
-- seed the counter once on mount, so the badge is correct before the queue is ever opened (the canon puts the counter on the tab label, and the queue component reports its own count upward after every pending-mode load):
+- own the counter here, and always ask for it **unfiltered**: canon defines the badge as «счётчик ожидающих предложений» (`ADMIN_UI.md:177`), while the queue's own load is filter-dependent (its level defaults to «Дом»), so a count taken from that load would silently understate the queue. Seed once on mount — the badge must be right before the owner ever opens the tab — and refresh on every decision the queue reports:
 
 ```tsx
-  useEffect(() => {
-    let cancelled = false;
-    void api
-      .listMemoryReview({})
-      .then((res) => { if (!cancelled) setPendingCount(res.proposals.length); })
-      .catch(() => { /* the queue tab reports the real error */ });
-    return () => { cancelled = true; };
+  const refreshPendingCount = useCallback(async (): Promise<void> => {
+    try {
+      // No scope, no type, no tag: this is the total, not the current view.
+      const res = await api.listMemoryReview({});
+      setPendingCount(res.proposals.length);
+    } catch {
+      // The queue tab surfaces the real error; a stale badge is not worth an alert.
+    }
   }, [api]);
+
+  useEffect(() => { void refreshPendingCount(); }, [refreshPendingCount]);
 ```
 
 - replace the opening of the returned JSX so the toolbar and list render only on the records tab:
@@ -2583,7 +2588,7 @@ import {
       </div>
 
       {tab === "review" ? (
-        <MemoryReviewQueue api={api} onPendingCount={setPendingCount} />
+        <MemoryReviewQueue api={api} onDecided={refreshPendingCount} />
       ) : (
         <>
           {/* the existing toolbar, states, list and modals stay verbatim in here */}
@@ -2600,10 +2605,17 @@ Keep every existing JSX block for the records tab verbatim inside the fragment; 
 Run: `cd packages/frontend/dsh-balbes-admin && npx vitest run tests/MemoryPage.test.tsx tests/MemoryReviewQueue.test.tsx`
 Expected: PASS — including every pre-existing MemoryPage test.
 
+Append the badge rule to `packages/frontend/dsh-balbes-admin/src/styles.css`:
+
+```css
+.memory-tab-count { margin-left: 6px; padding: 0 6px; border-radius: 8px; background: rgba(255, 255, 255, 0.25); font-size: 12px; }
+```
+
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/frontend/dsh-balbes-admin/src/pages/MemoryPage.tsx packages/frontend/dsh-balbes-admin/tests/MemoryPage.test.tsx
+git add packages/frontend/dsh-balbes-admin/src/pages/MemoryPage.tsx packages/frontend/dsh-balbes-admin/src/styles.css \
+  packages/frontend/dsh-balbes-admin/tests/MemoryPage.test.tsx
 git commit -m "feat(admin): split the memory page into records and review tabs (p10f)"
 ```
 
