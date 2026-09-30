@@ -291,6 +291,81 @@ describe.skipIf(!realEnabled)("REAL composition (memory delivery)", () => {
       expect(approvedRun.status, approvedRun.raw).toBe(200);
       const approvedBodies = JSON.stringify(stub.calls.slice(beforeApproved).map((call) => call.body));
       expect(approvedBodies, approvedBodies.slice(0, 4000)).toContain(proposalMarker);
+
+      // p10h: наблюдаемость доставки — снимок без текста памяти.
+      const metricsRes = await postJson(base + "/api/memory/metrics", {}, token);
+      expect(metricsRes.status, metricsRes.raw).toBe(200);
+      const metrics = (metricsRes.json as { metrics: Record<string, unknown> }).metrics;
+      // Снимок admin-ручки — ЛОКАЛЬНОЕ структурное зеркало memory-context
+      // (`MemoryMetricsSnapshotLike` в admin/src/routes.ts, без компиляторной связи
+      // между пакетами). REAL-тест — единственное место, где оба пакета встречаются,
+      // поэтому дрейф ключей обязан краснеть здесь: канон (API_CONTRACTS.md →
+      // `memory.metrics`) документирует ровно этот набор полей.
+      expect(Object.keys(metrics).sort(), JSON.stringify(metrics)).toEqual([
+        "byChannel",
+        "byScope",
+        "dropped",
+        "process",
+        "recall",
+        "schema",
+        "topRecords",
+        "unqueriedDelivered",
+        "window"
+      ]);
+      const admin = (metrics.byChannel as Record<string, { turns: number; deliveries: number }>).admin;
+      expect(admin, JSON.stringify(metrics.byChannel)).toBeDefined();
+      expect(admin!.turns).toBeGreaterThanOrEqual(1);
+      expect(admin!.deliveries).toBeGreaterThanOrEqual(1);
+      const topRecords = metrics.topRecords as Array<{ id: string; type: string; scope: string; inCore: number }>;
+      const pinnedId = (coreSave.json as { record: { id: string } }).record.id;
+      const tracked = topRecords.find((entry) => entry.id === pinnedId);
+      expect(tracked, JSON.stringify(topRecords)).toBeDefined();
+      expect(tracked!.inCore).toBeGreaterThanOrEqual(1);
+      expect(tracked!.type).toBe("fact");
+      expect(tracked!.scope).toBe("global");
+      // Форма записи зеркала обязана совпадать с `MemoryMetricsRecordMetrics`
+      // (pinned-запись уже доказана выше, поэтому topRecords здесь не пуст).
+      expect(Object.keys(topRecords[0]!).sort(), JSON.stringify(topRecords[0])).toEqual([
+        "id",
+        "inCore",
+        "inMap",
+        "inPush",
+        "recallDelivered",
+        "recallQueries",
+        "scope",
+        "type"
+      ]);
+      // Приватность: ни текст памяти, ни originRef в снимок не попадают.
+      const serializedMetrics = JSON.stringify(metrics);
+      expect(serializedMetrics).not.toContain(coreMarker);
+      expect(serializedMetrics).not.toContain(pushMarker);
+      expect(serializedMetrics).not.toContain("originRef");
+
+      // recall: вызов с попаданием учитывается, пустой результат — промах.
+      stub.setScript([
+        { toolCall: { name: "recall", arguments: JSON.stringify({ query: "deploy checks" }) } },
+        { text: "recalled" }
+      ]);
+      const recallRun = await postJson(base + "/api/prompt", { prompt: "recall please" }, token);
+      expect(recallRun.status, recallRun.raw).toBe(200);
+      stub.setScript([
+        { toolCall: { name: "recall", arguments: JSON.stringify({ query: "zzz-nonexistent-subject" }) } },
+        { text: "nothing matched" }
+      ]);
+      const emptyRun = await postJson(base + "/api/prompt", { prompt: "recall the impossible" }, token);
+      expect(emptyRun.status, emptyRun.raw).toBe(200);
+      const recallRes = await postJson(base + "/api/memory/metrics", { reset: true, top: 5 }, token);
+      expect(recallRes.status, recallRes.raw).toBe(200);
+      const recallMetrics = (recallRes.json as { metrics: { recall: { calls: number; empty: number; failed: number } } }).metrics;
+      expect(recallMetrics.recall.calls).toBeGreaterThanOrEqual(2);
+      expect(recallMetrics.recall.empty).toBeGreaterThanOrEqual(1);
+      expect(recallMetrics.recall.failed).toBe(0);
+      // reset закрыл окно: следующий вызов видит пустое окно и сохранённые тоталы.
+      const afterReset = await postJson(base + "/api/memory/metrics", {}, token);
+      expect(afterReset.status, afterReset.raw).toBe(200);
+      const resetMetrics = (afterReset.json as { metrics: { window: { turns: number }; process: { totals: { turns: number } } } }).metrics;
+      expect(resetMetrics.window.turns).toBe(0);
+      expect(resetMetrics.process.totals.turns).toBeGreaterThanOrEqual(1);
     } finally {
       await stopServer();
       await rm(home, { recursive: true, force: true });
