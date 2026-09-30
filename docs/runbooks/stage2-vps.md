@@ -716,6 +716,37 @@ curl -fsS -X POST http://127.0.0.1:8080/api/memory/delete \
 # ожидается: {"deleted":true}
 ```
 
+Автоизвлечение из Telegram-задачи (p10g):
+
+```bash
+# 1) дать боту задачу, которая требует работы инструментом (не «привет»),
+#    например: «прочитай README.md в проекте и перескажи одной строкой»
+# ожидается: обычный ответ агента в чате; ответ приходит ДО извлечения
+
+# 2) предложение извлечения ждёт решения владельца
+curl -fsS -X POST http://127.0.0.1:8080/api/memory/review/list \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{"status":["proposed"]}'
+# ожидается: среди proposals новое с "status":"proposed",
+#   "originRef":"telegram session:<id>" и текстом из задачи; в /api/memory/list
+#   того же текста нет — извлечённое не стало истиной
+
+# 3) негативная проверка: задача без работы инструментов не извлекается
+#    («привет» в Telegram), затем повторить шаг 2
+# ожидается: число ожидающих предложений не изменилось
+
+# 4) след извлечения в журнале — без текста памяти
+journalctl -u dsh-balbes -n 200 | grep 'balbes-memory-context: extraction'
+# ожидается (при уровне info): «... extraction channel=telegram scope=...
+#   proposed=1 duplicate=0 secret=0 limit=0»; отсутствие строки — норма при
+#   журналировании только warn/error, warn появляется при сбое извлечения
+
+# 5) одобрение промоутит предложение в запись (тот же smoke, что у p10f)
+curl -fsS -X POST http://127.0.0.1:8080/api/memory/review/approve \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{"id":"<proposal-id>"}'
+# ожидается: {"proposal":{...,"status":"accepted",...},"record":{...,"origin":"agent",
+#   "originRef":"telegram session:<id>",...}}
+```
+
 Артефакт БД (та же память на диске):
 
 ```bash
