@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { AgentTaskRunner, TaskProgress, TaskResult, WorkspaceRef } from "../src/agentTask.js";
+import type { AgentTaskRunner, LiveAnswerSnapshot, TaskProgress, TaskResult, WorkspaceRef } from "../src/agentTask.js";
 import type { BotClient } from "../src/bot.js";
 import {
   createChatMachine,
@@ -234,6 +234,7 @@ function makeRunner(): {
   resets: WorkspaceRef[];
   cancel: ReturnType<typeof vi.fn>;
   progress: ReturnType<typeof vi.fn>;
+  answer: ReturnType<typeof vi.fn>;
   sessionIdOf: ReturnType<typeof vi.fn>;
   setResult: (result: TaskResult) => void;
   hold: () => { release: (result: TaskResult) => void; settled: () => boolean };
@@ -246,6 +247,9 @@ function makeRunner(): {
   // Configurable by the menu-card tests: the default is an idle workspace with
   // no session yet.
   const progress = vi.fn((): TaskProgress => ({ phase: "idle", steps: [], queued: 0 }));
+  // Task 4 turns this into a driven fake; for now the runner's new read answers
+  // "nothing is streaming" so the interface stays satisfied.
+  const answer = vi.fn((): LiveAnswerSnapshot => ({ phase: "idle" }));
   const sessionIdOf = vi.fn((): string | undefined => undefined);
   let result: TaskResult = { ok: true, text: "готово", sessionId: "session-1" };
   let gate: Promise<TaskResult> | undefined;
@@ -261,6 +265,7 @@ function makeRunner(): {
     },
     cancel: cancels,
     progress,
+    answer,
     sessionIdOf,
     snapshot() {
       return [];
@@ -273,6 +278,7 @@ function makeRunner(): {
     resets,
     cancel: cancels,
     progress,
+    answer,
     sessionIdOf,
     setResult: (next) => {
       result = next;

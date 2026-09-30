@@ -630,6 +630,7 @@ export function apply(ctx: PluginCtx, config: TelegramConfigLike): void {
     },
     cancel: (ref) => runner.cancel(ref),
     progress: (ref) => runner.progress(ref),
+    answer: (ref) => runner.answer(ref),
     sessionIdOf: (ref) => runner.sessionIdOf(ref) ?? live.sessions[workspaceRefKey(ref)],
     snapshot: () => runner.snapshot()
   };

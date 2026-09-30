@@ -1296,3 +1296,153 @@ describe("live model selection", () => {
     expect(expectOk(second).sessionId).toBe(sessionId);
   });
 });
+
+describe("live answer stream", () => {
+  /**
+   * Фейковый agent-scope: запоминает слушателя `agent/assistant-stream` —
+   * ровно тот шов, на который канал подписывается в `setup`, — и даёт emit,
+   * чтобы тест публиковал кадры за движок.
+   */
+  function makeAnswerCtx(): {
+    ctx: { on(event: string, listener: (payload: unknown) => void): () => void; get(key: string): unknown };
+    emit(frame: unknown): void;
+  } {
+    let listener: ((payload: unknown) => void) | undefined;
+    return {
+      ctx: {
+        on(event: string, fn: (payload: unknown) => void): () => void {
+          if (event === "agent/assistant-stream") listener = fn;
+          return () => {
+            listener = undefined;
+          };
+        },
+        get: () => undefined
+      },
+      emit(frame: unknown): void {
+        listener?.({ frame });
+      }
+    };
+  }
+
+  it("exposes the running task turn's text and nothing else", async () => {
+    const { agents, runner } = await makeRunner();
+    agents.cfg({ holdIdle: true, answers: ["полный ответ"] });
+    const result = runner.run({ scope: "home" }, "задача");
+    await waitFor(() => agents.createOpts.length === 1);
+    const answer = makeAnswerCtx();
+    agents.createOpts[0]!.setup(answer.ctx);
+    // Фейк паркует и whenIdle ДО хода задачи: отпускаем его, чтобы ход
+    // действительно начался, и только потом ждём окно самого хода.
+    await waitFor(() => agents.created[0]!.agent.whenIdle.mock.calls.length === 1);
+    agents.created[0]!.releaseParked();
+    await waitFor(() => runner.progress({ scope: "home" }).phase === "running");
+
+    answer.emit({ type: "chunk", chunk: { type: "text-delta", text: "пол" } });
+    expect(runner.answer({ scope: "home" })).toEqual({ phase: "running", taskText: "задача", text: "пол" });
+
+    // Рассуждения и служебные кадры в витрину не попадают.
+    answer.emit({ type: "chunk", chunk: { type: "reasoning-delta", text: "шум" } });
+    answer.emit({ type: "start" });
+    answer.emit({ type: "chunk", chunk: { type: "tool-call-delta", text: "{}" } });
+    expect(runner.answer({ scope: "home" }).text).toBe("пол");
+
+    answer.emit({ type: "chunk", chunk: { type: "text-delta", text: "ный ответ" } });
+    expect(runner.answer({ scope: "home" }).text).toBe("полный ответ");
+
+    agents.created[0]!.releaseParked();
+    await result;
+  });
+
+  it("reports idle without a turn of its own and after the turn settled", async () => {
+    const { agents, runner } = await makeRunner();
+    expect(runner.answer({ scope: "home" })).toEqual({ phase: "idle" });
+
+    agents.cfg({ holdIdle: true, answers: ["готово"] });
+    const result = runner.run({ scope: "home" }, "задача");
+    await waitFor(() => agents.createOpts.length === 1);
+    const answer = makeAnswerCtx();
+    agents.createOpts[0]!.setup(answer.ctx);
+    // Тот же парк whenIdle ДО хода задачи, что и в первом тесте.
+    await waitFor(() => agents.created[0]!.agent.whenIdle.mock.calls.length === 1);
+    agents.created[0]!.releaseParked();
+    await waitFor(() => runner.progress({ scope: "home" }).phase === "running");
+    answer.emit({ type: "chunk", chunk: { type: "text-delta", text: "живое" } });
+    expect(runner.answer({ scope: "home" }).phase).toBe("running");
+
+    agents.created[0]!.releaseParked();
+    await result;
+
+    // Осевший ход живого текста не оставляет, даже если кадр придёт позже.
+    answer.emit({ type: "chunk", chunk: { type: "text-delta", text: "поздно" } });
+    expect(runner.answer({ scope: "home" })).toEqual({ phase: "idle" });
+  });
+
+  it("does not report another workspace's live text", async () => {
+    const { agents, runner } = await makeRunner();
+    agents.cfg({ holdIdle: true, answers: ["ответ"] });
+    const result = runner.run(PROJECT_ALPHA, "задача");
+    await waitFor(() => agents.createOpts.length === 1);
+    const answer = makeAnswerCtx();
+    agents.createOpts[0]!.setup(answer.ctx);
+    // Тот же парк whenIdle ДО хода задачи, что и в первом тесте.
+    await waitFor(() => agents.created[0]!.agent.whenIdle.mock.calls.length === 1);
+    agents.created[0]!.releaseParked();
+    await waitFor(() => runner.progress(PROJECT_ALPHA).phase === "running");
+    answer.emit({ type: "chunk", chunk: { type: "text-delta", text: "текст" } });
+
+    expect(runner.answer({ scope: "home" })).toEqual({ phase: "idle" });
+    expect(runner.answer(PROJECT_ALPHA).text).toBe("текст");
+
+    agents.created[0]!.releaseParked();
+    await result;
+  });
+
+  /**
+   * Канон фиксирует: служебный ход извлечения памяти (p10g) идёт в той же
+   * сессии и тем же агентом, но в буфер потока не пишет. Фейк здесь сам зовёт
+   * `setup` из `create` (как движок), поэтому слушатель и memory-слой стоят на
+   * месте ещё до того, как `acquireHandle` вернётся.
+   */
+  it("does not let the service extraction turn write into the buffer", async () => {
+    const answer = makeAnswerCtx();
+    const handle = makeHandle({ holdIdle: true, answers: ["ответ", "служебный ход"] });
+    const extraction = {
+      qualifies: () => true,
+      begin: () => ({ message: "извлеки факт" }),
+      end: vi.fn()
+    };
+    const runner = createAgentTaskRunner({
+      agents: {
+        async create(opts: unknown) {
+          (opts as { setup(ctx: unknown): void }).setup(answer.ctx);
+          return handle;
+        },
+        async resume() {
+          throw new Error("no session to resume");
+        }
+      },
+      sessions: { flush: vi.fn(async () => {}) },
+      defaultModel: { currentSelection: () => SELECTION },
+      workspaces: makeWorkspaces(await mkdtemp(join(tmpdir(), "agenttask-answer-extraction-"))),
+      memory: { attach: () => ({ prepare: vi.fn(async () => {}), extraction }) },
+      logger: { warn: vi.fn() }
+    } as unknown as AgentTaskDeps);
+
+    const result = runner.run({ scope: "home" }, "задача");
+    // Ход задачи: отпускаем парк whenIdle ДО хода, дельта владельцу видна.
+    await waitFor(() => handle.agent.whenIdle.mock.calls.length === 1);
+    handle.releaseParked();
+    await waitFor(() => runner.progress({ scope: "home" }).phase === "running");
+    answer.emit({ type: "chunk", chunk: { type: "text-delta", text: "ответ" } });
+    expect(runner.answer({ scope: "home" }).text).toBe("ответ");
+
+    // Ход задачи осел, раннер ушёл в служебный ход: окно потока закрыто.
+    handle.releaseParked();
+    await waitFor(() => handle.agent.followup.mock.calls.length === 2);
+    answer.emit({ type: "chunk", chunk: { type: "text-delta", text: "служебный ход" } });
+    expect(runner.answer({ scope: "home" }).text).toBe("");
+
+    handle.releaseParked();
+    await result;
+  });
+});

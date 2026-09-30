@@ -3,6 +3,7 @@ import { brandString } from "@deepseek-ai/dsh-brand";
 import { installModelSelection } from "@deepseek-ai/dsh-agent";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { SessionSeq } from "@deepseek-ai/dsh-session";
+import { createLiveAnswer, type AssistantFrameLike, type LiveAnswer } from "./answerStream.js";
 
 /**
  * Workspace-aware runner of the stock dsh agent loop with one persistent
@@ -88,6 +89,22 @@ export interface TaskProgress {
   queued: number;
 }
 
+/**
+ * Живой текст хода задачи этой workspace, для растущего сообщения потока.
+ *
+ * Отдельный от {@link TaskProgress} read намеренно: `TaskProgress` остаётся
+ * content-free («the assistant's text never appears»), а текст модели живёт
+ * здесь. Как и прогресс, снимок описывает ТОЛЬКО свой ход: у ожидающей задачи
+ * фазы нет, у осевшей — тоже («a settled turn has no live state»).
+ */
+export interface LiveAnswerSnapshot {
+  phase: "idle" | "running";
+  /** Текст задачи, которой принадлежит ход: потребитель сверяется со своей. */
+  taskText?: string;
+  /** Накопленный хвост текста модели (<= LIVE_ANSWER_LIMIT). */
+  text?: string;
+}
+
 export interface AgentTaskRunner {
   run(ref: WorkspaceRef, text: string, opts?: { sessionId?: string }): Promise<TaskResult>;
   reset(ref: WorkspaceRef): Promise<void>;
@@ -107,6 +124,12 @@ export interface AgentTaskRunner {
    * touches a turn.
    */
   progress(ref: WorkspaceRef): TaskProgress;
+  /**
+   * Живой текст хода задачи этой workspace, или `idle`. Read-only и дешёвый:
+   * ни I/O, ни агентского вызова — только буфер, который наполняет
+   * agent-scoped слушатель `agent/assistant-stream`.
+   */
+  answer(ref: WorkspaceRef): LiveAnswerSnapshot;
   sessionIdOf(ref: WorkspaceRef): string | undefined;
   /** Live session mapping, for persisting across restarts (tasks 8/11). */
   snapshot(): Array<{ key: string; sessionId: string }>;
@@ -291,6 +314,8 @@ interface KeyedEntry {
   handle: AgentHandleLike | undefined;
   sessionId: string | undefined;
   memory: MemoryContextAttachmentLike | undefined;
+  /** Живой буфер ответа этого агента; окно открывает ход задачи. */
+  liveAnswer: LiveAnswer | undefined;
   busy: boolean;
   /** The text of the task currently being executed (for dedupe). */
   activeText: string | undefined;
@@ -552,7 +577,12 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
     root: string,
     ref: WorkspaceRef,
     opts: { sessionId?: string } | undefined
-  ): Promise<{ handle: AgentHandleLike; sessionId: string; memory: MemoryContextAttachmentLike | undefined }> {
+  ): Promise<{
+    handle: AgentHandleLike;
+    sessionId: string;
+    memory: MemoryContextAttachmentLike | undefined;
+    liveAnswer: LiveAnswer;
+  }> {
     const selection = liveSelection(deps.defaultModel);
     const freshSessionId = brandString(`session-${randomUUID()}`);
     // The id the write context must carry is the session the task actually runs
@@ -560,9 +590,24 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
     // resume has abandoned it.
     let resumedSessionId: string | undefined = opts?.sessionId;
     let memory: MemoryContextAttachmentLike | undefined;
+    /**
+     * Живой поток ответа: agent-scoped слушатель получает кадры ТОЛЬКО этого
+     * агента (scope-фильтрация движка) и снимается вместе со scope при
+     * dispose. Окно открывает исключительно ход задачи (см. executeTurn),
+     * поэтому дельты служебного хода извлечения памяти в буфер не попадают.
+     */
+    const liveAnswer = createLiveAnswer();
+    const listenForAnswer = (agentCtx: unknown): void => {
+      (
+        agentCtx as {
+          on(event: string, listener: (payload: { frame: AssistantFrameLike }) => void): () => void;
+        }
+      ).on("agent/assistant-stream", ({ frame }) => liveAnswer.accept(frame));
+    };
     const setup = (agentCtx: unknown): void => {
       composeAgentSetup(agentCtx, { selection: selection.ref });
       deps.approvals?.attach(agentCtx, ref);
+      listenForAnswer(agentCtx);
       memory = deps.memory?.attach(
         agentCtx,
         ref.scope === "home" ? { kind: "global" } : { kind: "project", name: ref.name },
@@ -580,7 +625,7 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
           agentOptions: selection.initial,
           setup
         });
-        return { handle, sessionId: opts.sessionId, memory };
+        return { handle, sessionId: opts.sessionId, memory, liveAnswer };
       } catch (error) {
         // Session missing/corrupt on disk: warn and fall back to a fresh
         // session; the mapping is reset so the plugin repersists the new id.
@@ -597,7 +642,7 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
       agentOptions: selection.initial,
       setup
     });
-    return { handle, sessionId, memory };
+    return { handle, sessionId, memory, liveAnswer };
   }
 
   /**
@@ -649,6 +694,7 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
         entry.handle = handle;
         entry.sessionId = sessionId;
         entry.memory = acquired.memory;
+        entry.liveAnswer = acquired.liveAnswer;
         // A cancel may have landed while create/resume was still resolving:
         // there was no handle to abort yet, only the entry flag. Keep the handle
         // (unlike the retired path above) so the session survives the stop.
@@ -682,6 +728,9 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
       // back); `agent.followup` below is what puts its first event into the log.
       entry.firstSeq = firstSeq;
       entry.startedAt = Date.now();
+      // Поток ответа ограничен этим же ходом: служебный ход извлечения памяти
+      // окно не открывает, поэтому в буфер не пишет.
+      entry.liveAnswer?.startTurn();
       agent.followup(
         createUserMessage({
           content: [{ type: "text", text }],
@@ -743,6 +792,7 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
         entry.handle = undefined;
         entry.sessionId = undefined;
         entry.memory = undefined;
+        entry.liveAnswer = undefined;
         await disposeQuietly(doomed, "disposing the wedged task agent failed");
       }
       return { ok: false, code: "agent-error", message: errorMessage(error, AGENT_ERROR_MESSAGE) };
@@ -782,6 +832,11 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
     const extractionSeq = handle.agent.session.seq;
     entry.firstSeq = extractionSeq;
     entry.startedAt = Date.now();
+    // Живое окно принадлежит ходу ЗАДАЧИ: служебный ход идёт тем же агентом,
+    // поэтому его дельты должны застать окно уже закрытым — ровно как окно
+    // прогресса только что передано ему. Иначе текст извлечения памяти попал бы
+    // в растущее сообщение владельца, чего канон не допускает.
+    entry.liveAnswer?.endTurn();
     try {
       handle.agent.followup(
         createUserMessage({
@@ -840,6 +895,9 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
       // events yet, so it must report no phase at all).
       entry.firstSeq = undefined;
       entry.startedAt = undefined;
+      // Осевший ход не оставляет живого текста: следующий тик чата не должен
+      // подхватить чужой или уже доставленный ответ.
+      entry.liveAnswer?.endTurn();
       // The stop flag is scoped to the turn it stopped: a cancel that landed as
       // this turn was settling must not misreport the NEXT queued task.
       entry.cancelled = false;
@@ -860,6 +918,7 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
           handle: undefined,
           sessionId: undefined,
           memory: undefined,
+          liveAnswer: undefined,
           busy: false,
           activeText: undefined,
           queue: [],
@@ -966,6 +1025,22 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
       if (summary.step !== undefined) out.step = summary.step;
       if (summary.todos !== undefined) out.todos = summary.todos;
       return out;
+    },
+
+    /**
+     * Живой текст хода задачи. Свободен от побочных эффектов ровно как
+     * `progress`: чат читает его, пока ход в полёте, и не должен ни ждать, ни
+     * будить агента.
+     */
+    answer(ref: WorkspaceRef): LiveAnswerSnapshot {
+      const entry = cache.get(workspaceRefKey(ref));
+      if (entry === undefined) return { phase: "idle" };
+      if (!entry.busy || entry.handle === undefined || entry.firstSeq === undefined) {
+        return { phase: "idle" };
+      }
+      const snapshot: LiveAnswerSnapshot = { phase: "running", text: entry.liveAnswer?.text() ?? "" };
+      if (entry.activeText !== undefined) snapshot.taskText = entry.activeText;
+      return snapshot;
     },
 
     sessionIdOf(ref: WorkspaceRef): string | undefined {
