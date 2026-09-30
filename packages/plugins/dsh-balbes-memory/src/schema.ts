@@ -44,12 +44,45 @@ export const DDL_V1 = [
   "END;"
 ].join("\n");
 
+/**
+ * v2 (p10f): staged proposals live in their own table. The truth table
+ * `memories`, its normalized tags and its FTS triggers are not touched, which is
+ * what makes pending knowledge structurally invisible to delivery.
+ */
+export const DDL_V2 = [
+  "CREATE TABLE memory_proposals (",
+  "  id           TEXT PRIMARY KEY,",
+  "  scope_kind   TEXT NOT NULL CHECK (scope_kind IN ('global','project')),",
+  "  scope_name   TEXT,",
+  "  type         TEXT NOT NULL CHECK (type IN ('fact','preference','decision','note')),",
+  "  text         TEXT NOT NULL,",
+  "  tags         TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(tags)),",
+  "  origin       TEXT NOT NULL CHECK (origin IN ('owner','agent')),",
+  "  origin_ref   TEXT,",
+  "  status       TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed','accepted','rejected')),",
+  "  proposed_at  TEXT NOT NULL,",
+  "  decided_at   TEXT,",
+  "  decided_by   TEXT,",
+  "  decided_edit INTEGER NOT NULL DEFAULT 0 CHECK (decided_edit IN (0,1)),",
+  "  memory_id    TEXT REFERENCES memories(id) ON DELETE SET NULL,",
+  "  CHECK ((scope_kind = 'global'  AND scope_name IS NULL)",
+  "      OR (scope_kind = 'project' AND scope_name IS NOT NULL)),",
+  "  CHECK ((status =  'proposed' AND decided_at IS NULL)",
+  "      OR (status <> 'proposed' AND decided_at IS NOT NULL))",
+  ");",
+  "CREATE INDEX idx_memory_proposals_status ON memory_proposals(status, proposed_at);",
+  "CREATE INDEX idx_memory_proposals_scope  ON memory_proposals(scope_kind, scope_name);"
+].join("\n");
+
 export interface Migration {
   version: number;
   up: (db: DatabaseSync) => void;
 }
 
-export const MIGRATIONS: readonly Migration[] = [{ version: 1, up: (db) => db.exec(DDL_V1) }];
+export const MIGRATIONS: readonly Migration[] = [
+  { version: 1, up: (db) => db.exec(DDL_V1) },
+  { version: 2, up: (db) => db.exec(DDL_V2) }
+];
 
 export function latestVersion(migrations: readonly Migration[]): number {
   return migrations.reduce((max, migration) => (migration.version > max ? migration.version : max), 0);
@@ -96,6 +129,7 @@ const REQUIRED_SCHEMA_OBJECTS: ReadonlyArray<{ type: string; name: string }> = [
   { type: "table", name: "memories" },
   { type: "table", name: "memory_tags" },
   { type: "table", name: "memory_fts" },
+  { type: "table", name: "memory_proposals" },
   { type: "trigger", name: "memories_ai" },
   { type: "trigger", name: "memories_ad" },
   { type: "trigger", name: "memories_au" }
