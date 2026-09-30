@@ -855,18 +855,28 @@ curl -fsS -X POST http://127.0.0.1:8080/api/memory/metrics \
 # ожидается: {"metrics":{...,"window":{"turns":0,...}}}, а в сохранённых
 #   process.totals turns >= 1 (тоталы процесса не сбрасываются)
 
-# след снимка в журнале — без текста памяти
+# след снимка в журнале — вспомогательная проверка, а не проверка факта.
+# Команда покажет строку, только если логгер процесса реально пишет info в
+# stdout/журнал. В установленном профиле это не так: диагностический экспортёр
+# dsh-app-boot оставляет для стартового отчёта только warn/error
+# (`{ levels: { default: 2 } }`), а экспортёр cordis по умолчанию только
+# буферизует в память; консольного экспортёра в профиле нет. Поэтому
+# `systemctl restart dsh-balbes` (финальный flush при остановке) сам по себе
+# строку в journalctl не добавляет.
 journalctl -u dsh-balbes -n 200 | grep 'balbes-memory-context: metrics'
-# ожидается (при уровне info): строка «balbes-memory-context: metrics key=server
-#   window=<...>s turns=<...> deliveries=<...> chars=<...> recall=<calls>/<empty>/<failed>
+# если строка всё же есть (логгер процесса настроен на info) — ожидается
+#   «balbes-memory-context: metrics key=server window=<...>s turns=<...>
+#   deliveries=<...> chars=<...> recall=<calls>/<empty>/<failed>
 #   latency=<total>/<max> unqueried=<...> dropped=<...> top=<id>:<hits>/<queries>,...»;
-#   отсутствие строки — норма при журналировании только warn/error, а не сбой.
-#   Строку пишет интервальный снимок (дефолт 15 минут,
-#   BALBES_MEMORY_METRICS_INTERVAL_MS) и финальный снимок при остановке сервиса.
-#   Форсировать строку сразу: `systemctl restart dsh-balbes` — это и есть
-#   финальный снимок (flush при остановке). Для дымового прогона интервал можно
-#   сократить, задав BALBES_MEMORY_METRICS_INTERVAL_MS в окружении юнита
-#   (например, 10000 = 10 секунд) и перезапустив сервис
+#   отсутствие строки — норма, а не сбой.
+# Проверка факта — не журнал, а ручка POST /api/memory/metrics (выше): именно её
+# ответ с byChannel.admin.turns >= 1 и topRecords с inCore >= 1 подтверждает
+# доставку. Строку пишет интервальный снимок (дефолт 15 минут,
+# BALBES_MEMORY_METRICS_INTERVAL_MS) и финальный снимок при остановке сервиса.
+# Для дымового прогона интервал можно сократить, задав
+# BALBES_MEMORY_METRICS_INTERVAL_MS в окружении юнита (например, 10000 = 10
+# секунд) и перезапустив сервис — но это лишь сокращает путь до flush, а не
+# поднимает уровень логгера, поэтому гарантировать появление строки нельзя.
 
 # уборка тестовой записи
 curl -fsS -X POST http://127.0.0.1:8080/api/memory/delete \
