@@ -2132,7 +2132,18 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : "неизвестная ошибка";
 }
 
-export default function MemoryReviewQueue({ api }: { api: AdminApi }) {
+export default function MemoryReviewQueue({
+  api,
+  onPendingCount
+}: {
+  api: AdminApi;
+  /**
+   * Reports how many proposals are waiting whenever the load used the default
+   * (pending) filter. The canon puts a pending counter on the tab label, and the
+   * queue is the only place that fetches the queue — the page must not fetch twice.
+   */
+  onPendingCount?: (count: number) => void;
+}) {
   const [projects, setProjects] = useState<WorkspaceProject[]>([]);
   const [level, setLevel] = useState<LevelSelection>({ kind: "global" });
   const [type, setType] = useState<MemoryType | "all">("all");
@@ -2161,10 +2172,11 @@ export default function MemoryReviewQueue({ api }: { api: AdminApi }) {
       });
       setProposals(res.proposals);
       setPolicy(res.policy);
+      if (!showDecided) onPendingCount?.(res.proposals.length);
     } catch (error) {
       setLoadError(messageOf(error));
     }
-  }, [api, level, type, tag, showDecided]);
+  }, [api, level, type, tag, showDecided, onPendingCount]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2422,9 +2434,10 @@ Append to `packages/frontend/dsh-balbes-admin/src/styles.css`:
 ```css
 .memory-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
 .memory-tab { background: transparent; border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
-.memory-tab-active { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.memory-tab-active { background: var(--accent); color: #fff; border-color: var(--accent); }
 .memory-review-policy { margin: 0 0 12px; opacity: 0.8; font-size: 13px; }
 .memory-review-status { padding: 1px 6px; border-radius: 4px; font-size: 12px; }
+.memory-tab-count { margin-left: 6px; padding: 0 6px; border-radius: 8px; background: rgba(255, 255, 255, 0.25); font-size: 12px; }
 .memory-review-status-accepted { background: rgba(46, 160, 67, 0.18); }
 .memory-review-status-rejected { background: rgba(200, 60, 60, 0.18); }
 ```
@@ -2439,7 +2452,8 @@ Expected: PASS.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add packages/frontend/dsh-balbes-admin/src/api/client.ts packages/frontend/dsh-balbes-admin/src/pages/MemoryReviewQueue.tsx \
+git add packages/frontend/dsh-balbes-admin/src/api/client.ts packages/frontend/dsh-balbes-admin/src/pages/memoryShared.ts \
+  packages/frontend/dsh-balbes-admin/src/pages/MemoryReviewQueue.tsx \
   packages/frontend/dsh-balbes-admin/src/styles.css packages/frontend/dsh-balbes-admin/tests/MemoryReviewQueue.test.tsx
 git commit -m "feat(admin): add the memory review queue (p10f)"
 ```
@@ -2456,18 +2470,13 @@ git commit -m "feat(admin): add the memory review queue (p10f)"
 - Consumes: `MemoryReviewQueue` (Task 9).
 - Produces: one "Память" page with a «Записи» / «Очередь ревью» switch; the records tab behaviour is unchanged.
 
-- [ ] **Step 1: Write the failing tab test**
+- [ ] **Step 1: Write the failing tab tests**
 
-Append to `packages/frontend/dsh-balbes-admin/tests/MemoryPage.test.tsx`:
+`MemoryPage.test.tsx`'s existing `makeApi` fake predates the review client, so first add `listMemoryReview` to it (returning an empty queue with the policy) — the page seeds the tab badge from it, and a fake without it would throw inside the effect. Then append:
 
 ```tsx
   it("switches to the review queue and back", async () => {
-    const api = makeApi([record()], {
-      listMemoryReview: vi.fn(async () => ({
-        proposals: [],
-        policy: { immediate: ["owner", "remember"], review: ["pipeline"], autoApprove: "none" }
-      }))
-    } as Partial<AdminApi>);
+    const api = makeApi([record()]);
     render(<MemoryPage api={api} />);
     expect(await screen.findByTestId("memory-row:m-1")).toBeTruthy();
 
@@ -2478,7 +2487,23 @@ Append to `packages/frontend/dsh-balbes-admin/tests/MemoryPage.test.tsx`:
     fireEvent.click(screen.getByTestId("memory-tab-records"));
     expect(await screen.findByTestId("memory-row:m-1")).toBeTruthy();
   });
+
+  it("shows the pending counter on the review tab label", async () => {
+    // The canon puts a pending counter on the tab label, so the page seeds it
+    // once on mount — before the owner ever opens the queue.
+    const api = makeApi([record()], {
+      listMemoryReview: vi.fn(async () => ({
+        proposals: [queueProposal(), queueProposal({ id: "p-2" })],
+        policy: { immediate: ["owner", "remember"], review: ["pipeline"], autoApprove: "none" }
+      }))
+    } as Partial<AdminApi>);
+    render(<MemoryPage api={api} />);
+    expect(await screen.findByTestId("memory-tab-review-count")).toBeTruthy();
+    expect(screen.getByTestId("memory-tab-review-count").textContent).toBe("2");
+  });
 ```
+
+`queueProposal` is the small factory the queue's own test file uses; import it from `./MemoryReviewQueue.test` is not possible, so declare a local one in this file (id, scope, type, text, tags, origin, originRef, status, proposedAt, decidedAt, decidedBy, decidedEdit, memoryId).
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -2506,10 +2531,24 @@ import {
 } from "./memoryShared";
 ```
 
-- add the tab state next to the other state:
+- add the tab state and the pending counter next to the other state:
 
 ```tsx
   const [tab, setTab] = useState<"records" | "review">("records");
+  const [pendingCount, setPendingCount] = useState(0);
+```
+
+- seed the counter once on mount, so the badge is correct before the queue is ever opened (the canon puts the counter on the tab label, and the queue component reports its own count upward after every pending-mode load):
+
+```tsx
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .listMemoryReview({})
+      .then((res) => { if (!cancelled) setPendingCount(res.proposals.length); })
+      .catch(() => { /* the queue tab reports the real error */ });
+    return () => { cancelled = true; };
+  }, [api]);
 ```
 
 - replace the opening of the returned JSX so the toolbar and list render only on the records tab:
@@ -2537,11 +2576,14 @@ import {
           onClick={() => setTab("review")}
         >
           Очередь ревью
+          {pendingCount > 0 && (
+            <span className="memory-tab-count" data-testid="memory-tab-review-count">{pendingCount}</span>
+          )}
         </button>
       </div>
 
       {tab === "review" ? (
-        <MemoryReviewQueue api={api} />
+        <MemoryReviewQueue api={api} onPendingCount={setPendingCount} />
       ) : (
         <>
           {/* the existing toolbar, states, list and modals stay verbatim in here */}
