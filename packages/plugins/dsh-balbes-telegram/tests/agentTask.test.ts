@@ -1436,13 +1436,63 @@ describe("live answer stream", () => {
     answer.emit({ type: "chunk", chunk: { type: "text-delta", text: "ответ" } });
     expect(runner.answer({ scope: "home" }).text).toBe("ответ");
 
-    // Ход задачи осел, раннер ушёл в служебный ход: окно потока закрыто.
+    // Ход задачи осел, раннер ушёл в служебный ход: окно потока закрыто, и
+    // `answer()` честно отдаёт `idle` (условие `running` требует открытого окна).
     handle.releaseParked();
     await waitFor(() => handle.agent.followup.mock.calls.length === 2);
     answer.emit({ type: "chunk", chunk: { type: "text-delta", text: "служебный ход" } });
-    expect(runner.answer({ scope: "home" }).text).toBe("");
+    expect(runner.answer({ scope: "home" })).toEqual({ phase: "idle" });
 
     handle.releaseParked();
     await result;
+  });
+
+  it("reports idle after the owner cancels the turn", async () => {
+    const { agents, runner } = await makeRunner();
+    agents.cfg({ holdIdle: true, answers: ["ответ"] });
+    const running = runner.run({ scope: "home" }, "задача");
+    await waitFor(() => agents.createOpts.length === 1);
+    const answer = makeAnswerCtx();
+    agents.createOpts[0]!.setup(answer.ctx);
+    const handle = agents.created[0]!;
+    // Парк whenIdle ДО хода задачи, затем парк после `followup`.
+    await waitFor(() => handle.parkedCount === 1);
+    handle.releaseParked();
+    await waitFor(() => handle.agent.followup.mock.calls.length === 1);
+    await waitFor(() => handle.parkedCount === 1);
+    await waitFor(() => runner.progress({ scope: "home" }).phase === "running");
+    answer.emit({ type: "chunk", chunk: { type: "text-delta", text: "живое" } });
+    expect(runner.answer({ scope: "home" })).toEqual({ phase: "running", taskText: "задача", text: "живое" });
+
+    const outcome = await runner.cancel({ scope: "home" });
+    await expect(running).resolves.toMatchObject({ ok: false, code: "cancelled" });
+    expect(outcome.cancelled).toBe(true);
+    // Спека: `cancel()`/`reset()` не оставляют живого текста.
+    expect(runner.answer({ scope: "home" })).toEqual({ phase: "idle" });
+  });
+
+  it("reports idle after a reset retires the in-flight turn", async () => {
+    const { agents, runner } = await makeRunner();
+    agents.cfg({ holdIdle: true, disposeStopsLoop: true, answers: ["ответ"] });
+    const running = runner.run({ scope: "home" }, "задача");
+    await waitFor(() => agents.createOpts.length === 1);
+    const answer = makeAnswerCtx();
+    agents.createOpts[0]!.setup(answer.ctx);
+    const handle = agents.created[0]!;
+    await waitFor(() => handle.parkedCount === 1);
+    handle.releaseParked();
+    await waitFor(() => handle.agent.followup.mock.calls.length === 1);
+    await waitFor(() => handle.parkedCount === 1);
+    await waitFor(() => runner.progress({ scope: "home" }).phase === "running");
+    answer.emit({ type: "chunk", chunk: { type: "text-delta", text: "живое" } });
+    expect(runner.answer({ scope: "home" })).toEqual({ phase: "running", taskText: "задача", text: "живое" });
+
+    // reset() диспозит агент, слушатель снимается вместе со scope.
+    await runner.reset({ scope: "home" });
+    await expect(withTimeout(running, 2000, "run() never settled after reset")).resolves.toMatchObject({
+      ok: false,
+      code: "agent-error"
+    });
+    expect(runner.answer({ scope: "home" })).toEqual({ phase: "idle" });
   });
 });

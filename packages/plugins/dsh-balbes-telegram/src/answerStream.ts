@@ -31,6 +31,13 @@ export interface LiveAnswer {
   endTurn(): void;
   /** Принять кадр: учитывается только `text-delta` открытого окна. */
   accept(frame: AssistantFrameLike): void;
+  /**
+   * Открыто ли окно хода задачи. Спека (`§Архитектура → Read-шов`) требует,
+   * чтобы `answer()` отдавал живой текст только при открытом окне: закрытое
+   * окно — это «вне хода» (`idle`) даже тогда, когда окно прогресса уже
+   * передано служебному ходу p10g.
+   */
+  isOpen(): boolean;
   /** Накопленный хвост, не длиннее {@link LIVE_ANSWER_LIMIT}. */
   text(): string;
 }
@@ -56,6 +63,9 @@ export function createLiveAnswer(): LiveAnswer {
       if (delta === "") return;
       text += delta;
       if (text.length > LIVE_ANSWER_LIMIT) text = text.slice(text.length - LIVE_ANSWER_LIMIT);
+    },
+    isOpen(): boolean {
+      return open;
     },
     text(): string {
       return text;

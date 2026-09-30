@@ -42,15 +42,21 @@ describe("live answer buffer", () => {
 
   it("clears the text when a turn opens and when it closes", () => {
     const live = createLiveAnswer();
+    // Окно — это состояние хода, а не «текст непустой»: `answer()` читает его.
+    expect(live.isOpen()).toBe(false);
+
     live.startTurn();
+    expect(live.isOpen()).toBe(true);
     live.accept(textDelta("первый ход"));
     live.endTurn();
+    expect(live.isOpen()).toBe(false);
     expect(live.text()).toBe("");
     // Закрытое окно молчит, даже если кадр придёт позже (осевший ход).
     live.accept(textDelta("поздно"));
     expect(live.text()).toBe("");
 
     live.startTurn();
+    expect(live.isOpen()).toBe(true);
     expect(live.text()).toBe("");
     live.accept(textDelta("второй ход"));
     expect(live.text()).toBe("второй ход");

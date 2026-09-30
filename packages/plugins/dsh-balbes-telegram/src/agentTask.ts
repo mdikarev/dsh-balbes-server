@@ -1031,6 +1031,12 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
      * Живой текст хода задачи. Свободен от побочных эффектов ровно как
      * `progress`: чат читает его, пока ход в полёте, и не должен ни ждать, ни
      * будить агента.
+     *
+     * Условие `running` — то же, что у `progress()` (`busy && handle &&
+     * firstSeq`), ПЛЮС открытое окно хода задачи (спека, `§Архитектура →
+     * Read-шов`): «вне хода — `idle`». Служебный ход извлечения памяти (p10g)
+     * идёт тем же агентом, но окно на его передаче уже закрыто, поэтому он
+     * честно `idle`, а не «running с пустым текстом».
      */
     answer(ref: WorkspaceRef): LiveAnswerSnapshot {
       const entry = cache.get(workspaceRefKey(ref));
@@ -1038,7 +1044,9 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
       if (!entry.busy || entry.handle === undefined || entry.firstSeq === undefined) {
         return { phase: "idle" };
       }
-      const snapshot: LiveAnswerSnapshot = { phase: "running", text: entry.liveAnswer?.text() ?? "" };
+      const live = entry.liveAnswer;
+      if (live === undefined || !live.isOpen()) return { phase: "idle" };
+      const snapshot: LiveAnswerSnapshot = { phase: "running", text: live.text() };
       if (entry.activeText !== undefined) snapshot.taskText = entry.activeText;
       return snapshot;
     },
