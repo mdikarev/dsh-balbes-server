@@ -653,7 +653,7 @@ function harness(options: { propose?: boolean; failProposeRegistration?: boolean
   });
   const scope: MemoryContextScope = { kind: "project", name: "alpha" };
   const attachment = service.attach(agentCtx, scope, { channel: "telegram", sessionId: "s1" });
-  return { attachment, names: () => [...registered.keys()].sort(), proposals, infos, warnings };
+  return { attachment, registered, names: () => [...registered.keys()].sort(), proposals, infos, warnings };
 }
 
 describe("extraction seat", () => {
@@ -691,6 +691,26 @@ describe("extraction seat", () => {
     expect(logged[0]).toContain("channel=telegram");
     expect(logged[0]).toContain("scope=project:alpha");
     expect(logged[0]).toContain("proposed=0 duplicate=0 secret=0 limit=0");
+  });
+
+  it("resets the counters for every service turn", async () => {
+    const h = harness({});
+    const turn = h.attachment.extraction!;
+    const propose = h.registered.get("propose_memory") as {
+      execute(args: unknown, exec: unknown): Promise<unknown>;
+    };
+    turn.begin();
+    await propose.execute({ text: "первый факт" }, {} as never);
+    await propose.execute({ text: "первый факт" }, {} as never);
+    turn.end();
+    turn.begin();
+    turn.end();
+    const logged = h.infos.filter((line) => line.includes("extraction"));
+    expect(logged).toHaveLength(2);
+    expect(logged[0]).toContain("proposed=1 duplicate=1 secret=0 limit=0");
+    // An agent handle outlives many turns: without a reset the cap would
+    // silently become per-session.
+    expect(logged[1]).toContain("proposed=0 duplicate=0 secret=0 limit=0");
   });
 
   it("keeps remember registered when the propose tool cannot be registered", () => {
@@ -797,6 +817,13 @@ import type {
           extraction = {
             qualifies: (facts) => facts.ok && facts.toolCalls > 0,
             begin() {
+              // Counters are PER SERVICE TURN: one agent handle outlives many
+              // turns, and a running total would silently turn the 3-proposal
+              // cap into a per-session cap.
+              counters.proposed = 0;
+              counters.duplicate = 0;
+              counters.secret = 0;
+              counters.limit = 0;
               // Register first: a failed registration must leave the task-turn
               // surface intact. No turn is in flight between the two calls, so
               // the invariant "no immediate-write tool during extraction" holds.
