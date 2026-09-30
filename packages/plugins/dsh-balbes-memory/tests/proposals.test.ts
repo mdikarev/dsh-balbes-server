@@ -152,6 +152,16 @@ describe("balbesMemory proposals", () => {
     expect(proposal.tags).toEqual(["alpha", "beta"]);
   });
 
+  it("counts a tags-only change as an edit", async () => {
+    // Content is type/text/tags: a real tag change must set decidedEdit even when
+    // type and text are untouched (the reorder case above stays false).
+    const proposal = await service.propose({ ...proposalDraft, tags: ["alpha", "beta"] });
+    const { proposal: decided, record } = await service.approve(proposal.id, { tags: ["alpha", "gamma"] });
+
+    expect(decided.decidedEdit).toBe(true);
+    expect(record.tags).toEqual(["alpha", "gamma"]);
+  });
+
   it("rolls the whole promotion back when the edited text looks like a secret", async () => {
     const proposal = await service.propose(proposalDraft);
     await expect(service.approve(proposal.id, { text: "api_key: xyz" })).rejects.toMatchObject({

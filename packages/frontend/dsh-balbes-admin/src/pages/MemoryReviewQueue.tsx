@@ -57,6 +57,7 @@ export default function MemoryReviewQueue({
   const [proposals, setProposals] = useState<MemoryProposal[] | null>(null);
   const [policy, setPolicy] = useState<MemoryAutonomyPolicy | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<MemoryProposal | null>(null);
   const [toReject, setToReject] = useState<MemoryProposal | null>(null);
@@ -68,6 +69,7 @@ export default function MemoryReviewQueue({
 
   const load = useCallback(async (): Promise<void> => {
     setLoadError(null);
+    setNotice(null);
     try {
       const res = await api.listMemoryReview({
         ...(level.kind === "all" ? {} : { scope: level }),
@@ -129,6 +131,9 @@ export default function MemoryReviewQueue({
       if (error instanceof ApiError && (error.status === 404 || error.code === "invalid-status")) {
         setEditing(null);
         await load();
+        // The proposal was decided elsewhere: show the refreshed queue and, for a
+        // stale decision, say so (canon: invalid-status — message plus reload).
+        if (error.code === "invalid-status") setNotice(messageOf(error));
       } else {
         setFormError(messageOf(error));
       }
@@ -149,6 +154,7 @@ export default function MemoryReviewQueue({
       if (error instanceof ApiError && (error.status === 404 || error.code === "invalid-status")) {
         setToReject(null);
         await load();
+        if (error.code === "invalid-status") setNotice(messageOf(error));
       } else {
         setLoadError(messageOf(error));
       }
@@ -163,6 +169,10 @@ export default function MemoryReviewQueue({
     <div className="memory-review" data-testid="memory-review">
       {policy !== null && (
         <p className="memory-review-policy" data-testid="memory-review-policy">{policyLine(policy)}</p>
+      )}
+
+      {notice !== null && (
+        <p className="memory-review-notice" role="alert" data-testid="memory-review-notice">{notice}</p>
       )}
 
       <div className="memory-toolbar">
@@ -234,7 +244,7 @@ export default function MemoryReviewQueue({
         </div>
       ) : proposals.length === 0 ? (
         <p className="ws-placeholder" data-testid={showDecided || filtersActive ? "memory-review-no-results" : "memory-review-empty"}>
-          {showDecided ? "Решённых предложений нет" : filtersActive ? "Ничего не найдено" : "Очередь пуста — предложений нет"}
+          {showDecided ? "Решённых предложений нет" : filtersActive ? "Ничего не найдено" : "Очередь пуста"}
         </p>
       ) : (
         <ul className="memory-list" data-testid="memory-review-list">
@@ -248,10 +258,11 @@ export default function MemoryReviewQueue({
                   data-testid={"memory-review-status:" + entry.id}
                 >
                   {STATUS_LABELS[entry.status]}
-                  {entry.decidedEdit ? " (с правкой)" : ""}
+                  {entry.decidedEdit ? " с правкой" : ""}
                 </span>
                 <span className="memory-provenance">
-                  предложено пайплайном · {entry.originRef ?? "без источника"} · {formatTime(entry.decidedAt ?? entry.proposedAt)}
+                  предложено пайплайном · {entry.originRef ?? "без источника"} · {formatTime(entry.proposedAt)}
+                  {entry.decidedAt !== null && " · решено " + formatTime(entry.decidedAt)}
                 </span>
                 {entry.status === "proposed" && (
                   <span className="memory-row-actions">

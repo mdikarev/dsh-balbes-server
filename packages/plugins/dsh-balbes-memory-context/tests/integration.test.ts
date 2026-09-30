@@ -275,7 +275,11 @@ describe.skipIf(!realEnabled)("REAL composition (memory delivery)", () => {
       const beforePending = stub.calls.length;
       const pendingRun = await postJson(base + "/api/prompt", { prompt: "anything about pending" }, token);
       expect(pendingRun.status, pendingRun.raw).toBe(200);
-      const pendingBodies = JSON.stringify(stub.calls.slice(beforePending).map((call) => call.body));
+      const pendingCalls = stub.calls.slice(beforePending);
+      // A non-empty slice is the precondition: JSON.stringify([]) trivially
+      // satisfies not.toContain, so the negative assertion needs real bodies.
+      expect(pendingCalls.length).toBeGreaterThan(0);
+      const pendingBodies = JSON.stringify(pendingCalls.map((call) => call.body));
       expect(pendingBodies, pendingBodies.slice(0, 4000)).not.toContain(proposalMarker);
 
       const approveRes = await postJson(base + "/api/memory/review/approve", { id: proposalId }, token);

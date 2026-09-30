@@ -40,6 +40,7 @@ function messageOf(error: unknown): string {
 export default function MemoryPage({ api }: { api: AdminApi }) {
   const [tab, setTab] = useState<"records" | "review">("records");
   const [pendingCount, setPendingCount] = useState(0);
+  const [pendingCountCapped, setPendingCountCapped] = useState(false);
   const [projects, setProjects] = useState<WorkspaceProject[]>([]);
   const [projectsLoaded, setProjectsLoaded] = useState(false);
   const [level, setLevel] = useState<LevelSelection>({ kind: "global" });
@@ -80,8 +81,11 @@ export default function MemoryPage({ api }: { api: AdminApi }) {
   const refreshPendingCount = useCallback(async (): Promise<void> => {
     try {
       // No scope, no type, no tag: this is the total, not the current view.
-      const res = await api.listMemoryReview({});
+      // The store caps a page at `maxListLimit` (500), so ask for the maximum
+      // and let the badge say "500+" when the page comes back full.
+      const res = await api.listMemoryReview({ limit: 500 });
       setPendingCount(res.proposals.length);
+      setPendingCountCapped(res.proposals.length >= 500);
     } catch {
       // The queue tab surfaces the real error; a stale badge is not worth an alert.
     }
@@ -215,7 +219,7 @@ export default function MemoryPage({ api }: { api: AdminApi }) {
         >
           Очередь ревью
           {pendingCount > 0 && (
-            <span className="memory-tab-count" data-testid="memory-tab-review-count">{pendingCount}</span>
+            <span className="memory-tab-count" data-testid="memory-tab-review-count">{pendingCountCapped ? "500+" : pendingCount}</span>
           )}
         </button>
       </div>

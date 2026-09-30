@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import MemoryReviewQueue from "../src/pages/MemoryReviewQueue";
+import { formatTime } from "../src/pages/memoryShared";
 import { ApiError, type AdminApi } from "../src/api/client";
 import type {
   MemoryAutonomyPolicy,
@@ -133,5 +134,52 @@ describe("MemoryReviewQueue", () => {
     await waitFor(() => expect(api.listMemoryReview).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByTestId("memory-review-form-approve")).toBeNull());
     expect(onDecided).not.toHaveBeenCalled();
+    // ...and the owner is told the proposal was decided elsewhere (canon wording)
+    expect((await screen.findByTestId("memory-review-notice")).textContent)
+      .toBe("Предложение уже решено — очередь обновлена");
+  });
+
+  it("reports a decision once after a successful reject", async () => {
+    const onDecided = vi.fn();
+    const api = makeApi({ proposals: [proposal()], policy: POLICY });
+    render(<MemoryReviewQueue api={api} onDecided={onDecided} />);
+    fireEvent.click(await screen.findByTestId("memory-review-reject:p-1"));
+    fireEvent.click(screen.getByTestId("memory-review-reject-confirm"));
+    await waitFor(() => expect(screen.queryByTestId("memory-review-reject-confirm")).toBeNull());
+    expect(onDecided).toHaveBeenCalledTimes(1);
+    expect(api.listMemoryReview).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not report a decision when a reject hits not-found", async () => {
+    const onDecided = vi.fn();
+    const api = makeApi({ proposals: [proposal()], policy: POLICY }, {
+      rejectMemoryReview: vi.fn(async () => { throw new ApiError(404, "not-found", "memory proposal not found"); })
+    });
+    render(<MemoryReviewQueue api={api} onDecided={onDecided} />);
+    fireEvent.click(await screen.findByTestId("memory-review-reject:p-1"));
+    fireEvent.click(screen.getByTestId("memory-review-reject-confirm"));
+    await waitFor(() => expect(api.listMemoryReview).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByTestId("memory-review-reject-confirm")).toBeNull());
+    expect(onDecided).not.toHaveBeenCalled();
+    // 404 recovery is a silent reload: no invalid-status wording.
+    expect(screen.queryByTestId("memory-review-notice")).toBeNull();
+  });
+
+  it("shows the proposal time for pending rows and both times for decided rows", async () => {
+    const pending = proposal({ id: "p-pending" });
+    const decided = proposal({
+      id: "p-decided",
+      status: "accepted",
+      decidedAt: "2026-09-30T02:00:00.000Z",
+      decidedBy: "owner"
+    });
+    const api = makeApi({ proposals: [pending, decided], policy: POLICY });
+    render(<MemoryReviewQueue api={api} />);
+    const pendingRow = await screen.findByTestId("memory-review-row:p-pending");
+    const decidedRow = screen.getByTestId("memory-review-row:p-decided");
+    expect(pendingRow.textContent).toContain(formatTime(pending.proposedAt));
+    expect(pendingRow.textContent).not.toContain("решено");
+    expect(decidedRow.textContent).toContain(formatTime(decided.proposedAt));
+    expect(decidedRow.textContent).toContain("решено " + formatTime(decided.decidedAt!));
   });
 });

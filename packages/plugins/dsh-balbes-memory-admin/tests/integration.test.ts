@@ -262,6 +262,8 @@ describe.skipIf(!realEnabled)("REAL composition (memory admin API)", () => {
     expect(decided.record.origin).toBe("agent");
     expect(decided.record.originRef).toBe("pipeline:real-test");
     expect(decided.record.tags).toEqual(["smoke"]);
+    // The hostile `pinned: true` in the propose body must not reach the record.
+    expect(decided.record.pinned).toBe(false);
 
     const visible = await api("/api/memory/list", { query: marker });
     expect((visible.json as { records: Array<{ id: string }> }).records.some((row) => row.id === decided.record.id)).toBe(true);
@@ -288,6 +290,10 @@ describe.skipIf(!realEnabled)("REAL composition (memory admin API)", () => {
 
     const decided = await api("/api/memory/review/list", { status: ["rejected"] });
     expect((decided.json as { proposals: MemoryProposal[] }).proposals.some((entry) => entry.id === id)).toBe(true);
+
+    // The rejected row is audit only: the default (pending) queue no longer lists it.
+    const pendingQueue = await api("/api/memory/review/list", {});
+    expect((pendingQueue.json as { proposals: MemoryProposal[] }).proposals.some((entry) => entry.id === id)).toBe(false);
 
     const secret = await api("/api/memory/propose", {
       scope: { kind: "global" },

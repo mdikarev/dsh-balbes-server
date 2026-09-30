@@ -549,13 +549,14 @@ button.ws-tree-row:hover { background: var(--surface); }
 /* memory review queue */
 .memory-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
 .memory-tab { background: transparent; border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; cursor: pointer; color: var(--text-dim); }
-.memory-tab:hover { color: var(--text); }
+.memory-tab:not(.memory-tab-active):hover { color: var(--text); }
 .memory-tab-active { background: var(--accent); color: #fff; border-color: var(--accent); }
 /* Inactive tab: dark digit on the accent pill (5.9:1). Active tab: the button is already
    the accent, so the chip inverts to a dark pill with light text (16:1). */
 .memory-tab-count { margin-left: 6px; padding: 0 6px; border-radius: 8px; background: var(--accent); color: var(--bg); font-size: 12px; }
 .memory-tab-active .memory-tab-count { background: var(--bg); color: var(--text); }
 .memory-review-policy { margin: 0 0 12px; opacity: 0.8; font-size: 13px; }
+.memory-review-notice { margin: 0 0 12px; color: var(--text-dim); font-size: 13px; }
 .memory-review-status { padding: 1px 6px; border-radius: 4px; font-size: 12px; }
 .memory-review-status-accepted { background: rgba(46, 160, 67, 0.18); }
 .memory-review-status-rejected { background: rgba(200, 60, 60, 0.18); }

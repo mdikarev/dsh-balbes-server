@@ -31,6 +31,14 @@ function readPragma(path: string, name: "user_version" | "journal_mode"): unknow
   }
 }
 
+/** The DDL of every table/index/trigger, ordered for a stable comparison. */
+function readSchemaObjects(db: DatabaseSync): Array<{ type: string; name: string; sql: string }> {
+  return db
+    .prepare("SELECT type, name, sql FROM sqlite_master WHERE type IN ('table','index','trigger') ORDER BY type, name")
+    .all()
+    .map((row) => ({ type: String(row.type), name: String(row.name), sql: String(row.sql) }));
+}
+
 afterEach(async () => {
   await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
   dirs = [];
@@ -46,6 +54,37 @@ describe("openMemoryDatabase", () => {
     const reopened = await openMemoryDatabase(path);
     expect(readUserVersion(reopened)).toBe(2);
     reopened.close();
+  });
+
+  it("refuses a proposal whose status disagrees with decided_at", async () => {
+    const path = join(await tempDir(), "memory.sqlite");
+    const db = await openMemoryDatabase(path);
+    const insert =
+      "INSERT INTO memory_proposals (id, scope_kind, scope_name, type, text, tags, origin, origin_ref, status, proposed_at, decided_at) " +
+      "VALUES (?, 'global', NULL, 'fact', 'constraint probe', '[]', 'agent', NULL, ?, ?, ?)";
+    // A pending proposal must not carry a decision time...
+    expect(() =>
+      db.prepare(insert).run("p-pending-decided", "proposed", "2026-09-30T00:00:00.000Z", "2026-09-30T01:00:00.000Z")
+    ).toThrowError(/CHECK constraint failed/);
+    // ...and a decided one must carry it.
+    expect(() =>
+      db.prepare(insert).run("p-decided-pending", "accepted", "2026-09-30T00:00:00.000Z", null)
+    ).toThrowError(/CHECK constraint failed/);
+    db.close();
+  });
+
+  it("refuses proposal tags that are not valid JSON", async () => {
+    const path = join(await tempDir(), "memory.sqlite");
+    const db = await openMemoryDatabase(path);
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO memory_proposals (id, scope_kind, scope_name, type, text, tags, origin, status, proposed_at) " +
+            "VALUES ('p-bad-tags', 'global', NULL, 'fact', 'constraint probe', 'not json', 'agent', 'proposed', '2026-09-30T00:00:00.000Z')"
+        )
+        .run()
+    ).toThrowError(/CHECK constraint failed/);
+    db.close();
   });
 
   it("refuses a newer schema version without writing to the file", async () => {
@@ -147,11 +186,37 @@ describe("openMemoryDatabase", () => {
     expect(backup.isFile()).toBe(true);
   });
 
+  it("creates the same schema fresh as it does by migrating v1", async () => {
+    // Additive-only DDL is the reason a fresh v2 and an upgraded v1→v2 must not
+    // drift; this pins it against future migrations that rewrite v1 objects.
+    const freshPath = join(await tempDir(), "memory.sqlite");
+    const fresh = await openMemoryDatabase(freshPath);
+    const freshSchema = readSchemaObjects(fresh);
+    fresh.close();
+
+    const upgradedPath = join(await tempDir(), "memory.sqlite");
+    const v1 = new DatabaseSync(upgradedPath);
+    migrate(v1, [MIGRATIONS[0]!]);
+    v1.close();
+    const upgraded = await openMemoryDatabase(upgradedPath);
+
+    expect(readSchemaObjects(upgraded)).toEqual(freshSchema);
+    upgraded.close();
+  });
+
   it("refuses a v2 database without the proposals table", async () => {
     const path = join(await tempDir(), "memory.sqlite");
-    const created = new DatabaseSync(path);
-    created.exec("PRAGMA user_version = 2");
-    created.close();
+    // A genuine v1 schema: memories, memory_tags, memory_fts and the FTS triggers
+    // are all present, so memory_proposals is the ONLY required object missing.
+    // An empty database would also lack `memories` and pass for the wrong reason.
+    const v1 = new DatabaseSync(path);
+    migrate(v1, [MIGRATIONS[0]!]);
+    v1.close();
+
+    // Claim the target version without running the v2 migration.
+    const raw = new DatabaseSync(path);
+    raw.exec("PRAGMA user_version = 2");
+    raw.close();
 
     await expect(openMemoryDatabase(path)).rejects.toThrowError(MemoryError);
   });

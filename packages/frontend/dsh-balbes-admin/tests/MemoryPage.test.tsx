@@ -300,8 +300,20 @@ describe("MemoryPage", () => {
     render(<MemoryPage api={api} />);
     expect(await screen.findByTestId("memory-tab-review-count")).toBeTruthy();
     expect(screen.getByTestId("memory-tab-review-count").textContent).toBe("2");
-    // the badge is the total queue, never the queue's own filtered view: unfiltered request
-    expect(api.listMemoryReview).toHaveBeenCalledWith({});
+    // the badge is the total queue, never the queue's own filtered view: unfiltered
+    // request, asking for the store's maximum page so the count is not understated
+    expect(api.listMemoryReview).toHaveBeenCalledWith({ limit: 500 });
+  });
+
+  it("marks the pending counter as capped when the page comes back full", async () => {
+    // 500 is the store's maxListLimit: a full page cannot distinguish 500 from more.
+    const full = Array.from({ length: 500 }, (_, index) => queueProposal({ id: "p-" + index }));
+    const api = makeApi([record()], {
+      listMemoryReview: vi.fn(async () => ({ proposals: full, policy: REVIEW_POLICY }))
+    } as Partial<AdminApi>);
+    render(<MemoryPage api={api} />);
+    expect(await screen.findByTestId("memory-tab-review-count")).toBeTruthy();
+    expect(screen.getByTestId("memory-tab-review-count").textContent).toBe("500+");
   });
 
   it("refreshes the pending counter after a decision in the queue", async () => {
