@@ -21,8 +21,11 @@ function record(partial: Partial<MemoryRecord> & { id: string; text: string }): 
  * The tools seat keeps its registrations addressable by name, so the surface
  * switch is asserted the way the model sees it: by tool names, not by calls.
  */
-function harness(options: { propose?: boolean; failProposeRegistration?: boolean } = {}) {
+function harness(
+  options: { propose?: boolean; failProposeRegistration?: boolean; failRememberRegistration?: boolean } = {}
+) {
   const registered = new Map<string, unknown>();
+  let rememberRegistrations = 0;
   const proposals: unknown[] = [];
   const infos: string[] = [];
   const warnings: string[] = [];
@@ -60,6 +63,14 @@ function harness(options: { propose?: boolean; failProposeRegistration?: boolean
       const name = (definition as { name: string }).name;
       if (name === "propose_memory" && options.failProposeRegistration === true) {
         throw new Error("reserved tool name");
+      }
+      if (name === "remember") {
+        rememberRegistrations += 1;
+        // Only the re-registration in `end()` fails: the agent scope died
+        // after the task turn and took the tool registrations with it.
+        if (options.failRememberRegistration === true && rememberRegistrations > 1) {
+          throw new Error("INACTIVE_EFFECT");
+        }
       }
       registered.set(name, definition);
       return () => {
@@ -148,5 +159,21 @@ describe("extraction seat", () => {
     expect(h.names()).toEqual(["recall", "remember"]);
     expect(() => h.attachment.extraction!.end()).not.toThrow();
     expect(h.names()).toEqual(["recall", "remember"]);
+  });
+
+  it("still logs the counters when the agent scope is already gone", () => {
+    // The channel disposes the agent inside its try and calls end() in
+    // finally: the re-registration throws, but the turn record must survive.
+    const h = harness({ failRememberRegistration: true });
+    h.attachment.extraction!.begin();
+    expect(() => h.attachment.extraction!.end()).not.toThrow();
+    expect(() => h.attachment.extraction!.end()).not.toThrow();
+    // The registration died with the scope, so remember is not restored.
+    expect(h.names()).toEqual(["recall"]);
+    const logged = h.infos.filter((line) => line.includes("extraction"));
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toContain("channel=telegram");
+    expect(logged[0]).toContain("scope=project:alpha");
+    expect(logged[0]).toContain("proposed=0 duplicate=0 secret=0 limit=0");
   });
 });

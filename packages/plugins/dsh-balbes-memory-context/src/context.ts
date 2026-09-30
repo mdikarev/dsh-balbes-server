@@ -124,7 +124,14 @@ export function createMemoryContext(logger: MemoryContextLogger): BalbesMemoryCo
                 safeDispose(proposeDispose);
                 proposeDispose = undefined;
               }
-              rememberDispose = registerRemember();
+              // The agent scope may already be gone (disposed inside the
+              // channel's try): the registration died with it, and this must
+              // not cost us the counters line below nor escape the finally.
+              try {
+                rememberDispose = registerRemember();
+              } catch {
+                /* the agent scope is gone: the registration died with it */
+              }
               logger.info?.(
                 "balbes-memory-context: extraction channel=" + writeContext.channel +
                   " scope=" + scopeTag(scope) +
