@@ -1,6 +1,6 @@
 # Автоизвлечение знания из успешных задач
 
-- Status: implementing
+- Status: absorbed
 - Depends: p10e, p10f
 - Design: docs/superpowers/specs/2026-09-30-memory-extraction-design.md
 - Focus: что и когда из успешной задачи становится памятью
