@@ -116,9 +116,20 @@ describe("MemoryReviewQueue", () => {
       decidedAt: "2026-09-30T02:00:00.000Z",
       decidedBy: "owner"
     });
+    const rejected = proposal({
+      id: "p-3",
+      status: "rejected",
+      text: "dropped knowledge",
+      decidedAt: "2026-09-30T02:00:00.000Z",
+      decidedBy: "owner"
+    });
     const api = makeApi({ proposals: [], policy: POLICY }, {
+      // Сервер отдаёт отклонённую строку, только если её явно попросили: так
+      // проверка ниже падает, если страница снова начнёт спрашивать rejected.
       listMemoryReview: vi.fn(async (req: MemoryReviewListRequest) =>
-        req.status === undefined ? { proposals: [], policy: POLICY } : { proposals: [decided], policy: POLICY }
+        req.status === undefined
+          ? { proposals: [], policy: POLICY }
+          : { proposals: req.status.includes("rejected") ? [decided, rejected] : [decided], policy: POLICY }
       )
     });
     render(<MemoryReviewQueue api={api} />);
@@ -129,6 +140,7 @@ describe("MemoryReviewQueue", () => {
     expect(api.listMemoryReview).toHaveBeenCalledWith(expect.objectContaining({ status: ["accepted"] }));
     // Rejected rows do not exist: a rejection deletes the proposal.
     expect(screen.queryByText("отклонено")).toBeNull();
+    expect(screen.queryByTestId("memory-review-row:p-3")).toBeNull();
   });
 
   it("reports a decision once after a successful approve", async () => {
