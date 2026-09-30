@@ -323,9 +323,11 @@ describe.skipIf(!realEnabled)("REAL composition (memory delivery)", () => {
       expect(tracked!.inCore).toBeGreaterThanOrEqual(1);
       expect(tracked!.type).toBe("fact");
       expect(tracked!.scope).toBe("global");
-      // Форма записи зеркала обязана совпадать с `MemoryMetricsRecordMetrics`
-      // (pinned-запись уже доказана выше, поэтому topRecords здесь не пуст).
-      expect(Object.keys(topRecords[0]!).sort(), JSON.stringify(topRecords[0])).toEqual([
+      // Форма записи зеркала обязана совпадать с `MemoryMetricsRecordMetrics`.
+      // Ключи читаются с `tracked` — доказанного выше элемента, а не с первого
+      // в выдаче: `topRecords` сортируется по числу попаданий, и первый элемент
+      // не обязан быть той записью, существование которой уже проверено.
+      expect(Object.keys(tracked!).sort(), JSON.stringify(tracked)).toEqual([
         "id",
         "inCore",
         "inMap",
@@ -336,10 +338,14 @@ describe.skipIf(!realEnabled)("REAL composition (memory delivery)", () => {
         "type"
       ]);
       // Приватность: ни текст памяти, ни originRef в снимок не попадают.
-      const serializedMetrics = JSON.stringify(metrics);
-      expect(serializedMetrics).not.toContain(coreMarker);
-      expect(serializedMetrics).not.toContain(pushMarker);
-      expect(serializedMetrics).not.toContain("originRef");
+      // Ручка отдаёт снимок трижды (окно, reset и пустое окно после reset) —
+      // сканируем каждый ответ, а не только первый.
+      const expectPrivate = (label: string, raw: string): void => {
+        for (const secret of [coreMarker, pushMarker, rememberMarker, proposalMarker, "originRef"]) {
+          expect(raw, label).not.toContain(secret);
+        }
+      };
+      expectPrivate("metrics window", metricsRes.raw);
 
       // recall: вызов с попаданием учитывается, пустой результат — промах.
       stub.setScript([
@@ -354,18 +360,39 @@ describe.skipIf(!realEnabled)("REAL composition (memory delivery)", () => {
       ]);
       const emptyRun = await postJson(base + "/api/prompt", { prompt: "recall the impossible" }, token);
       expect(emptyRun.status, emptyRun.raw).toBe(200);
+      // Снимок без reset окно не мутирует, а `top: 100` нужен, чтобы попадание
+      // по id доставленной записи не срезалось сортировкой top-N: окно уже
+      // содержит больше пяти записей с попаданиями.
+      const recallDetailRes = await postJson(base + "/api/memory/metrics", { top: 100 }, token);
+      expect(recallDetailRes.status, recallDetailRes.raw).toBe(200);
+      const recallDetail = (recallDetailRes.json as {
+        metrics: { topRecords: Array<{ id: string; recallDelivered: number; recallQueries: number }> };
+      }).metrics;
       const recallRes = await postJson(base + "/api/memory/metrics", { reset: true, top: 5 }, token);
       expect(recallRes.status, recallRes.raw).toBe(200);
       const recallMetrics = (recallRes.json as { metrics: { recall: { calls: number; empty: number; failed: number } } }).metrics;
+      // Каждое recall-обращение стаба даёт вызов инструмента, но точное число
+      // вызовов здесь — свойство харнесса, а не p10h: путь admin-промпта делает
+      // дополнительный запрос к модели без инструментов, а очередь скрипта стаба
+      // round-robin, поэтому промпт повторно входит в свой скрипт и зовёт recall
+      // дважды. Пиннуем нижнюю границу, а конкретику попадания — по id записи.
       expect(recallMetrics.recall.calls).toBeGreaterThanOrEqual(2);
       expect(recallMetrics.recall.empty).toBeGreaterThanOrEqual(1);
       expect(recallMetrics.recall.failed).toBe(0);
+      // Первый recall («deploy checks») вернул push-запись: попадание видно по
+      // её id, а не только по общему `empty`.
+      const recalledId = (pushSave.json as { record: { id: string } }).record.id;
+      const recalled = recallDetail.topRecords.find((entry) => entry.id === recalledId);
+      expect(recalled, JSON.stringify(recallDetail.topRecords)).toBeDefined();
+      expect(recalled!.recallDelivered).toBeGreaterThanOrEqual(1);
       // reset закрыл окно: следующий вызов видит пустое окно и сохранённые тоталы.
       const afterReset = await postJson(base + "/api/memory/metrics", {}, token);
       expect(afterReset.status, afterReset.raw).toBe(200);
       const resetMetrics = (afterReset.json as { metrics: { window: { turns: number }; process: { totals: { turns: number } } } }).metrics;
       expect(resetMetrics.window.turns).toBe(0);
       expect(resetMetrics.process.totals.turns).toBeGreaterThanOrEqual(1);
+      expectPrivate("reset window", recallRes.raw);
+      expectPrivate("window after reset", afterReset.raw);
     } finally {
       await stopServer();
       await rm(home, { recursive: true, force: true });
