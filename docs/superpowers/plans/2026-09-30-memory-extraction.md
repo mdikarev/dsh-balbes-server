@@ -935,7 +935,7 @@ git commit -m "feat(memory-context): expose the extraction seat and switch the w
 Create `packages/plugins/dsh-balbes-telegram/tests/agentTask.extraction.test.ts`:
 
 ```ts
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createAgentTaskRunner, type AgentTaskDeps, type WorkspaceRef } from "../src/agentTask.js";
 
 const REF: WorkspaceRef = { scope: "project", name: "alpha" };
@@ -1048,6 +1048,20 @@ function extractionSeat(options: { allow?: boolean; beginError?: Error } = {}) {
   return { handle, calls };
 }
 
+/**
+ * The design settles the owner's answer BEFORE the service turn (spec
+ * «Служебный ход» step 2: the owner must not wait for bookkeeping), so the
+ * await of `run()` resumes while the service turn is still in flight. A test
+ * that asserts the service turn's effects therefore awaits the turn's own
+ * completion first — the mandated `end === 1` assertion, polled until it
+ * holds (never merely assumed from the await above).
+ */
+async function waitForServiceTurn(seat: { calls: SeatCalls }): Promise<void> {
+  await vi.waitFor(() => {
+    expect(seat.calls.end).toBe(1);
+  });
+}
+
 function makeDeps(options: {
   extraction?: ReturnType<typeof extractionSeat>["handle"];
   toolCall?: boolean;
@@ -1104,6 +1118,7 @@ describe("agentTask memory extraction", () => {
     const runner = createAgentTaskRunner(state.deps);
 
     const result = await runner.run(REF, "сделай работу");
+    await waitForServiceTurn(seat);
 
     expect(result).toMatchObject({ ok: true, text: "answer 1" });
     expect(seat.calls.qualifies).toEqual([{ ok: true, toolCalls: 1 }]);
@@ -1160,6 +1175,7 @@ describe("agentTask memory extraction", () => {
     const runner = createAgentTaskRunner(state.deps);
 
     const first = await runner.run(REF, "сделай работу");
+    await waitForServiceTurn(seat);
 
     expect(first).toMatchObject({ ok: true, text: "answer 1" });
     expect(seat.calls.end).toBe(1);
@@ -1177,6 +1193,7 @@ describe("agentTask memory extraction", () => {
     const runner = createAgentTaskRunner(state.deps);
 
     const result = await runner.run(REF, "сделай работу");
+    await waitForServiceTurn(seat);
 
     expect(result).toMatchObject({ ok: true, text: "answer 1" });
     expect(seat.calls.end).toBe(1);
@@ -1220,6 +1237,7 @@ describe("agentTask memory extraction", () => {
     runner = createAgentTaskRunner(state.deps);
 
     const first = await runner.run(REF, "сделай работу");
+    await waitForServiceTurn(seat);
 
     expect(first).toMatchObject({ ok: true, text: "answer 1" });
     expect(seat.calls.end).toBe(1);
@@ -1257,6 +1275,22 @@ export interface MemoryContextAttachmentLike {
 ```ts
 /** Summary служебного сообщения извлечения; форма `notice` требует её. */
 const EXTRACTION_NOTICE_SUMMARY = "memory extraction";
+```
+
+Плюс объявить производительский kind служебного сообщения модульным расширением
+(`MessageSourceMap` в dsh merge-extensible; каст на `source` не подходит — он
+проверяется, потому что `as never` стоит на результате вызова):
+
+```ts
+declare module "@deepseek-ai/dsh-llm" {
+  interface MessageSourceMap {
+    "balbes-memory-extraction": {
+      readonly kind: "balbes-memory-extraction";
+      readonly form: "notice";
+      readonly summary: string;
+    };
+  }
+}
 ```
 
 - [ ] **Step 4: Резолвить задачу до извлечения и добавить служебный ход**
