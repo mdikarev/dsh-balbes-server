@@ -288,12 +288,18 @@ describe.skipIf(!realEnabled)("REAL composition (memory admin API)", () => {
     const listed = await api("/api/memory/list", { query: marker });
     expect((listed.json as { records: unknown[] }).records).toEqual([]);
 
+    // p10f: rejection deletes the row — there is no rejected audit entry left.
     const decided = await api("/api/memory/review/list", { status: ["rejected"] });
-    expect((decided.json as { proposals: MemoryProposal[] }).proposals.some((entry) => entry.id === id)).toBe(true);
+    expect((decided.json as { proposals: MemoryProposal[] }).proposals).toEqual([]);
 
-    // The rejected row is audit only: the default (pending) queue no longer lists it.
+    // The row is gone: the default (pending) queue no longer lists it either.
     const pendingQueue = await api("/api/memory/review/list", {});
     expect((pendingQueue.json as { proposals: MemoryProposal[] }).proposals.some((entry) => entry.id === id)).toBe(false);
+
+    // A second rejection finds no row to decide.
+    const rejectedAgain = await api("/api/memory/review/reject", { id });
+    expect(rejectedAgain.status, rejectedAgain.raw).toBe(404);
+    expect((rejectedAgain.json as { error: { code: string } }).error.code).toBe("not-found");
 
     const secret = await api("/api/memory/propose", {
       scope: { kind: "global" },
