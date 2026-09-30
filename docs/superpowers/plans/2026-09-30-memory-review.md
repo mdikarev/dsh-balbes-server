@@ -1632,7 +1632,8 @@ Append inside the existing `describe.skipIf(!realEnabled)` block:
     expect(proposal.status).toBe("proposed");
     expect(proposal.origin).toBe("agent");
     expect(proposal.tags).toEqual(["smoke"]);
-    expect(proposal.pinned).toBeUndefined();
+    // The proposal contract has no pinning field at all: the pipeline cannot stage one.
+    expect((proposal as unknown as Record<string, unknown>).pinned).toBeUndefined();
     expect(proposal.decidedAt).toBeNull();
     expect(proposal.memoryId).toBeNull();
 
@@ -1776,13 +1777,14 @@ git commit -m "test(memory-context): prove staged proposals never reach the mode
 
 **Files:**
 - Modify: `packages/frontend/dsh-balbes-admin/src/api/client.ts`
+- Create: `packages/frontend/dsh-balbes-admin/src/pages/memoryShared.ts`
 - Create: `packages/frontend/dsh-balbes-admin/src/pages/MemoryReviewQueue.tsx`
 - Modify: `packages/frontend/dsh-balbes-admin/src/styles.css`
 - Test: `packages/frontend/dsh-balbes-admin/tests/MemoryReviewQueue.test.tsx` (new)
 
 **Interfaces:**
 - Consumes: `MemoryReviewListRequest/Response`, `MemoryReviewApproveRequest/Response`, `MemoryReviewRejectRequest/Response`, `MemoryProposal`, `MemoryAutonomyPolicy` (Task 2).
-- Produces: `AdminApi.listMemoryReview`, `AdminApi.approveMemoryReview`, `AdminApi.rejectMemoryReview`; the default-exported `MemoryReviewQueue({ api })` component used by Task 10.
+- Produces: `AdminApi.listMemoryReview`, `AdminApi.approveMemoryReview`, `AdminApi.rejectMemoryReview`; `memoryShared.ts` exporting `MEMORY_TYPES`, `TYPE_LABELS`, `MemoryLevel`, `LevelSelection`, `levelKey`, `levelLabel`, `parseScope`, `parseTags`, `formatTime`; the default-exported `MemoryReviewQueue({ api })` component used by Task 10.
 
 - [ ] **Step 1: Write the failing component test**
 
@@ -1928,60 +1930,75 @@ In `packages/frontend/dsh-balbes-admin/src/api/client.ts`:
     rejectMemoryReview: (req) => guard(request<MemoryReviewRejectResponse>("/api/memory/review/reject", req satisfies MemoryReviewRejectRequest)),
 ```
 
-- [ ] **Step 4: Create the queue component**
+- [ ] **Step 4: Extract the shared page helpers**
 
-Create `packages/frontend/dsh-balbes-admin/src/pages/MemoryReviewQueue.tsx`:
+Create `packages/frontend/dsh-balbes-admin/src/pages/memoryShared.ts` by moving these helpers out of `MemoryPage.tsx` verbatim (Task 10 deletes the local copies and imports from here, so both memory surfaces share one implementation instead of duplicating it):
 
-```tsx
-import { useCallback, useEffect, useState } from "react";
-import { ApiError, type AdminApi } from "../api/client";
-import type {
-  MemoryAutonomyPolicy,
-  MemoryProposal,
-  MemoryScope,
-  MemoryType,
-  WorkspaceProject
-} from "dsh-balbes-contracts";
-import Modal from "../components/Modal";
+```ts
+import type { MemoryScope, MemoryType } from "dsh-balbes-contracts";
 
-const MEMORY_TYPES: MemoryType[] = ["fact", "preference", "decision", "note"];
+export const MEMORY_TYPES: MemoryType[] = ["fact", "preference", "decision", "note"];
 
-const TYPE_LABELS: Record<MemoryType, string> = {
+export const TYPE_LABELS: Record<MemoryType, string> = {
   fact: "факт",
   preference: "предпочтение",
   decision: "решение",
   note: "заметка"
 };
 
+export type MemoryLevel = MemoryScope;
+/** A concrete level, or the «Все» pseudo-level listing every scope. */
+export type LevelSelection = MemoryLevel | { kind: "all" };
+
+export function levelKey(level: LevelSelection): string {
+  if (level.kind === "all") return "all";
+  return level.kind === "global" ? "global" : "project:" + level.name;
+}
+
+export function levelLabel(level: MemoryLevel): string {
+  return level.kind === "global" ? "Дом" : level.name;
+}
+
+/** Parses a concrete level option value; «Все» is not a concrete level. */
+export function parseScope(value: string): MemoryLevel {
+  return value === "global" ? { kind: "global" } : { kind: "project", name: value.slice("project:".length) };
+}
+
+export function parseTags(raw: string): string[] {
+  return raw.split(/[\s,]+/).map((tag) => tag.trim()).filter((tag) => tag !== "");
+}
+
+export function formatTime(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString("ru-RU");
+}
+```
+
+- [ ] **Step 5: Create the queue component**
+
+Create `packages/frontend/dsh-balbes-admin/src/pages/MemoryReviewQueue.tsx`:
+
+```tsx
+import { useCallback, useEffect, useState } from "react";
+import { ApiError, type AdminApi } from "../api/client";
+import type { MemoryAutonomyPolicy, MemoryProposal, MemoryType, WorkspaceProject } from "dsh-balbes-contracts";
+import Modal from "../components/Modal";
+import {
+  MEMORY_TYPES,
+  TYPE_LABELS,
+  formatTime,
+  levelKey,
+  levelLabel,
+  parseScope,
+  parseTags,
+  type LevelSelection
+} from "./memoryShared";
+
 const STATUS_LABELS: Record<MemoryProposal["status"], string> = {
   proposed: "ожидает",
   accepted: "принято",
   rejected: "отклонено"
 };
-
-type LevelSelection = MemoryScope | { kind: "all" };
-
-function levelKey(level: LevelSelection): string {
-  if (level.kind === "all") return "all";
-  return level.kind === "global" ? "global" : "project:" + level.name;
-}
-
-function levelLabel(scope: MemoryScope): string {
-  return scope.kind === "global" ? "Дом" : scope.name;
-}
-
-function parseScope(value: string): MemoryScope {
-  return value === "global" ? { kind: "global" } : { kind: "project", name: value.slice("project:".length) };
-}
-
-function parseTags(raw: string): string[] {
-  return raw.split(/[\s,]+/).map((tag) => tag.trim()).filter((tag) => tag !== "");
-}
-
-function formatTime(iso: string): string {
-  const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString("ru-RU");
-}
 
 function policyLine(policy: MemoryAutonomyPolicy): string {
   const immediate = policy.immediate.map((source) => (source === "owner" ? "владелец" : "явный remember")).join(" и ");
@@ -2283,7 +2300,7 @@ export default function MemoryReviewQueue({ api }: { api: AdminApi }) {
 
 Note on the test "approves a proposal as-is": the modal defaults `formPinned` to `false`, so the patch is `{ id }` only — matching the assertion.
 
-- [ ] **Step 5: Add styles**
+- [ ] **Step 6: Add styles**
 
 Append to `packages/frontend/dsh-balbes-admin/src/styles.css`:
 
@@ -2299,12 +2316,12 @@ Append to `packages/frontend/dsh-balbes-admin/src/styles.css`:
 
 If the variable names above do not exist in this stylesheet, reuse the closest existing tokens from `styles.css` instead of introducing new ones.
 
-- [ ] **Step 6: Run the test to verify it passes**
+- [ ] **Step 7: Run the test to verify it passes**
 
 Run: `cd packages/frontend/dsh-balbes-admin && npx vitest run tests/MemoryReviewQueue.test.tsx`
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add packages/frontend/dsh-balbes-admin/src/api/client.ts packages/frontend/dsh-balbes-admin/src/pages/MemoryReviewQueue.tsx \
@@ -2358,6 +2375,22 @@ Expected: FAIL — no element with `data-testid="memory-tab-review"`.
 In `packages/frontend/dsh-balbes-admin/src/pages/MemoryPage.tsx`:
 
 - import the queue: `import MemoryReviewQueue from "./MemoryReviewQueue";`
+- replace the now-shared local helpers with imports and delete their local copies (`MEMORY_TYPES`, `TYPE_LABELS`, `type Level`, `type LevelSelection`, `levelKey`, `levelLabel`, `parseScope`, `parseTags`, `formatTime`). `secretRule` and `messageOf` stay local — their wording is page-specific:
+
+```tsx
+import {
+  MEMORY_TYPES,
+  TYPE_LABELS,
+  formatTime,
+  levelKey,
+  levelLabel,
+  parseScope,
+  parseTags,
+  type MemoryLevel as Level,
+  type LevelSelection
+} from "./memoryShared";
+```
+
 - add the tab state next to the other state:
 
 ```tsx
