@@ -451,7 +451,7 @@
 - request: `{scope?: {kind: "global"} | {kind: "project", name: string}, type?: "fact"|"preference"|"decision"|"note", tag?: string, status?: ("proposed"|"accepted"|"rejected")[], limit?: number, offset?: number}`
 - response: `{proposals: MemoryProposal[], policy: MemoryAutonomyPolicy}`
 - errors: 400 (`bad-request`: форма тела/scope/фильтров), 400 (`invalid-filter`/`invalid-scope` при неверном значении), 401, 500 (`internal`), 503 (`memory-unavailable`)
-- notes: FIFO (`proposedAt ASC` — старое предложение не голодает), лимиты сервисные (по умолчанию 100, максимум 500); без `status` отдаются только `proposed`, явный `status` показывает решённые. `policy` — константа сервера и единый источник описания автономии для UI.
+- notes: FIFO (`proposedAt ASC` — старое предложение не голодает), лимиты сервисные (по умолчанию 100, максимум 500); без `status` отдаются только `proposed`, явный `status` показывает решённые. Отклонённых строк в таблице не бывает: отказ удаляет предложение, поэтому `status: ["rejected"]` приходит пустым, а решённые — это только `accepted`. `policy` — константа сервера и единый источник описания автономии для UI.
 
 ### memory.review/approve — одобрить предложение (промоушен в запись)
 - method: POST
@@ -474,7 +474,7 @@
 - request: `{id: string (непустой)}`
 - response: `{proposal: MemoryProposal}`
 - errors: 400 (`bad-request`: нет/пустой `id`), 400 (`invalid-status`: предложение уже решено), 401, 404 (`not-found`), 500, 503 (`memory-unavailable`)
-- notes: строка сохраняется как аудит (`status: "rejected"`, `decidedAt`, `decidedBy: "owner"`), запись в `memories` не создаётся; обратных переходов нет — повторное решение всегда `invalid-status`.
+- notes: отказ **удаляет** строку предложения из `memory_proposals` — аудита не остаётся, отменить отказ нельзя. В ответе — состояние строки до удаления с `status: "rejected"`, `decidedAt` (момент отказа), `decidedBy: "owner"`, `decidedEdit: false`, `memoryId: null`; запись в `memories` не создаётся. Повторный отказ даёт `not-found` (строки больше нет); `invalid-status` остаётся для гонки, когда строку успели решить между чтением и удалением. Легаси-строки `rejected`, накопленные до этого изменения, удаляет миграция v3.
 
 ### memory.metrics — метрики доставки памяти
 - method: POST
