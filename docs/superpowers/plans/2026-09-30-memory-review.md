@@ -1726,7 +1726,10 @@ Append inside the existing `describe.skipIf(!realEnabled)` block:
 
 ```ts
   it("proposes, reviews and approves without leaking proposals into memory", async () => {
-    const marker = "p10f-review-marker-4c19";
+    // No hyphens: /api/memory/list feeds `query` into FTS5 MATCH verbatim and a
+    // bare hyphenated token is parsed as query syntax (the runbook's memory smoke
+    // says the same).
+    const marker = "p10freviewmarker4c19";
 
     const proposed = await api("/api/memory/propose", {
       scope: { kind: "global" },
@@ -1783,7 +1786,7 @@ Append inside the existing `describe.skipIf(!realEnabled)` block:
   });
 
   it("rejects a proposal, keeps it out of memory and refuses secrets", async () => {
-    const marker = "p10f-reject-marker-8a02";
+    const marker = "p10frejectmarker8a02";
     const proposed = await api("/api/memory/propose", { scope: { kind: "global" }, type: "note", text: "rejected fact " + marker });
     const id = (proposed.json as { proposal: { id: string } }).proposal.id;
 
