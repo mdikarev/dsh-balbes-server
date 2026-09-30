@@ -223,20 +223,48 @@ describe("balbesMemory proposals", () => {
     expect(record.text).toBe(proposalDraft.text);
   });
 
-  it("keeps the audit row on rejection without creating a record", async () => {
+  it("deletes the row on rejection and returns the pre-decision snapshot", async () => {
     const proposal = await service.propose(proposalDraft);
     const decided = await service.reject(proposal.id);
-    expect(decided.status).toBe("rejected");
-    expect(decided.decidedBy).toBe("owner");
-    expect(decided.decidedEdit).toBe(false);
-    expect(decided.memoryId).toBeNull();
-    expect(await service.count()).toBe(0);
-    expect((await service.getProposal(proposal.id))?.status).toBe("rejected");
+    // Снимок описывает строку ДО удаления с дорешёнными полями.
+    expect(decided).toMatchObject({
+      id: proposal.id,
+      scope: proposal.scope,
+      type: proposal.type,
+      text: proposal.text,
+      tags: proposal.tags,
+      origin: proposal.origin,
+      originRef: proposal.originRef,
+      proposedAt: proposal.proposedAt,
+      status: "rejected",
+      decidedBy: "owner",
+      decidedEdit: false,
+      memoryId: null
+    });
+    expect(decided.decidedAt).not.toBeNull();
+    // Строки больше нет ни в общем списке, ни по id, ни под фильтром rejected.
+    expect(await service.getProposal(proposal.id)).toBeUndefined();
+    expect(await service.listProposals({ status: ["rejected"] })).toEqual([]);
+    expect((await service.listProposals({})).map((entry) => entry.id)).not.toContain(proposal.id);
+    // Истина не тронута: запись не создавалась.
+    expect(await service.list()).toEqual([]);
+  });
+
+  it("answers not-found on a second rejection and invalid-status on a decided row", async () => {
+    const proposal = await service.propose(proposalDraft);
+    await service.reject(proposal.id);
+    await expect(service.reject(proposal.id)).rejects.toMatchObject({ code: "not-found" });
+    const accepted = await service.propose({ ...proposalDraft, text: "keep me", type: "note" });
+    await service.approve(accepted.id);
+    await expect(service.reject(accepted.id)).rejects.toMatchObject({ code: "invalid-status" });
+    await expect(service.reject("nope")).rejects.toMatchObject({ code: "not-found" });
   });
 
   it("refuses a second decision and an unknown id", async () => {
     const proposal = await service.propose(proposalDraft);
-    await service.reject(proposal.id);
+    // Решение принимается здесь, а не отказом: отказ удаляет строку, поэтому
+    // повторное решение по ней было бы `not-found`, а не `invalid-status`.
+    await service.approve(proposal.id);
     await expect(service.approve(proposal.id)).rejects.toMatchObject({ code: "invalid-status" });
     await expect(service.reject(proposal.id)).rejects.toMatchObject({ code: "invalid-status" });
     await expect(service.approve("nope")).rejects.toMatchObject({ code: "not-found" });
@@ -273,10 +301,11 @@ describe("balbesMemory proposals", () => {
     await service.approve(accepted.id);
 
     expect((await service.listProposals()).map((entry) => entry.id)).toEqual([pending.id]);
-    expect((await service.listProposals({ status: ["rejected"] })).map((entry) => entry.id)).toEqual([second.id]);
+    // Отказ удаляет строку, поэтому под фильтром rejected ничего не остаётся.
+    expect(await service.listProposals({ status: ["rejected"] })).toEqual([]);
     expect((await service.listProposals({ status: ["accepted"] })).map((entry) => entry.id)).toEqual([accepted.id]);
     expect((await service.listProposals({ status: ["proposed", "accepted", "rejected"] })).map((entry) => entry.id))
-      .toEqual([pending.id, second.id, accepted.id]);
+      .toEqual([pending.id, accepted.id]);
     expect((await service.listProposals({ status: ["proposed", "rejected"], tag: "ops" })).length).toBe(0);
   });
 });

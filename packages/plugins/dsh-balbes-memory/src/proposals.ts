@@ -181,6 +181,10 @@ export function createProposalStore(db: DatabaseSync, deps: ProposalWriterDeps):
     "UPDATE memory_proposals SET status = ?, decided_at = ?, decided_by = ?, decided_edit = ?, memory_id = ? WHERE id = ? AND status = 'proposed'"
   );
 
+  // Отказ — решение, а не состояние: строка удаляется, поэтому условие
+  // status='proposed' не даёт гонке снести принятую строку.
+  const deleteProposal = db.prepare("DELETE FROM memory_proposals WHERE id = ? AND status = 'proposed'");
+
   /** Content-only edit detection: pinning is an owner action, not an edit. */
   function isContentEdit(
     proposal: MemoryProposal,
@@ -252,13 +256,21 @@ export function createProposalStore(db: DatabaseSync, deps: ProposalWriterDeps):
     if (proposal.status !== "proposed") {
       throw new MemoryError("invalid-status", "proposal is already " + proposal.status + ": " + id);
     }
-    const result = decideProposal.run("rejected", new Date().toISOString(), "owner", 0, null, id);
+    // Отказ — решение, а не состояние: строка удаляется одним statement с
+    // условием status='proposed', поэтому гонка не может снести принятую строку.
+    const result = deleteProposal.run(id);
     if (Number(result.changes) !== 1) {
       throw new MemoryError("invalid-status", "proposal was decided concurrently: " + id);
     }
-    const decided = load(id);
-    if (decided === undefined) throw new MemoryError("not-found", "proposal vanished after rejection: " + id);
-    return decided;
+    // Ответ описывает удалённую строку: снимок до решения плюс его результат.
+    return {
+      ...proposal,
+      status: "rejected",
+      decidedAt: new Date().toISOString(),
+      decidedBy: "owner",
+      decidedEdit: false,
+      memoryId: null
+    };
   }
 
   return { propose, getProposal: async (id) => load(id), listProposals, approve, reject };
