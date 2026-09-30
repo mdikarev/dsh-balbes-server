@@ -3,7 +3,7 @@
 - Status: absorbed
 - Focus: фундамент памяти — запись, уровни, персистентность, сервис
 - Design: docs/superpowers/specs/2026-09-26-memory-store-design.md
-- Unblocks: p10b, p10c, p10d–p10h, p13
+- Unblocks: p10b, p10c, p10d–p10i, p13
 
 ## Intent
 

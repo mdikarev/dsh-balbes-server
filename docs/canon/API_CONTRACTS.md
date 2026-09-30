@@ -486,13 +486,14 @@
 - response: `{metrics: MemoryMetricsSnapshot}` — `schema`, `process`
   (`startedAt`, `totals`), `window` (`startedAt`, `durationMs`, `turns`,
   `deliveries`), `byChannel`, `byScope`, `recall` (`calls`, `empty`, `failed`,
-  `latencyMs`), `unqueriedDelivered`, `dropped`, `topRecords`
+  `latencyMs` (`total`, `max`)), `unqueriedDelivered`, `dropped`, `topRecords`
   (`id`, `type`, `scope`, `inCore`, `inMap`, `inPush`, `recallDelivered`,
   `recallQueries`)
 - errors: 400 `bad-request` (не булев `reset`, `top` не число/вне 1..100),
-  401, 503 `metrics-unavailable` (сервис не собран)
+  401, 500, 503 `metrics-unavailable` (сервис не собран)
 - notes: read-only, в хранилище ничего не пишет. Текста памяти в ответе нет ни в
-  одном поле — только id, тип, scope и счётчики; `originRef` не возвращается.
+  одном поле — только id, тип, scope, счётчики, размеры блоков и латентность;
+  `originRef` не возвращается.
   Метрики живут в процессе и теряются при рестарте (персистентность — p12).
   `reset` существует для детерминированного smoke без рестарта сервиса.
 
