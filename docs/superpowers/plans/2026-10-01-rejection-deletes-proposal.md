@@ -313,14 +313,33 @@ git commit -m "test(memory): prove rejection removes the proposal over the real 
 ### Task 4: UI-тесты очереди под новое поведение
 
 **Files:**
+- Modify: `packages/frontend/dsh-balbes-admin/src/pages/MemoryReviewQueue.tsx:78`
 - Modify: `packages/frontend/dsh-balbes-admin/tests/MemoryReviewQueue.test.tsx`
-- Test: тот же файл
+- Test: тот же тест-файл
 
 **Interfaces:**
-- Consumes: неизменённые `MemoryReviewQueue.tsx` и API-клиент (`rejectMemoryReview` возвращает `{proposal}`).
-- Produces: тесты, фиксирующие «решённые = только принятые» и исчезновение строки после отказа.
+- Consumes: неизменённый API-клиент (`rejectMemoryReview` возвращает `{proposal}`).
+- Produces: запрос «решённых» ровно со `status: ["accepted"]` (отклонённых строк в таблице нет — канон `API_CONTRACTS.md`), тесты «решённые = только принятые» и исчезновение строки после отказа.
 
-- [ ] **Step 1: Обновить тесты очереди**
+- [ ] **Step 1: Сузить фильтр «решённых» в странице**
+
+В `packages/frontend/dsh-balbes-admin/src/pages/MemoryReviewQueue.tsx:78` заменить
+
+```ts
+        ...(showDecided ? { status: ["accepted", "rejected"] as MemoryProposal["status"][] } : {})
+```
+
+на
+
+```ts
+        // Отклонённых предложений в таблице не бывает: отказ удаляет строку,
+        // поэтому «решённые» — это только принятые.
+        ...(showDecided ? { status: ["accepted"] as MemoryProposal["status"][] } : {})
+```
+
+Заодно удалить ставший мёртвым ярлык `rejected: "отклонено"` из карты статусов (строка ~19), если после этого он нигде не читается (проверить grep'ом по файлу); если читается (например, для старых строк, пришедших из API), оставить и сказать в отчёте.
+
+- [ ] **Step 2: Обновить тесты очереди**
 
 В `packages/frontend/dsh-balbes-admin/tests/MemoryReviewQueue.test.tsx`:
 
@@ -344,21 +363,21 @@ git commit -m "test(memory): prove rejection removes the proposal over the real 
 
 2. Кейс «rejects after confirmation and refreshes the queue» дополнить проверкой, что строка исчезает после перечитывания: второй ответ `listMemoryReview` без отклонённого предложения, затем `await waitFor(() => expect(screen.queryByTestId("memory-review-row:p-1")).toBeNull())` — точный `data-testid` строки взять из `MemoryReviewQueue.tsx` (если строки без testid, использовать текст предложения).
 
-- [ ] **Step 2: Прогнать UI-тесты — убедиться, что проходят**
+- [ ] **Step 3: Прогнать UI-тесты — убедиться, что проходят**
 
 Run: `cd packages/frontend/dsh-balbes-admin && ./node_modules/.bin/vitest run tests/MemoryReviewQueue.test.tsx`
-Expected: PASS. Если исходный кейс падал на `status: ["accepted","rejected"]` до правки — это ожидаемый RED до Step 1.
+Expected: PASS. Если до правки Step 1 кейс падал на `status: ["accepted","rejected"]`, это был ожидаемый RED.
 
-- [ ] **Step 3: Прогнать весь фронтенд-пакет и типы**
+- [ ] **Step 4: Прогнать весь фронтенд-пакет и типы**
 
 Run: `cd packages/frontend/dsh-balbes-admin && ./node_modules/.bin/vitest run && ./node_modules/.bin/tsc --noEmit -p tsconfig.json`
 Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add packages/frontend/dsh-balbes-admin/tests/MemoryReviewQueue.test.tsx
-git commit -m "test(admin): pin the review queue to accepted-only decisions (p10f)"
+git add packages/frontend/dsh-balbes-admin/src/pages/MemoryReviewQueue.tsx packages/frontend/dsh-balbes-admin/tests/MemoryReviewQueue.test.tsx
+git commit -m "fix(admin): show only accepted decisions in the review queue (p10f)"
 ```
 
 ---
@@ -433,7 +452,7 @@ git commit -m "docs(canon): close the rejection-deletes-row audit (p10f)"
 | Ответ ручки сохраняется (`{proposal}` со синтезом) | Task 1 + канон уже поправлен; фронт не меняется |
 | Легаси-строки | Task 2 (миграция v3, идемпотентная) |
 | Повторный отказ и гонка | Task 1 (`not-found` / `invalid-status`), Task 3 (REAL 404) |
-| UI: «решённые» и исчезновение строки | Task 4 |
+| UI: «решённые» = только принятые, исчезновение строки | Task 4 (`MemoryReviewQueue.tsx:78` + тесты) |
 | Канон (canon-first) | уже закоммичен (`1cd3d6c`, `7f5838d`), закрытие — Task 5 |
 | Серверная проверка | Task 5 (runbook + repo-wide) |
 
