@@ -58,7 +58,7 @@
 - errors: 401 (нет/битый/просроченный токен)
 - notes: SPA решает при загрузке: логин или основная страница.
 
-### prompt — тестовый промпт в LLM
+### prompt — промпт в LLM (API-only, без страницы в админке)
 - method: POST
 - path: /api/prompt
 - auth: bearer
@@ -66,7 +66,8 @@
 - response: `{text: string, reason?: {kind: string, code?: string, message?: string}}`
 - errors: 400 (нет/пустой prompt), 401, 502 (reason.kind === "error")
 - notes: свежий агент на запрос (граница этапа 2), сессия персистится
-  (`sessions.flush`); стриминг — следующий этап.
+  (`sessions.flush`); стриминг — следующий этап. UI-страницы у ручки нет:
+  промпт-поверхность админки — только этот контракт, проверка — `curl` с JWT.
 
 ### workspaces.list — список воркспейсов (дом + проекты)
 - method: POST
