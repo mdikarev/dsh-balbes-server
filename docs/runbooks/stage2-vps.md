@@ -773,7 +773,8 @@ ls -l "$HOME/.dsh/storages/memory.sqlite.bak-v1" 2>/dev/null || echo "бэкап
 
 Доставка не имеет HTTP-ручки, поэтому единственная надёжная проверка — попросить
 модель воспроизвести факт, которого она не может знать иначе. Плагин пишет
-счётчики доставки (`scope=… core=… map=… push=…`) уровнем `info`, а демон по
+счётчики доставки (`scope=… core=… map=… push=…`) уровнем `debug` с p10h
+(основной след — снимок метрик, блок ниже), а демон по
 умолчанию журналирует только `warn`/`error`: отсутствие этой строки в
 `journalctl` — норма, а не сбой. Ищите в журнале только предупреждения
 `balbes-memory-context: ... missing` и `prepare failed` (см. «Устранение
@@ -801,6 +802,65 @@ curl -fsS -X POST http://127.0.0.1:8080/api/prompt \
   -d '{"prompt":"Какой внутренний код сборки Балбеса? Ответь только значением."}'
 # ожидается: ответ содержит MARS-7Q3X-9F. Дословного текста записи в ответе не
 # ждите: модель отвечает на вопрос, а не повторяет запись целиком.
+
+# уборка тестовой записи
+curl -fsS -X POST http://127.0.0.1:8080/api/memory/delete \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{"id":"<id>"}'
+# ожидается: {"deleted":true}
+```
+
+Память: метрики попаданий (p10h) — ручка `POST /api/memory/metrics` (bearer, POST,
+JSON; ответ `{metrics}`). Она отдаёт снимок in-process агрегатора доставки:
+объёмные счётчики по каналам и scope, per-record попадания в ядро/карту/push,
+`recall` (вызовы, пустые, ошибки, латентность), `unqueriedDelivered` («доставлена,
+но ни разу не запрошена») и `dropped` (потолок 512 уникальных id в окне). Метрики
+живут в процессе `dsh-balbes` и обнуляются при его рестарте: окно и per-record —
+in-memory, накопительные `process.totals` начинаются заново (персистентность —
+отдельная инициатива p12). Полный smoke — REAL-тест пакета
+`dsh-balbes-memory-context` (`RUN_REAL=1 pnpm --filter dsh-balbes-memory-context
+test`, нужен `dsh` на PATH): он поднимает реальную композицию с ручкой метрик и
+проверяет, что в снимке нет текста памяти.
+
+```bash
+TOKEN=... # из POST /api/auth/login
+
+# запись-маркер: pinned, поэтому попадает в ядро и видна в topRecords по id
+curl -fsS -X POST http://127.0.0.1:8080/api/memory/save \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"scope":{"kind":"global"},"type":"fact","text":"metrics-smoke: код запуска Балбеса — dsh-balbes","pinned":true}'
+# ожидается: {"record":{...,"id":"<id>",...}}; сохраните id из ответа
+
+# ход агента: доставка ядра/карты/push учитывается в окне
+curl -fsS -X POST http://127.0.0.1:8080/api/prompt \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"prompt":"Повтори дословно код запуска Балбеса"}'
+# ожидается: обычный ответ агента
+
+# снимок окна: без reset он не мутирует
+curl -fsS -X POST http://127.0.0.1:8080/api/memory/metrics \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{}'
+# ожидается: {"metrics":{...}} с byChannel.admin.turns >= 1 и topRecords, где у
+#   записи с сохранённым id inCore >= 1; в ответе только id, тип, scope и
+#   счётчики — текста записи нет
+
+# reset закрывает окно и возвращает снимок закрытого окна
+curl -fsS -X POST http://127.0.0.1:8080/api/memory/metrics \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{"reset":true}'
+# ожидается: непустое окно (window.turns >= 1); следующий вызов с {} даёт
+#   window.turns=0 при сохранённых process.totals
+curl -fsS -X POST http://127.0.0.1:8080/api/memory/metrics \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{}'
+# ожидается: {"metrics":{...,"window":{"turns":0,...}}}, а в сохранённых
+#   process.totals turns >= 1 (тоталы процесса не сбрасываются)
+
+# след снимка в журнале — без текста памяти
+journalctl -u dsh-balbes -n 200 | grep 'balbes-memory-context: metrics'
+# ожидается (при уровне info): строка «balbes-memory-context: metrics key=server
+#   window=<...>s turns=<...> deliveries=<...> chars=<...> recall=<calls>/<empty>/<failed>
+#   latency=<total>/<max> unqueried=<...> dropped=<...> top=<id>:<hits>/<queries>,...»;
+#   отсутствие строки — норма при журналировании только warn/error, а не сбой.
+#   Строку пишет интервальный снимок (дефолт 15 минут,
+#   BALBES_MEMORY_METRICS_INTERVAL_MS) и финальный снимок при остановке сервиса
 
 # уборка тестовой записи
 curl -fsS -X POST http://127.0.0.1:8080/api/memory/delete \
