@@ -295,7 +295,7 @@ export interface MemoryDecisionPatch {
 }
 ```
 
-Add to `BalbesMemoryService` (after `count`):
+Do **not** extend `BalbesMemoryService` in this task. `createMemoryService` returns a concrete object literal of the existing seven methods (`service.ts:277`), so adding interface methods here breaks `pnpm build`/`pnpm typecheck` with TS2739 — and both ways to silence it are worse: a cast removes compile-time checking of the whole service literal until Task 4, and throwing stubs put future-task code in this task. The five signatures below are added by Task 4, which implements them:
 
 ```ts
   propose(draft: MemoryProposalDraft): Promise<MemoryProposal>;
@@ -397,8 +397,8 @@ export function normalizeDecisionPatch(patch: unknown): MemoryDecisionPatch {
 Run: `cd packages/plugins/dsh-balbes-memory && npx vitest run tests/validate.test.ts` then `cd packages/contracts && npx vitest run`
 Expected: PASS.
 
-Run: `pnpm typecheck`
-Expected: PASS (`BalbesMemoryService` now demands proposal methods; nothing implements it yet as a concrete object literal, so no other package breaks).
+Run: `pnpm -r build && pnpm typecheck`
+Expected: PASS. Build comes first because `packages/contracts/lib` is gitignored and stale `lib/` output makes typecheck read old declarations. This task does not touch `BalbesMemoryService`, so `createMemoryService`'s literal stays fully checked here and in Task 3.
 
 - [ ] **Step 7: Commit**
 
@@ -555,12 +555,13 @@ git commit -m "feat(memory): add the proposals table schema v2 (p10f)"
 
 **Files:**
 - Create: `packages/plugins/dsh-balbes-memory/src/proposals.ts`
+- Modify: `packages/plugins/dsh-balbes-memory/src/types.ts`
 - Modify: `packages/plugins/dsh-balbes-memory/src/service.ts`
 - Test: `packages/plugins/dsh-balbes-memory/tests/proposals.test.ts` (new)
 
 **Interfaces:**
 - Consumes: `normalizeProposalDraft`, `normalizeProposalFilter`, `normalizeTags` (Task 2); `memory_proposals` (Task 3); `LIMITS`.
-- Produces: `createProposalStore(db, deps): ProposalStore` where `ProposalStore` covers `propose` / `getProposal` / `listProposals` plus the decision methods added in Task 5; `ProposalWriterDeps.insertMemoryRecord(id, input): void` and `ProposalWriterDeps.loadRecord(id): MemoryRecord | undefined`. `createMemoryService` spreads the store into its return value.
+- Produces: `createProposalStore(db, deps): ProposalStore` where `ProposalStore` covers `propose` / `getProposal` / `listProposals` plus the decision methods added in Task 5; `ProposalWriterDeps.insertMemoryRecord(id, input): void` and `ProposalWriterDeps.loadRecord(id): MemoryRecord | undefined`; **the extended `BalbesMemoryService`** (the five proposal signatures are added here, not in Task 2, because this task is where they are implemented); `createMemoryService` spreads the store into its return value.
 
 - [ ] **Step 1: Write the failing store tests**
 
@@ -862,7 +863,21 @@ export function createProposalStore(db: DatabaseSync, deps: ProposalWriterDeps):
 }
 ```
 
-- [ ] **Step 4: Wire the store into the service**
+- [ ] **Step 4: Extend the service interface**
+
+In `packages/plugins/dsh-balbes-memory/src/types.ts`, add to `BalbesMemoryService` (after `count`):
+
+```ts
+  propose(draft: MemoryProposalDraft): Promise<MemoryProposal>;
+  getProposal(id: string): Promise<MemoryProposal | undefined>;
+  listProposals(filter?: MemoryProposalFilter): Promise<MemoryProposal[]>;
+  approve(id: string, patch?: MemoryDecisionPatch): Promise<{ proposal: MemoryProposal; record: MemoryRecord }>;
+  reject(id: string): Promise<MemoryProposal>;
+```
+
+This is the task that makes `createMemoryService`'s object literal satisfy the interface, so the literal stays fully type-checked — if you find any `as BalbesMemoryService` cast left in `service.ts` (an interim workaround), delete it here.
+
+- [ ] **Step 5: Wire the store into the service**
 
 In `packages/plugins/dsh-balbes-memory/src/service.ts`:
 
@@ -938,16 +953,16 @@ In `packages/plugins/dsh-balbes-memory/src/service.ts`:
 
 - import the needed types (`MemoryOrigin`, `MemoryType`) from `./types.js`.
 
-- [ ] **Step 5: Run the tests**
+- [ ] **Step 6: Run the tests**
 
 Run: `cd packages/plugins/dsh-balbes-memory && npx vitest run tests/proposals.test.ts tests/service.test.ts`
 Expected: PASS for every staged-proposal case; `service.test.ts` stays fully green — the `save` refactor is behaviour-preserving. (`approve`/`reject` still throw their placeholder `invalid-status`, which Task 5 replaces.)
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add packages/plugins/dsh-balbes-memory/src/proposals.ts packages/plugins/dsh-balbes-memory/src/service.ts \
-  packages/plugins/dsh-balbes-memory/tests/proposals.test.ts
+git add packages/plugins/dsh-balbes-memory/src/proposals.ts packages/plugins/dsh-balbes-memory/src/types.ts \
+  packages/plugins/dsh-balbes-memory/src/service.ts packages/plugins/dsh-balbes-memory/tests/proposals.test.ts
 git commit -m "feat(memory): stage proposals in their own table (p10f)"
 ```
 
