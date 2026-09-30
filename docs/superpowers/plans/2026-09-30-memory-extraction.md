@@ -696,10 +696,11 @@ describe("extraction seat", () => {
   it("resets the counters for every service turn", async () => {
     const h = harness({});
     const turn = h.attachment.extraction!;
+    turn.begin();
+    // The lookup happens AFTER begin(): begin() is what registers the tool.
     const propose = h.registered.get("propose_memory") as {
       execute(args: unknown, exec: unknown): Promise<unknown>;
     };
-    turn.begin();
     await propose.execute({ text: "первый факт" }, {} as never);
     await propose.execute({ text: "первый факт" }, {} as never);
     turn.end();
