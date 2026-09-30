@@ -84,6 +84,38 @@ export interface MemoryServiceLike {
   reject(id: string): Promise<MemoryProposal>;
 }
 
+/**
+ * Structural mirror of the memory-context `MemoryMetricsSnapshot` (that package
+ * owns the type; the admin package must not depend on it). Keep in sync with
+ * `docs/canon/API_CONTRACTS.md` → `memory.metrics`: ids, types, scopes, counters
+ * and latency only — never memory text, `originRef` or block sizes.
+ */
+export interface MemoryMetricsSnapshotLike {
+  schema: 1;
+  process: { startedAt: string; totals: { turns: number; deliveries: number } };
+  window: { startedAt: string; durationMs: number; turns: number; deliveries: number };
+  byChannel: Record<string, { turns: number; deliveries: number }>;
+  byScope: Record<string, { turns: number; deliveries: number }>;
+  recall: { calls: number; empty: number; failed: number; latencyMs: { total: number; max: number } };
+  unqueriedDelivered: number;
+  dropped: number;
+  topRecords: Array<{
+    id: string;
+    type: string;
+    scope: string;
+    inCore: number;
+    inMap: number;
+    inPush: number;
+    recallDelivered: number;
+    recallQueries: number;
+  }>;
+}
+
+/** Structural slice of the balbesMemoryMetrics service: a read-only snapshot. */
+export interface MetricsLike {
+  snapshot(options?: { reset?: boolean; top?: number }): MemoryMetricsSnapshotLike;
+}
+
 function send(res: ResLike, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
   res.writeHead(status, { "content-type": "application/json", "content-length": String(Buffer.byteLength(payload)) });
@@ -320,6 +352,25 @@ function scopeTag(scope: MemoryScope): string {
   return scope.kind === "global" ? "global" : "project:" + scope.name;
 }
 
+type ParsedMetrics = { ok: true; options: { reset?: boolean; top?: number } } | { ok: false; message: string };
+
+/** Validates the optional metrics request knobs; an absent/short body means defaults. */
+function parseMetrics(body: unknown): ParsedMetrics {
+  if (!isObject(body)) return { ok: true, options: {} };
+  const options: { reset?: boolean; top?: number } = {};
+  if (body.reset !== undefined) {
+    if (typeof body.reset !== "boolean") return { ok: false, message: "reset must be a boolean" };
+    options.reset = body.reset;
+  }
+  if (body.top !== undefined) {
+    if (typeof body.top !== "number" || !Number.isInteger(body.top) || body.top < 1 || body.top > 100) {
+      return { ok: false, message: "top must be an integer between 1 and 100" };
+    }
+    options.top = body.top;
+  }
+  return { ok: true, options };
+}
+
 /** Optional sink for one-line review audit messages; info may be absent. */
 export interface RoutesLogger {
   info?(message: string): void;
@@ -328,7 +379,8 @@ export interface RoutesLogger {
 export function registerMemoryRoutes(
   http: HttpSeatLike,
   getService: () => MemoryServiceLike | undefined,
-  logger?: RoutesLogger
+  logger?: RoutesLogger,
+  getMetrics?: () => MetricsLike | undefined
 ): void {
   const unavailable = (res: ResLike): void =>
     sendError(res, 503, "memory-unavailable", "memory storage is not available");
@@ -442,6 +494,21 @@ export function registerMemoryRoutes(
       const proposal = await service.reject(parsed.id);
       logger?.info?.("balbes-memory-admin: reject id=" + proposal.id);
       send(res, 200, { proposal });
+    } catch (error) {
+      sendServiceError(res, error);
+    }
+  });
+
+  http.post("/api/memory/metrics", "bearer", async (_req, res, body) => {
+    const metrics = getMetrics?.();
+    if (metrics === undefined) {
+      sendError(res, 503, "metrics-unavailable", "memory metrics are not available");
+      return;
+    }
+    const parsed = parseMetrics(body);
+    if (!parsed.ok) { sendError(res, 400, "bad-request", parsed.message); return; }
+    try {
+      send(res, 200, { metrics: metrics.snapshot(parsed.options) });
     } catch (error) {
       sendServiceError(res, error);
     }

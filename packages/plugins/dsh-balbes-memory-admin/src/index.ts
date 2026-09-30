@@ -1,13 +1,13 @@
 import z from "@deepseek-ai/schemastery";
-import { registerMemoryRoutes, type HttpSeatLike, type MemoryServiceLike } from "./routes.js";
+import { registerMemoryRoutes, type HttpSeatLike, type MemoryServiceLike, type MetricsLike } from "./routes.js";
 
 export const name = "balbes-memory-admin";
 
 /**
- * balbesHttp is the only injected service. The balbesMemory store is read
- * lazily per request, so this plugin applies regardless of the store plugin
- * load order and answers 503 (instead of a generic 404) when the store failed
- * to open its database.
+ * balbesHttp is the only injected service. The balbesMemory store and the
+ * balbesMemoryMetrics sink are read lazily per request, so this plugin applies
+ * regardless of the other plugins' load order and answers 503 (instead of a
+ * generic 404) when either service is missing.
  */
 export const inject = ["balbesHttp"];
 
@@ -24,5 +24,10 @@ export function apply(ctx: CtxLike, _config: unknown): void {
     ctx.logger.warn("balbes-memory-admin: balbesHttp service missing; routes not registered");
     return;
   }
-  registerMemoryRoutes(http, () => ctx.get("balbesMemory") as MemoryServiceLike | undefined, ctx.logger);
+  registerMemoryRoutes(
+    http,
+    () => ctx.get("balbesMemory") as MemoryServiceLike | undefined,
+    ctx.logger,
+    () => ctx.get("balbesMemoryMetrics") as MetricsLike | undefined
+  );
 }

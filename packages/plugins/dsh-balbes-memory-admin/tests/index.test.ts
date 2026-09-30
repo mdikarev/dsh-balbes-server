@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { apply, Config, inject, name } from "../src/index.js";
+import { registerMemoryRoutes } from "../src/routes.js";
 import type {
   MemoryDecisionPatchLike,
   MemoryDraftLike,
   MemoryFilterLike,
+  MemoryMetricsSnapshotLike,
   MemoryPatchLike,
   MemoryProposalDraftLike,
   MemoryProposalFilterLike,
   MemoryServiceLike,
+  MetricsLike,
   ResLike
 } from "../src/routes.js";
 import type { MemoryAutonomyPolicy, MemoryProposal, MemoryRecord } from "dsh-balbes-contracts";
@@ -110,13 +113,38 @@ function fakeService(overrides: Partial<MemoryServiceLike> = {}): FakeService {
   return Object.assign(base, overrides, { saved, updated, deleted, searched, listed, proposed, reviewed, approved, rejected });
 }
 
-interface HarnessOptions { service?: MemoryServiceLike | undefined; omitHttp?: boolean; }
+interface HarnessOptions { service?: MemoryServiceLike | undefined; metrics?: MetricsLike | undefined; omitHttp?: boolean; }
+
+/**
+ * Direct seat builder for the route table: calls `registerMemoryRoutes` without
+ * going through `apply`, so a test can supply a metrics service and no
+ * balbesHttp/logger. `call` drives the registered handler with a real response seat.
+ */
+function routeSeats(options: { service?: MemoryServiceLike | undefined; metrics?: MetricsLike | undefined } = {}): {
+  seats: Seat[];
+  call(path: string, body: unknown): Promise<{ status: number; json: unknown; raw: string }>;
+} {
+  const seats: Seat[] = [];
+  const http = {
+    post(path: string, auth: "public" | "bearer", handler: Seat["handler"]) { seats.push({ path, auth, handler }); }
+  };
+  registerMemoryRoutes(http, () => options.service, undefined, () => options.metrics);
+  async function call(path: string, body: unknown): Promise<{ status: number; json: unknown; raw: string }> {
+    const seat = seats.find((candidate) => candidate.path === path);
+    if (seat === undefined) throw new Error("no seat registered for " + path);
+    const response = makeRes();
+    await seat.handler({}, response.res, body);
+    return response.read();
+  }
+  return { seats, call };
+}
 
 function harness(options: HarnessOptions = {}) {
   const seats: Seat[] = [];
   const warnings: string[] = [];
   const infos: string[] = [];
   let service = options.service;
+  let metrics = options.metrics;
   const ctx = {
     get(key: string): unknown {
       if (key === "balbesHttp") {
@@ -125,6 +153,7 @@ function harness(options: HarnessOptions = {}) {
           : { post(path: string, auth: string, handler: Seat["handler"]) { seats.push({ path, auth, handler }); } };
       }
       if (key === "balbesMemory") return service;
+      if (key === "balbesMemoryMetrics") return metrics;
       return undefined;
     },
     logger: {
@@ -132,7 +161,8 @@ function harness(options: HarnessOptions = {}) {
       info(message: string) { infos.push(message); }
     }
   };
-  apply(ctx as never, {});
+  // intervalMs: 0 keeps the harness free of any live timer the metrics plugin arm may start.
+  apply(ctx as never, { intervalMs: 0 });
   async function call(path: string, body: unknown): Promise<{ status: number; json: unknown; raw: string }> {
     const seat = seats.find((candidate) => candidate.path === path);
     if (seat === undefined) throw new Error("no seat registered for " + path);
@@ -140,7 +170,14 @@ function harness(options: HarnessOptions = {}) {
     await seat.handler({}, response.res, body);
     return response.read();
   }
-  return { seats, warnings, infos, call, setService(value: MemoryServiceLike | undefined) { service = value; } };
+  return {
+    seats,
+    warnings,
+    infos,
+    call,
+    setService(value: MemoryServiceLike | undefined) { service = value; },
+    setMetrics(value: MetricsLike | undefined) { metrics = value; }
+  };
 }
 
 describe("balbes-memory-admin plugin", () => {
@@ -150,7 +187,7 @@ describe("balbes-memory-admin plugin", () => {
     expect(Config({})).toEqual({});
   });
 
-  it("registers the seven bearer routes", () => {
+  it("registers the eight bearer routes", () => {
     const h = harness({ service: fakeService() });
     expect(h.seats.map((seat) => seat.path)).toEqual([
       "/api/memory/list",
@@ -159,7 +196,8 @@ describe("balbes-memory-admin plugin", () => {
       "/api/memory/propose",
       "/api/memory/review/list",
       "/api/memory/review/approve",
-      "/api/memory/review/reject"
+      "/api/memory/review/reject",
+      "/api/memory/metrics"
     ]);
     expect(h.seats.every((seat) => seat.auth === "bearer")).toBe(true);
   });
@@ -359,5 +397,89 @@ describe("balbes-memory-admin plugin", () => {
     await h2.call("/api/memory/review/approve", { id: "p-9", text: "left in the body but not logged" });
     expect(h2.infos).toEqual(["balbes-memory-admin: approve id=p-9 edited=true"]);
     expect(h2.infos.join("\n")).not.toContain("left in the body");
+  });
+});
+
+describe("POST /api/memory/metrics", () => {
+  function snapshot(): MemoryMetricsSnapshotLike {
+    return {
+      schema: 1,
+      process: { startedAt: "2026-10-01T00:00:00.000Z", totals: { turns: 3, deliveries: 5 } },
+      window: { startedAt: "2026-10-01T00:00:00.000Z", durationMs: 10, turns: 3, deliveries: 5 },
+      byChannel: { admin: { turns: 3, deliveries: 5 } },
+      byScope: { global: { turns: 3, deliveries: 5 } },
+      recall: { calls: 1, empty: 0, failed: 0, latencyMs: { total: 2, max: 2 } },
+      unqueriedDelivered: 1,
+      dropped: 0,
+      topRecords: [
+        { id: "m-1", type: "fact", scope: "global", inCore: 1, inMap: 0, inPush: 0, recallDelivered: 0, recallQueries: 0 }
+      ]
+    };
+  }
+
+  it("returns the snapshot and forwards reset/top", async () => {
+    const calls: Array<{ reset?: boolean; top?: number } | undefined> = [];
+    const expected = snapshot();
+    const seats = routeSeats({
+      metrics: {
+        snapshot(options) {
+          calls.push(options);
+          return expected;
+        }
+      }
+    });
+    const response = await seats.call("/api/memory/metrics", { reset: true, top: 50 });
+    expect(response.status).toBe(200);
+    expect(response.json).toEqual({ metrics: expected });
+    expect(calls).toEqual([{ reset: true, top: 50 }]);
+  });
+
+  it("uses the defaults when the body is empty", async () => {
+    const calls: Array<{ reset?: boolean; top?: number } | undefined> = [];
+    const seats = routeSeats({ metrics: { snapshot(options) { calls.push(options); return snapshot(); } } });
+    const response = await seats.call("/api/memory/metrics", {});
+    expect(response.status).toBe(200);
+    expect(calls).toEqual([{}]);
+  });
+
+  it("answers 503 when the metrics service is missing", async () => {
+    const seats = routeSeats({});
+    const response = await seats.call("/api/memory/metrics", {});
+    expect(response.status).toBe(503);
+    expect(response.json).toEqual({
+      error: { code: "metrics-unavailable", message: "memory metrics are not available" }
+    });
+  });
+
+  it("rejects a non-boolean reset and an out-of-range top", async () => {
+    const seats = routeSeats({ metrics: { snapshot: () => snapshot() } });
+    for (const body of [{ reset: "yes" }, { top: 0 }, { top: 101 }, { top: 1.5 }, { top: "5" }]) {
+      const response = await seats.call("/api/memory/metrics", body);
+      expect(response.status, JSON.stringify(body)).toBe(400);
+      expect((response.json as { error: { code: string } }).error.code).toBe("bad-request");
+    }
+  });
+
+  it("answers 500 without leaking the memory text when the snapshot throws", async () => {
+    const seats = routeSeats({ metrics: { snapshot: () => { throw new Error("boom"); } } });
+    const response = await seats.call("/api/memory/metrics", {});
+    expect(response.status).toBe(500);
+    expect(response.json).toEqual({ error: { code: "internal", message: "boom" } });
+  });
+
+  it("registers the route through apply with the bearer auth", () => {
+    const seats = harness({ metrics: { snapshot: () => snapshot() } });
+    const seat = seats.seats.find((candidate) => candidate.path === "/api/memory/metrics");
+    expect(seat?.auth).toBe("bearer");
+  });
+
+  it("resolves balbesMemoryMetrics lazily on every request", async () => {
+    const h = harness({ metrics: undefined });
+    const before = await h.call("/api/memory/metrics", {});
+    expect(before.status).toBe(503);
+    h.setMetrics({ snapshot: () => snapshot() });
+    const after = await h.call("/api/memory/metrics", {});
+    expect(after.status).toBe(200);
+    expect(after.json).toEqual({ metrics: snapshot() });
   });
 });
