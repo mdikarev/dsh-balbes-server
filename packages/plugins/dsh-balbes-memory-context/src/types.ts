@@ -102,3 +102,79 @@ export interface MemoryContextAttachment {
 export interface BalbesMemoryContextService {
   attach(agentCtx: unknown, scope: MemoryContextScope, write?: MemoryWriteContext): MemoryContextAttachment;
 }
+
+/** Тег уровня записи в метриках: "global" или "project:<name>". */
+export type MemoryMetricsScopeTag = string;
+
+/** Минимум о записи для топ-выдачи метрик: текста памяти тут нет by design. */
+export interface MemoryRecordRef {
+  type: string;
+  scope: MemoryMetricsScopeTag;
+}
+
+/** Событие доставки одного хода: id по путям, опущенные записи и размеры блоков. */
+export interface MemoryDeliveryEvent {
+  channel: string;
+  scope: MemoryMetricsScopeTag;
+  core: { delivered: string[]; omitted: number; chars: number };
+  map: { delivered: string[]; omitted: number; chars: number };
+  push: { delivered: string[]; omitted: number; chars: number };
+  records?: Record<string, MemoryRecordRef>;
+}
+
+/** Событие одного вызова `recall`: исход, латентность и выданные записи. */
+export interface MemoryRecallEvent {
+  channel: string;
+  scope: MemoryMetricsScopeTag;
+  outcome: "ok" | "empty" | "failed";
+  latencyMs: number;
+  delivered?: string[];
+  records?: Record<string, MemoryRecordRef>;
+}
+
+/** Куда доставка пишет сигнал; реализация решает, что с ним делать. */
+export interface MemoryMetricsSink {
+  recordDelivery(event: MemoryDeliveryEvent): void;
+  recordRecall(event: MemoryRecallEvent): void;
+}
+
+export interface MemoryMetricsTotals {
+  turns: number;
+  deliveries: number;
+}
+
+export interface MemoryMetricsChannelTotals extends MemoryMetricsTotals {}
+
+export interface MemoryMetricsRecordMetrics {
+  id: string;
+  type: string;
+  scope: MemoryMetricsScopeTag;
+  inCore: number;
+  inMap: number;
+  inPush: number;
+  recallDelivered: number;
+  recallQueries: number;
+}
+
+export interface MemoryMetricsSnapshot {
+  schema: 1;
+  process: { startedAt: string; totals: MemoryMetricsTotals };
+  window: { startedAt: string; durationMs: number; turns: number; deliveries: number };
+  byChannel: Record<string, MemoryMetricsChannelTotals>;
+  byScope: Record<string, MemoryMetricsChannelTotals>;
+  recall: { calls: number; empty: number; failed: number; latencyMs: { total: number; max: number } };
+  unqueriedDelivered: number;
+  dropped: number;
+  topRecords: MemoryMetricsRecordMetrics[];
+}
+
+export interface MemoryMetricsLogger {
+  info?(message: string): void;
+  warn(message: string): void;
+}
+
+/** Сервис метрик: приём событий, снимок окна и освобождение таймера. */
+export interface MemoryMetricsService extends MemoryMetricsSink {
+  snapshot(options?: { reset?: boolean; top?: number }): MemoryMetricsSnapshot;
+  dispose(): void;
+}
