@@ -37,14 +37,19 @@ describe("renderCore", () => {
   });
 
   it("is empty for no records", () => {
-    expect(renderCore([])).toEqual({ text: "", shown: [], omitted: 0, records: [] });
+    expect(renderCore([])).toEqual({ text: "", shown: [], records: [] });
   });
 
-  it("omits records that do not fit and counts them", () => {
+  it("omits records that do not fit and reports them in the footer text", () => {
     const big = record({ id: "big", text: "x".repeat(CORE_BUDGET), pinned: true });
     const result = renderCore([record({ id: "small", text: "fits", pinned: true }), big]);
     expect(result.shown).toEqual(["small"]);
     expect(result.text).toContain("ещё 1 закреплённых записей не поместились");
+  });
+
+  it("keeps the block shape to text, shown ids and records", () => {
+    const result = renderCore([record({ id: "a", text: "fits", pinned: true })]);
+    expect(Object.keys(result).sort()).toEqual(["records", "shown", "text"]);
   });
 
   it("truncates the first oversized record and renders no later record", () => {
@@ -81,7 +86,6 @@ describe("renderMap", () => {
     expect(renderMap([record({ id: "a", text: "core", pinned: true })], 1, new Set(["a"]))).toEqual({
       text: "",
       shown: [],
-      omitted: 0,
       records: []
     });
   });
@@ -103,7 +107,7 @@ describe("renderPush", () => {
   });
 
   it("is empty with no hits", () => {
-    expect(renderPush([], new Set())).toEqual({ text: "", shown: [], omitted: 0, records: [] });
+    expect(renderPush([], new Set())).toEqual({ text: "", shown: [], records: [] });
   });
 });
 

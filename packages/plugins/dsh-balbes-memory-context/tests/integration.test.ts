@@ -337,6 +337,26 @@ describe.skipIf(!realEnabled)("REAL composition (memory delivery)", () => {
         "scope",
         "type"
       ]);
+      // Верхнеуровневых ключей мало: зеркало могло разойтись внутри вложенных
+      // объектов, поэтому наборы ключей `process`/`window`/`recall` и их
+      // вложенных счётчиков проверяются теми же точными множествами против
+      // реального `MemoryMetricsSnapshot` (types.ts) и зеркала admin/routes.ts.
+      const process = metrics.process as Record<string, unknown>;
+      expect(Object.keys(process).sort(), JSON.stringify(process)).toEqual(["startedAt", "totals"]);
+      const processTotals = process.totals as Record<string, unknown>;
+      expect(Object.keys(processTotals).sort(), JSON.stringify(processTotals)).toEqual(["deliveries", "turns"]);
+      const window = metrics.window as Record<string, unknown>;
+      expect(Object.keys(window).sort(), JSON.stringify(window)).toEqual([
+        "deliveries",
+        "durationMs",
+        "startedAt",
+        "turns"
+      ]);
+      const recall = metrics.recall as Record<string, unknown>;
+      expect(Object.keys(recall).sort(), JSON.stringify(recall)).toEqual(["calls", "empty", "failed", "latencyMs"]);
+      const latency = recall.latencyMs as Record<string, unknown>;
+      expect(Object.keys(latency).sort(), JSON.stringify(latency)).toEqual(["max", "total"]);
+      expect(Object.keys(admin!).sort(), JSON.stringify(admin)).toEqual(["deliveries", "turns"]);
       // Приватность: ни текст памяти, ни originRef в снимок не попадают.
       // Ручка отдаёт снимок четырежды (окно, детальный снимок top:100, reset и
       // пустое окно после reset) — сканируем каждый ответ, а не только первый.

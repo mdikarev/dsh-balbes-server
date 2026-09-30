@@ -17,8 +17,6 @@ export interface RenderedBlock {
   text: string;
   /** Ids записей, реально попавших в текст, в порядке вывода. */
   shown: string[];
-  /** Сколько записей не поместилось в бюджет (для ядра — сколько pinned опущено). */
-  omitted: number;
   /** Записи, реально попавшие в текст (для метрик и провенанса); пусто там, где рендер идёт строками. */
   records: MemoryRecord[];
 }
@@ -60,7 +58,7 @@ function mapLine(record: MemoryRecord): string {
 }
 
 export function renderCore(records: readonly MemoryRecord[]): RenderedBlock {
-  if (records.length === 0) return { text: "", shown: [], omitted: 0, records: [] };
+  if (records.length === 0) return { text: "", shown: [], records: [] };
   const lines = [CORE_HEADER, CORE_NOTE];
   const shown: string[] = [];
   const rendered: MemoryRecord[] = [];
@@ -86,9 +84,10 @@ export function renderCore(records: readonly MemoryRecord[]): RenderedBlock {
       }
     }
   }
+  // Число опущенных живёт только в тексте футера: наружу блок его не отдаёт.
   const omitted = records.length - shown.length;
   if (omitted > 0) lines.push("… ещё " + omitted + " закреплённых записей не поместились — ищи через recall.");
-  return { text: lines.join("\n"), shown, omitted, records: rendered };
+  return { text: lines.join("\n"), shown, records: rendered };
 }
 
 export function renderMap(records: readonly MemoryRecord[], total: number, coreShown: ReadonlySet<string>): RenderedBlock {
@@ -105,10 +104,11 @@ export function renderMap(records: readonly MemoryRecord[], total: number, coreS
     rendered.push(record);
     used += line.length + 1;
   }
+  // Число опущенных живёт только в тексте футера: наружу блок его не отдаёт.
   const omitted = Math.max(0, total - coreShown.size - shown.length);
   if (omitted > 0) lines.push("… ещё " + omitted + " записей не показаны — уточни запрос через recall.");
-  if (shown.length === 0 && omitted === 0) return { text: "", shown: [], omitted: 0, records: [] };
-  return { text: lines.join("\n"), shown, omitted, records: rendered };
+  if (shown.length === 0 && omitted === 0) return { text: "", shown: [], records: [] };
+  return { text: lines.join("\n"), shown, records: rendered };
 }
 
 export function renderPush(hits: readonly MemorySearchHit[], coreShown: ReadonlySet<string>): RenderedBlock {
@@ -125,11 +125,10 @@ export function renderPush(hits: readonly MemorySearchHit[], coreShown: Readonly
     rendered.push(hit.record);
     used += line.length + 1;
   }
-  if (shown.length === 0) return { text: "", shown: [], omitted: 0, records: [] };
+  if (shown.length === 0) return { text: "", shown: [], records: [] };
   return {
     text: lines.join("\n"),
     shown,
-    omitted: 0,
     records: rendered
   };
 }

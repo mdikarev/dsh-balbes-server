@@ -116,13 +116,13 @@ export interface MemoryRecordRef {
   scope: MemoryMetricsScopeTag;
 }
 
-/** Событие доставки одного хода: id по путям, опущенные записи и размеры блоков. */
+/** Событие доставки одного хода: id по путям и размеры блоков. */
 export interface MemoryDeliveryEvent {
   channel: MemoryMetricsChannel;
   scope: MemoryMetricsScopeTag;
-  core: { delivered: string[]; omitted: number; chars: number };
-  map: { delivered: string[]; omitted: number; chars: number };
-  push: { delivered: string[]; omitted: number; chars: number };
+  core: { delivered: string[]; chars: number };
+  map: { delivered: string[]; chars: number };
+  push: { delivered: string[]; chars: number };
   records?: Record<string, MemoryRecordRef>;
 }
 
@@ -156,6 +156,11 @@ export interface MemoryMetricsRecordMetrics {
   inCore: number;
   inMap: number;
   inPush: number;
+  /**
+   * Доставлено или выдано recall. Алиас `recallQueries`: запись, выданная в N
+   * вызовах `recall`, получает N в обоих счётчиках — уникальный id вызова
+   * хранится по одному разу на вызов, поэтому поля численно совпадают.
+   */
   recallDelivered: number;
   recallQueries: number;
 }

@@ -164,7 +164,7 @@ export function createMemoryContext(
             const coreShown = new Set(core.shown);
             const map = renderMap(records, total, coreShown);
             const query = buildFtsQuery(taskText);
-            let push: RenderedBlock = { text: "", shown: [], omitted: 0, records: [] };
+            let push: RenderedBlock = { text: "", shown: [], records: [] };
             if (query !== "") {
               const hits = await memory.search({ query, filter: { scopes }, limit: PUSH_SEARCH_LIMIT });
               push = renderPush(hits, coreShown);
@@ -181,9 +181,9 @@ export function createMemoryContext(
               metrics?.recordDelivery({
                 channel,
                 scope: scopeName,
-                core: { delivered: core.shown, omitted: core.omitted, chars: core.text.length },
-                map: { delivered: map.shown, omitted: map.omitted, chars: map.text.length },
-                push: { delivered: push.shown, omitted: push.omitted, chars: push.text.length },
+                core: { delivered: core.shown, chars: core.text.length },
+                map: { delivered: map.shown, chars: map.text.length },
+                push: { delivered: push.shown, chars: push.text.length },
                 records: refs
               });
             } catch (error) {

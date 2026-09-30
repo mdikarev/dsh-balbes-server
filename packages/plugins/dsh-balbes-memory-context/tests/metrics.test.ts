@@ -14,9 +14,9 @@ describe("createMemoryMetricsLedger", () => {
     ledger.recordDelivery({
       channel: "admin",
       scope: "global",
-      core: { delivered: ["a"], omitted: 0, chars: 10 },
-      map: { delivered: ["a"], omitted: 2, chars: 20 },
-      push: { delivered: [], omitted: 0, chars: 0 },
+      core: { delivered: ["a"], chars: 10 },
+      map: { delivered: ["a"], chars: 20 },
+      push: { delivered: [], chars: 0 },
       records: { a: { type: "fact", scope: "global" } }
     });
     const snap = ledger.snapshot();
@@ -58,9 +58,9 @@ describe("createMemoryMetricsLedger", () => {
     ledger.recordDelivery({
       channel: "admin",
       scope: "global",
-      core: { delivered: ["a"], omitted: 0, chars: 1 },
-      map: { delivered: [], omitted: 0, chars: 0 },
-      push: { delivered: [], omitted: 0, chars: 0 },
+      core: { delivered: ["a"], chars: 1 },
+      map: { delivered: [], chars: 0 },
+      push: { delivered: [], chars: 0 },
       records: { a: { type: "note", scope: "global" } }
     });
     ledger.recordRecall({ channel: "admin", scope: "global", outcome: "ok", latencyMs: 1, delivered: ["a"] });
@@ -72,9 +72,9 @@ describe("createMemoryMetricsLedger", () => {
     ledger.recordDelivery({
       channel: "admin",
       scope: "global",
-      core: { delivered: ["a"], omitted: 0, chars: 1 },
-      map: { delivered: [], omitted: 0, chars: 0 },
-      push: { delivered: [], omitted: 0, chars: 0 }
+      core: { delivered: ["a"], chars: 1 },
+      map: { delivered: [], chars: 0 },
+      push: { delivered: [], chars: 0 }
     });
     const first = ledger.snapshot({ reset: true });
     expect(first.window.turns).toBe(1);
@@ -94,17 +94,17 @@ describe("createMemoryMetricsLedger", () => {
     ledger.recordDelivery({
       channel: "admin",
       scope: "global",
-      core: { delivered: ids, omitted: 0, chars: 1 },
-      map: { delivered: [], omitted: 0, chars: 0 },
-      push: { delivered: [], omitted: 0, chars: 0 }
+      core: { delivered: ids, chars: 1 },
+      map: { delivered: [], chars: 0 },
+      push: { delivered: [], chars: 0 }
     });
     ledger.recordRecall({ channel: "admin", scope: "global", outcome: "ok", latencyMs: 1, delivered: ids });
     ledger.recordDelivery({
       channel: "admin",
       scope: "global",
-      core: { delivered: ["id0"], omitted: 0, chars: 1 },
-      map: { delivered: [], omitted: 0, chars: 0 },
-      push: { delivered: [], omitted: 0, chars: 0 }
+      core: { delivered: ["id0"], chars: 1 },
+      map: { delivered: [], chars: 0 },
+      push: { delivered: [], chars: 0 }
     });
     const snap = ledger.snapshot({ top: 1000 });
     expect(snap.dropped).toBe(3);
@@ -114,15 +114,38 @@ describe("createMemoryMetricsLedger", () => {
     expect(kept?.inCore).toBe(2);
   });
 
+  it("caps the dropped set at the tracked-record limit", () => {
+    const ledger = createMemoryMetricsLedger();
+    const ids = Array.from({ length: 2 * MAX_TRACKED_RECORDS + 5 }, (_value, index) => "id" + index);
+    ledger.recordDelivery({
+      channel: "admin",
+      scope: "global",
+      core: { delivered: ids, chars: 1 },
+      map: { delivered: [], chars: 0 },
+      push: { delivered: [], chars: 0 }
+    });
+    expect(ledger.snapshot().dropped).toBe(MAX_TRACKED_RECORDS);
+    // Вторая волна уникальных id сверх потолка не растит dropped дальше.
+    const more = Array.from({ length: 2 * MAX_TRACKED_RECORDS }, (_value, index) => "more" + index);
+    ledger.recordDelivery({
+      channel: "admin",
+      scope: "global",
+      core: { delivered: more, chars: 1 },
+      map: { delivered: [], chars: 0 },
+      push: { delivered: [], chars: 0 }
+    });
+    expect(ledger.snapshot().dropped).toBe(MAX_TRACKED_RECORDS);
+  });
+
   it("returns at most the default top when no top is given", () => {
     const ledger = createMemoryMetricsLedger();
     const ids = Array.from({ length: DEFAULT_TOP_RECORDS + 5 }, (_value, index) => "r" + index);
     ledger.recordDelivery({
       channel: "admin",
       scope: "global",
-      core: { delivered: ids, omitted: 0, chars: 1 },
-      map: { delivered: [], omitted: 0, chars: 0 },
-      push: { delivered: [], omitted: 0, chars: 0 }
+      core: { delivered: ids, chars: 1 },
+      map: { delivered: [], chars: 0 },
+      push: { delivered: [], chars: 0 }
     });
     expect(ledger.snapshot().topRecords).toHaveLength(DEFAULT_TOP_RECORDS);
   });
@@ -163,17 +186,28 @@ describe("createMemoryMetricsLedger", () => {
     expect(ledger.snapshot().window.turns).toBe(2);
   });
 
-  it("accepts the MemoryMetricsChannel alias for event channels", () => {
+  it("keeps two channels separate in byChannel with their own counts", () => {
     const ledger = createMemoryMetricsLedger();
-    const channel: MemoryMetricsChannel = "admin";
+    const admin: MemoryMetricsChannel = "admin";
+    const telegram: MemoryMetricsChannel = "telegram";
     ledger.recordDelivery({
-      channel,
+      channel: admin,
       scope: "global",
-      core: { delivered: ["a"], omitted: 0, chars: 1 },
-      map: { delivered: [], omitted: 0, chars: 0 },
-      push: { delivered: [], omitted: 0, chars: 0 }
+      core: { delivered: ["a"], chars: 1 },
+      map: { delivered: [], chars: 0 },
+      push: { delivered: [], chars: 0 }
     });
-    expect(ledger.snapshot().byChannel[channel]).toEqual({ turns: 1, deliveries: 1 });
+    ledger.recordDelivery({
+      channel: telegram,
+      scope: "project:proj",
+      core: { delivered: ["b", "c"], chars: 1 },
+      map: { delivered: ["d"], chars: 1 },
+      push: { delivered: [], chars: 0 }
+    });
+    const snap = ledger.snapshot();
+    expect(Object.keys(snap.byChannel).sort()).toEqual([admin, telegram]);
+    expect(snap.byChannel[admin]).toEqual({ turns: 1, deliveries: 1 });
+    expect(snap.byChannel[telegram]).toEqual({ turns: 1, deliveries: 3 });
   });
 
   it("sorts the top by hits and caps it by top", () => {
@@ -182,17 +216,17 @@ describe("createMemoryMetricsLedger", () => {
       ledger.recordDelivery({
         channel: "admin",
         scope: "global",
-        core: { delivered: ["hot"], omitted: 0, chars: 1 },
-        map: { delivered: ["warm"], omitted: 0, chars: 1 },
-        push: { delivered: [], omitted: 0, chars: 0 }
+        core: { delivered: ["hot"], chars: 1 },
+        map: { delivered: ["warm"], chars: 1 },
+        push: { delivered: [], chars: 0 }
       });
     }
     ledger.recordDelivery({
       channel: "admin",
       scope: "global",
-      core: { delivered: ["cold"], omitted: 0, chars: 1 },
-      map: { delivered: [], omitted: 0, chars: 0 },
-      push: { delivered: [], omitted: 0, chars: 0 }
+      core: { delivered: ["cold"], chars: 1 },
+      map: { delivered: [], chars: 0 },
+      push: { delivered: [], chars: 0 }
     });
     const snap = ledger.snapshot({ top: 2 });
     expect(snap.topRecords.map((record) => record.id)).toEqual(["hot", "warm"]);
@@ -204,9 +238,9 @@ describe("createMemoryMetricsLedger", () => {
     ledger.recordDelivery({
       channel: "admin",
       scope: "global",
-      core: { delivered: ["a"], omitted: 0, chars: marker.length },
-      map: { delivered: [], omitted: 0, chars: 0 },
-      push: { delivered: [], omitted: 0, chars: 0 },
+      core: { delivered: ["a"], chars: marker.length },
+      map: { delivered: [], chars: 0 },
+      push: { delivered: [], chars: 0 },
       records: { a: { type: "fact", scope: "global" } }
     });
     const snap = ledger.snapshot();
@@ -250,9 +284,9 @@ describe("startMemoryMetrics", () => {
       service.recordDelivery({
         channel: "admin",
         scope: "global",
-        core: { delivered: ["a"], omitted: 0, chars: 1 },
-        map: { delivered: [], omitted: 0, chars: 0 },
-        push: { delivered: [], omitted: 0, chars: 0 }
+        core: { delivered: ["a"], chars: 1 },
+        map: { delivered: [], chars: 0 },
+        push: { delivered: [], chars: 0 }
       });
       service.dispose();
       expect(infos.join("\n")).toContain("key=w1");
@@ -290,9 +324,9 @@ describe("startMemoryMetrics", () => {
       service.recordDelivery({
         channel: "admin",
         scope: "global",
-        core: { delivered: ["a"], omitted: 0, chars: 10 },
-        map: { delivered: ["b"], omitted: 1, chars: 20 },
-        push: { delivered: ["c"], omitted: 0, chars: 5 }
+        core: { delivered: ["a"], chars: 10 },
+        map: { delivered: ["b"], chars: 20 },
+        push: { delivered: ["c"], chars: 5 }
       });
       service.recordRecall({ channel: "admin", scope: "global", outcome: "ok", latencyMs: 4 });
       service.recordRecall({ channel: "admin", scope: "global", outcome: "empty", latencyMs: 9 });

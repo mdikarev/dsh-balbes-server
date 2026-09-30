@@ -47,9 +47,9 @@ function deliveryEvent(): unknown {
   return {
     channel: "admin",
     scope: "global",
-    core: { delivered: ["a"], omitted: 0, chars: 1 },
-    map: { delivered: [], omitted: 0, chars: 0 },
-    push: { delivered: [], omitted: 0, chars: 0 }
+    core: { delivered: ["a"], chars: 1 },
+    map: { delivered: [], chars: 0 },
+    push: { delivered: [], chars: 0 }
   };
 }
 
@@ -150,6 +150,44 @@ describe("balbes-memory-context plugin", () => {
         metrics.dispose();
       } finally {
         vi.useRealTimers();
+      }
+    });
+  });
+
+  it("falls through a non-finite config interval to the finite env value", () => {
+    withEnvInterval("2000", () => {
+      vi.useFakeTimers();
+      try {
+        const taken = seats();
+        apply(ctx(taken) as never, { intervalMs: Number.NaN });
+        const metrics = metricsSeat(taken);
+        vi.advanceTimersByTime(1999);
+        expect(snapshotLines(taken)).toHaveLength(0);
+        vi.advanceTimersByTime(1);
+        expect(snapshotLines(taken)).toHaveLength(1);
+        metrics.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it("keeps the default interval for a non-finite config value", () => {
+    withEnvInterval(undefined, () => {
+      for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+        vi.useFakeTimers();
+        try {
+          const taken = seats();
+          apply(ctx(taken) as never, { intervalMs: bad });
+          const metrics = metricsSeat(taken);
+          vi.advanceTimersByTime(899_999);
+          expect(snapshotLines(taken)).toHaveLength(0);
+          vi.advanceTimersByTime(1);
+          expect(snapshotLines(taken)).toHaveLength(1);
+          metrics.dispose();
+        } finally {
+          vi.useRealTimers();
+        }
       }
     });
   });

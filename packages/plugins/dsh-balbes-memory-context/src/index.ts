@@ -14,16 +14,17 @@ interface CtxLike {
 
 /**
  * Метрики — эффект процесса, а не агента: один сервис на сервер, интервал
- * сброса окна в журнал. Приоритет: config.intervalMs, затем конечное значение
- * BALBES_MEMORY_METRICS_INTERVAL_MS; отсутствующая, пустая или нечисловая
- * переменная даёт дефолт 15 минут. Таймер выключает только конечное значение
+ * сброса окна в журнал. Приоритет: конечное значение config.intervalMs, затем
+ * конечное значение BALBES_MEMORY_METRICS_INTERVAL_MS; отсутствующее, пустое или
+ * нечисловое (включая нефинитное вроде NaN/Infinity) значение конфига и
+ * переменной даёт дефолт 15 минут. Таймер выключает только конечное значение
  * ≤ 0; снимок на сброс остаётся.
  */
 export function apply(ctx: CtxLike, config: { intervalMs?: number }): void {
   const raw = process.env.BALBES_MEMORY_METRICS_INTERVAL_MS?.trim();
   const envInterval = raw ? Number(raw) : Number.NaN;
   const intervalMs =
-    typeof config.intervalMs === "number"
+    typeof config.intervalMs === "number" && Number.isFinite(config.intervalMs)
       ? config.intervalMs
       : Number.isFinite(envInterval)
         ? envInterval

@@ -46,7 +46,12 @@ interface WindowState {
   recall: WindowRecall;
   /** Суммарные символы блоков ядра/карты/push за окно — только для строки журнала. */
   chars: number;
-  /** id, которые не влезли в cap: множество — один id считается один раз за окно. */
+  /**
+   * id, которые не влезли в cap: множество — один id считается один раз за
+   * окно. Само множество ограничено тем же потолком, поэтому вместе с
+   * `records` окно держит не больше 1024 id (≤ 512 отслеживаемых + ≤ 512
+   * dropped).
+   */
   dropped: Set<string>;
 }
 
@@ -146,7 +151,7 @@ export function createMemoryMetricsLedger(
       return existing;
     }
     if (state.records.size >= MAX_TRACKED_RECORDS) {
-      state.dropped.add(id);
+      if (state.dropped.size < MAX_TRACKED_RECORDS) state.dropped.add(id);
       return blank;
     }
     const seeded: TrackedRecord = ref === undefined ? blank : { ...blank, ref };

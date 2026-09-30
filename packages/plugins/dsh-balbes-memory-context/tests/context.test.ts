@@ -223,7 +223,7 @@ describe("createMemoryContext", () => {
 });
 
 describe("createMemoryContext metrics", () => {
-  it("records one delivery event with the path ids, the omitted counts and the block sizes", async () => {
+  it("records one delivery event with the path ids and the block sizes", async () => {
     const ledger = createMemoryMetricsLedger();
     const records = [
       record({ id: "core", text: "Pinned deploy rule", pinned: true }),
