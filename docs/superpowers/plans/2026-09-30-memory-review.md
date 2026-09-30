@@ -1081,6 +1081,34 @@ Append to `packages/plugins/dsh-balbes-memory/tests/proposals.test.ts` inside th
     expect(await service.count()).toBe(1);
   });
 
+  it("rolls a partial memory write back when the truth-table writer fails midway", async () => {
+    // Stronger than the test above: this injected writer really writes a row (as
+    // `insertRecordRow` does) before throwing, so it only passes if `approve` wraps
+    // the promotion in a transaction. Delete the BEGIN/COMMIT/ROLLBACK block and
+    // the partial row survives, failing `count()` below. The test above cannot do
+    // that — its writer throws before writing, so there is no partial state to undo.
+    const proposal = await service.propose(proposalDraft);
+    const failing = createProposalStore(db, {
+      insertMemoryRecord(id) {
+        const now = new Date().toISOString();
+        db.prepare(
+          "INSERT INTO memories (id, scope_kind, scope_name, type, text, pinned, origin, origin_ref, created_at, updated_at) " +
+            "VALUES (?, 'global', NULL, 'fact', ?, 0, 'agent', NULL, ?, ?)"
+        ).run(id, proposalDraft.text, now, now);
+        throw new Error("insert boom after write");
+      },
+      loadRecord: () => undefined
+    });
+    await expect(failing.approve(proposal.id)).rejects.toThrowError("insert boom after write");
+
+    expect(await service.count()).toBe(0);
+    expect((await service.getProposal(proposal.id))?.status).toBe("proposed");
+
+    const { record } = await service.approve(proposal.id);
+    expect(await service.count()).toBe(1);
+    expect(record.text).toBe(proposalDraft.text);
+  });
+
   it("keeps the audit row on rejection without creating a record", async () => {
     const proposal = await service.propose(proposalDraft);
     const decided = await service.reject(proposal.id);
