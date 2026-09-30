@@ -619,9 +619,15 @@ curl -sS -X POST http://127.0.0.1:8080/api/workspaces/create \
 остановите поток в соседнем терминале (Ctrl-C).
 
 Память — ручки `POST /api/memory/list|save|delete` (bearer, JSON; ответы
-`{records}`, `{record}`, `{deleted}`). Полный smoke — REAL-тест пакета
-`dsh-balbes-memory-admin`
+`{records}`, `{record}`, `{deleted}`) и ревью-ручки p10f
+`POST /api/memory/propose|review/list|review/approve|review/reject` (тоже bearer
+и POST; ответы `{proposal}`, `{proposals,policy}`, `{proposal,record}`). Полный
+smoke — REAL-тест пакета `dsh-balbes-memory-admin`
 (`RUN_REAL=1 pnpm --filter dsh-balbes-memory-admin test`, `integration.test.ts`).
+
+Без доступного хранилища все семь ручек отвечают `503
+{"error":{"code":"memory-unavailable",...}}`, а не 400/500: это ожидаемая
+деградация, а не поломка (см. «Устранение неполадок»).
 
 ```bash
 TOKEN=... # POST /api/auth/login
@@ -639,13 +645,80 @@ curl -fsS -X POST http://127.0.0.1:8080/api/memory/delete \
 # ожидается: {"deleted":true}
 ```
 
+Память: ревью предложенных записей (p10f) — пайплайн предлагает, владелец решает.
+Шаги продолжают тот же `TOKEN`; версию схемы проверяет блок «Артефакт БД» ниже
+(ожидается `user_version: 2`).
+
+```bash
+# 1) пайплайн предлагает запись: она ещё не истина
+curl -fsS -X POST http://127.0.0.1:8080/api/memory/propose \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"scope":{"kind":"global"},"type":"fact","text":"Внутренний код сборки Балбеса — p10freviewmarker9c42","originRef":"pipeline:smoke"}'
+# ожидается: {"proposal":{...,"status":"proposed","origin":"agent",
+#   "originRef":"pipeline:smoke","decidedAt":null,"decidedBy":null,
+#   "decidedEdit":false,"memoryId":null}}; сохраните id предложения.
+# Маркер — один токен без дефисов: /api/memory/list передаёт query в FTS5 MATCH
+# дословно, и незакавыченный дефис FTS5 разбирает как фильтр по колонке.
+
+# 2) предложение стоит в очереди, а политика автономии видна владельцу
+curl -fsS -X POST http://127.0.0.1:8080/api/memory/review/list \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{}'
+# ожидается: {"proposals":[{"id":"<proposal-id>",...,"status":"proposed"},...],
+#   "policy":{"immediate":["owner","remember"],"review":["pipeline"],
+#   "autoApprove":"none"}}
+
+# ... и в памяти её ещё нет — предложение не истина
+curl -fsS -X POST http://127.0.0.1:8080/api/memory/list \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"query":"p10freviewmarker9c42"}'
+# ожидается: {"records":[]}
+
+# 3) одобрение с правкой текста: промоушен в память
+curl -fsS -X POST http://127.0.0.1:8080/api/memory/review/approve \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"id":"<proposal-id>","text":"Внутренний код сборки Балбеса — p10freviewmarker9c42 (проверено)"}'
+# ожидается: {"proposal":{...,"status":"accepted","decidedEdit":true,
+#   "decidedBy":"owner","memoryId":"<record-id>"},
+#   "record":{...,"origin":"agent","originRef":"pipeline:smoke"}}
+
+# 4) запись стала истиной: она видна в поиске
+curl -fsS -X POST http://127.0.0.1:8080/api/memory/list \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"query":"p10freviewmarker9c42"}'
+# ожидается: {"records":[{...,"text":"... (проверено)","origin":"agent",
+#   "originRef":"pipeline:smoke"}]}; id записи совпадает с memoryId из шага 3
+
+# 5) повторное решение отклоняется: решение в v1 единственное
+curl -sS -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8080/api/memory/review/approve \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{"id":"<proposal-id>"}'
+# ожидается: 400 (тело {"error":{"code":"invalid-status",
+#   "message":"proposal is already accepted: <proposal-id>"}})
+
+# 6) след ревью в журнале — без текста памяти
+journalctl -u dsh-balbes -n 200 | grep balbes-memory-admin
+# строки мутаций пишутся уровнем info, а демон по умолчанию журналирует только
+# warn/error (как у счётчиков доставки выше): отсутствие строк — норма, а не
+# сбой. Если уровень логирования включает info, ожидаются
+# «balbes-memory-admin: propose id=... scope=global» и
+# «balbes-memory-admin: approve id=... edited=true»; текста записи в них нет
+
+# 7) уборка: удаляется запись-истина, предложение остаётся решённым
+curl -fsS -X POST http://127.0.0.1:8080/api/memory/delete \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{"id":"<record-id>"}'
+# ожидается: {"deleted":true}
+```
+
 Артефакт БД (та же память на диске):
 
 ```bash
-# память: файл БД создан и схема на v1
+# память: файл БД создан и схема на v2 (p10f: таблица memory_proposals)
 ls -l "$HOME/.dsh/storages/memory.sqlite"
 node --no-warnings -e 'const{DatabaseSync}=require("node:sqlite");const db=new DatabaseSync(process.env.HOME+"/.dsh/storages/memory.sqlite");console.log("user_version:",db.prepare("PRAGMA user_version").get().user_version)'
-# ожидается: файл существует, user_version: 1
+# ожидается: файл существует, user_version: 2
+
+# бэкап перед миграцией v1→v2: есть только если БД уже была на v1
+# (на новой БД апгрейда нет, поэтому файла не будет — это не ошибка)
+ls -l "$HOME/.dsh/storages/memory.sqlite.bak-v1"
 ```
 
 Доставка памяти в модель (плагин `balbes-memory-context`):
@@ -1155,10 +1228,13 @@ curl -fsS -X POST http://127.0.0.1:8080/api/health   # {"ok":true,...}
 Доставка памяти включается строкой `balbes-memory-context` в
 `profiles/balbes/cordis.patch.yml`: обновление — тот же повторный `install.sh`
 (`git pull --ff-only` → сборка → `sync_profile` →
-`copy_memory_context_into_profile()` → рестарт `dsh-balbes`). Миграций БД нет —
-схема памяти не меняется, поэтому отдельного шага у `balbes-memory-context` нет.
+`copy_memory_context_into_profile()` → рестарт `dsh-balbes`). Новых пакетов и
+HTTP-ручек он не добавляет и сам схему памяти не меняет, поэтому отдельного шага
+у `balbes-memory-context` нет.
 Инструмент `remember` (p10e) — часть того же плагина: новых пакетов, миграций и
 HTTP-ручек он не добавляет, поэтому отдельного шага обновления у него тоже нет.
+Ревью предложений (p10f) — четыре ручки пакета `dsh-balbes-memory-admin`; новых
+пакетов у них нет, но появляется миграция схемы v1→v2 (см. «Миграции памяти»).
 
 ### Миграции памяти
 
@@ -1169,6 +1245,14 @@ HTTP-ручек он не добавляет, поэтому отдельног�
 `$DSH_HOME/storages/memory.sqlite.bak-v<прежняя версия>`. Если открытие или
 миграция падает, плагин пишет ошибку в журнал и **не** предоставляет сервис
 `balbesMemory`, но сервер продолжает работать.
+
+Миграция v1→v2 (p10f) — единственная на сегодня: `CREATE TABLE memory_proposals`
+и два индекса к ней. Она **аддитивная**: таблица `memories`, её теги и
+FTS-триггеры не трогаются, поэтому существующие записи не переписываются и
+ручной шаг не нужен. При первом же старте на v1-базе плагин сам снимает
+WAL-безопасный бэкап `$DSH_HOME/storages/memory.sqlite.bak-v1` и только потом
+применяет миграцию; на новой БД (v0→v2) апгрейда нет, и файла бэкапа не будет.
+Откат — восстановление из `memory.sqlite.bak-v1` (см. «Устранение неполадок»).
 
 ## Сброс пароля
 
