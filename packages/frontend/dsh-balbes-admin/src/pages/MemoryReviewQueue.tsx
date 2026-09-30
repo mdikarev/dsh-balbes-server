@@ -38,15 +38,16 @@ function messageOf(error: unknown): string {
 
 export default function MemoryReviewQueue({
   api,
-  onPendingCount
+  onDecided
 }: {
   api: AdminApi;
   /**
-   * Reports how many proposals are waiting whenever the load used the default
-   * (pending) filter. The canon puts a pending counter on the tab label, and the
-   * queue is the only place that fetches the queue — the page must not fetch twice.
+   * Fired after a successful owner decision so the tab shell can refresh its
+   * pending counter. It deliberately reports NO number: this component's load is
+   * filter-dependent (the level selector defaults to «Дом»), and a filtered count
+   * must never reach a badge that canon defines as «счётчик ожидающих предложений».
    */
-  onPendingCount?: (count: number) => void;
+  onDecided?: () => void;
 }) {
   const [projects, setProjects] = useState<WorkspaceProject[]>([]);
   const [level, setLevel] = useState<LevelSelection>({ kind: "global" });
@@ -76,11 +77,10 @@ export default function MemoryReviewQueue({
       });
       setProposals(res.proposals);
       setPolicy(res.policy);
-      if (!showDecided) onPendingCount?.(res.proposals.length);
     } catch (error) {
       setLoadError(messageOf(error));
     }
-  }, [api, level, type, tag, showDecided, onPendingCount]);
+  }, [api, level, type, tag, showDecided]);
 
   useEffect(() => {
     let cancelled = false;
@@ -122,6 +122,7 @@ export default function MemoryReviewQueue({
     setFormError(null);
     try {
       await api.approveMemoryReview(patch);
+      onDecided?.();
       setEditing(null);
       await load();
     } catch (error) {
@@ -141,6 +142,7 @@ export default function MemoryReviewQueue({
     setBusy(true);
     try {
       await api.rejectMemoryReview({ id: toReject.id });
+      onDecided?.();
       setToReject(null);
       await load();
     } catch (error) {

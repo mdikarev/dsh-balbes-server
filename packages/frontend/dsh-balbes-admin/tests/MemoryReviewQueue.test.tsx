@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import MemoryReviewQueue from "../src/pages/MemoryReviewQueue";
-import type { AdminApi } from "../src/api/client";
+import { ApiError, type AdminApi } from "../src/api/client";
 import type {
   MemoryAutonomyPolicy,
   MemoryProposal,
@@ -109,22 +109,29 @@ describe("MemoryReviewQueue", () => {
     expect(await screen.findByTestId("memory-review-status:p-2")).toBeTruthy();
   });
 
-  it("reports the pending count on pending loads only", async () => {
-    const onPendingCount = vi.fn();
-    const listMemoryReview = vi.fn(async (req: MemoryReviewListRequest) =>
-      req.status === undefined
-        ? { proposals: [proposal({ id: "p-1" }), proposal({ id: "p-2" })], policy: POLICY }
-        : { proposals: [proposal({ id: "p-2", status: "rejected", decidedAt: "2026-09-30T02:00:00.000Z", decidedBy: "owner" })], policy: POLICY }
-    );
-    const api = makeApi({ proposals: [], policy: POLICY }, { listMemoryReview });
-    render(<MemoryReviewQueue api={api} onPendingCount={onPendingCount} />);
-    await waitFor(() => expect(onPendingCount).toHaveBeenCalledWith(2));
+  it("reports a decision once after a successful approve", async () => {
+    const onDecided = vi.fn();
+    const api = makeApi({ proposals: [proposal()], policy: POLICY });
+    render(<MemoryReviewQueue api={api} onDecided={onDecided} />);
+    fireEvent.click(await screen.findByTestId("memory-review-approve:p-1"));
+    fireEvent.click(screen.getByTestId("memory-review-form-approve"));
+    // the modal closes only after the decision and the queue reload
+    await waitFor(() => expect(screen.queryByTestId("memory-review-form-approve")).toBeNull());
+    expect(onDecided).toHaveBeenCalledTimes(1);
+    expect(api.listMemoryReview).toHaveBeenCalledTimes(2);
+  });
 
-    fireEvent.click(await screen.findByTestId("memory-review-decided-toggle"));
-    // the decided-mode response replaced the pending rows...
-    await waitFor(() => expect(screen.queryByTestId("memory-review-row:p-1")).toBeNull());
-    expect(listMemoryReview).toHaveBeenCalledWith(expect.objectContaining({ status: ["accepted", "rejected"] }));
-    // ...so the counter still means "waiting" and must not be overwritten
-    expect(onPendingCount).toHaveBeenCalledTimes(1);
+  it("does not report a decision when the approve hits invalid-status", async () => {
+    const onDecided = vi.fn();
+    const api = makeApi({ proposals: [proposal()], policy: POLICY }, {
+      approveMemoryReview: vi.fn(async () => { throw new ApiError(400, "invalid-status", "proposal already decided"); })
+    });
+    render(<MemoryReviewQueue api={api} onDecided={onDecided} />);
+    fireEvent.click(await screen.findByTestId("memory-review-approve:p-1"));
+    fireEvent.click(screen.getByTestId("memory-review-form-approve"));
+    // the recovery path closes the modal and reloads, but no owner decision happened
+    await waitFor(() => expect(api.listMemoryReview).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByTestId("memory-review-form-approve")).toBeNull());
+    expect(onDecided).not.toHaveBeenCalled();
   });
 });
