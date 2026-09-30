@@ -1784,6 +1784,9 @@ Web-агента: `bash`, `web_fetch`, `skill`, субагенты и остал
 
 ```bash
 sudo systemctl stop dsh-balbes
+# возьмите бэкап с прежней версией вашей базы: .bak-v2 (апгрейд с v2)
+# или .bak-v1 (старая v1-база)
+ls -l "$HOME/.dsh/storages/"memory.sqlite.bak-v*
 cp "$HOME/.dsh/storages/memory.sqlite.bak-v2" "$HOME/.dsh/storages/memory.sqlite"
 rm -f "$HOME/.dsh/storages/memory.sqlite-wal" "$HOME/.dsh/storages/memory.sqlite-shm"
 sudo systemctl start dsh-balbes
