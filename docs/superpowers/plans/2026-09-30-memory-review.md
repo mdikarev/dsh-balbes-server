@@ -635,13 +635,15 @@ describe("balbesMemory proposals", () => {
   });
 
   it("rejects an invalid scope, type and originRef", async () => {
-    await expect(service.propose({ ...proposalDraft, scope: { kind: "galaxy" } })).rejects.toMatchObject({
+    // Deliberately invalid runtime values: `as never` is the repo's idiom for
+    // feeding a strictly typed entry point data it must reject at runtime.
+    await expect(service.propose({ ...proposalDraft, scope: { kind: "galaxy" } } as never)).rejects.toMatchObject({
       code: "invalid-scope"
     });
-    await expect(service.propose({ ...proposalDraft, type: "rumor" })).rejects.toMatchObject({
+    await expect(service.propose({ ...proposalDraft, type: "rumor" } as never)).rejects.toMatchObject({
       code: "invalid-record"
     });
-    await expect(service.propose({ ...proposalDraft, originRef: 7 })).rejects.toMatchObject({
+    await expect(service.propose({ ...proposalDraft, originRef: 7 } as never)).rejects.toMatchObject({
       code: "invalid-record"
     });
   });
@@ -683,7 +685,6 @@ import { randomUUID } from "node:crypto";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import type {
   MemoryProposal,
-  MemoryProposalFilter,
   MemoryProposalStatus,
   MemoryOrigin,
   MemoryRecord,
@@ -692,7 +693,12 @@ import type {
 import { MemoryError } from "./errors.js";
 import { detectSecret } from "./secrets.js";
 import { normalizeProposalDraft, normalizeProposalFilter } from "./validate.js";
-import { LIMITS, type MemoryDecisionPatch, type MemoryProposalDraft } from "./types.js";
+import {
+  LIMITS,
+  type MemoryDecisionPatch,
+  type MemoryProposalDraft,
+  type MemoryProposalFilter
+} from "./types.js";
 
 type Row = Record<string, unknown>;
 
