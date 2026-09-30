@@ -474,7 +474,13 @@
 - request: `{id: string (непустой)}`
 - response: `{proposal: MemoryProposal}`
 - errors: 400 (`bad-request`: нет/пустой `id`), 400 (`invalid-status`: предложение уже решено), 401, 404 (`not-found`), 500, 503 (`memory-unavailable`)
-- notes: отказ **удаляет** строку предложения из `memory_proposals` — аудита не остаётся, отменить отказ нельзя. В ответе — состояние строки до удаления с `status: "rejected"`, `decidedAt` (момент отказа), `decidedBy: "owner"`, `decidedEdit: false`, `memoryId: null`; запись в `memories` не создаётся. Повторный отказ даёт `not-found` (строки больше нет); `invalid-status` остаётся для гонки, когда строку успели решить между чтением и удалением. Легаси-строки `rejected`, накопленные до этого изменения, удаляет миграция v3.
+- notes: отказ **удаляет** строку предложения из `memory_proposals` — аудита не
+  остаётся, отменить отказ нельзя. В ответе — состояние строки до удаления с
+  `status: "rejected"`, `decidedAt` (момент отказа), `decidedBy: "owner"`,
+  `decidedEdit: false`, `memoryId: null`; запись в `memories` не создаётся.
+  Повторный отказ даёт `not-found` (строки больше нет); `invalid-status` остаётся
+  для гонки, когда строку успели решить между чтением и удалением.
+  Легаси-строки `rejected`, накопленные до этого изменения, удаляет миграция v3.
 
 ### memory.metrics — метрики доставки памяти
 - method: POST
