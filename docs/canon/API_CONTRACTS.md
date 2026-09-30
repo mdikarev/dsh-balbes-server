@@ -22,9 +22,9 @@
   `memory.review/reject`, `memory.metrics`.
 - Вне scope: статика SPA (не API), внутренние сервисные интерфейсы Cordis
   (в т.ч. сервис `balbesModels` и командная поверхность Telegram-канала),
-  streaming-доставка ответов модели (Telegram отправляет финальные сообщения и
-  живую карточку прогресса задачи — ход выполнения, а не текст ответа по мере
-  генерации; SSE/WS остаются отдельным этапом).
+  streaming-доставка ответов модели в админку/SPA (SSE/WS остаются отдельным
+  этапом); в канале Telegram поток ответа реализован без SSE/WS — см.
+  `telegram.status`.
 - При расхождении реестра и типов побеждают типы (компилятор); реестр
   правится в том же изменении, что и типы/поведение.
 
@@ -175,8 +175,8 @@
 - errors: 401 (нет/битый токен)
 - notes: push-канал изменений каталогов для дерева в админке (внешние правки
   владельца/агента); соединение закрывает клиент; исключения из R-API-1 нет —
-  запрос остаётся POST; потоковая доставка ответов модели в чат — по-прежнему
-  вне scope.
+  запрос остаётся POST; потоковая доставка ответов модели в чат идёт отдельным
+  механизмом канала Telegram (без SSE/WS) и эту ручку не использует.
 
 ### git.status — состояние git-доступа
 - method: POST
@@ -328,20 +328,21 @@
 - path: /api/telegram/status
 - auth: bearer
 - request: `{}`
-- response: `{status: {state: "not-configured" | "disabled" | "connected" | "error", tokenConfigured: boolean, enabled: boolean, allowedUserId?: number,`
+- response: `{status: {state: "not-configured" | "disabled" | "connected" | "error", tokenConfigured: boolean, enabled: boolean, streamAnswers: boolean, allowedUserId?: number,`
   `botUsername?: string, lastPollAt?: string(ISO), error?: {code: string, message: string}}}`
 - errors: 401
 - notes: token не возвращается никогда — только `tokenConfigured`. `state` выводится из наличия token, `enabled` и состояния poller: работающий polling → `connected`
   (устаревшая `error` не переводит статус в `error`), fatal `401` от Bot API или `enabled` без работающего polling → `error`. `error.message` — безопасный текст без token
-  и stack trace.
+  и stack trace. `streamAnswers` — настройка потоковой доставки ответа в чат (дефолт `true`;
+  отсутствующий в документе настроек ключ читается как `true`).
 
 ### telegram.save — сохранить настройки
 - method: POST
 - path: /api/telegram/save
 - auth: bearer
-- request: `{token?: string, allowedUserId?: number, enabled?: boolean}` — отсутствующее поле не меняет прежнее значение
+- request: `{token?: string, allowedUserId?: number, enabled?: boolean, streamAnswers?: boolean}` — отсутствующее поле не меняет прежнее значение
 - response: `{status: TelegramStatus}` (форма как в `telegram.status`)
-- errors: 400 `invalid-user-id` (user ID не положительное целое), 400 `invalid-config` (enabled без сохранённого token или положительного user ID), 401
+- errors: 400 `invalid-user-id` (user ID не положительное целое), 400 `invalid-config` (enabled без сохранённого token или положительного user ID), 400 `invalid-stream-answers` (не boolean), 401
 - notes: token записывается через `ctx.credentials` и не возвращается. `save` не вызывает Bot API: username бота обновляется фоновым `getMe`.
   Переходы runtime сериализованы и не блокируют ответ — `status` отражает настройки, фактический старт/остановка polling наблюдаются последующим `telegram.status`.
 
