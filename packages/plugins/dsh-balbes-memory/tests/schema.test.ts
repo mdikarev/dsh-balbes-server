@@ -45,15 +45,52 @@ afterEach(async () => {
 });
 
 describe("openMemoryDatabase", () => {
-  it("creates schema v2 and is idempotent", async () => {
+  it("creates schema v3 and is idempotent", async () => {
     const path = join(await tempDir(), "memory.sqlite");
     const db = await openMemoryDatabase(path);
-    expect(readUserVersion(db)).toBe(2);
-    expect(LATEST_VERSION).toBe(2);
+    expect(readUserVersion(db)).toBe(3);
+    expect(LATEST_VERSION).toBe(3);
     db.close();
     const reopened = await openMemoryDatabase(path);
-    expect(readUserVersion(reopened)).toBe(2);
+    expect(readUserVersion(reopened)).toBe(3);
     reopened.close();
+  });
+
+  it("migration v3 drops legacy rejected proposals and keeps the rest", async () => {
+    const path = join(await tempDir(), "memory.sqlite");
+    // Genuine on-disk v2 state: v1 and v2 ran, v3 has not. Built directly so the
+    // fixture really is a legacy database, not one this build already cleaned.
+    const db = new DatabaseSync(path);
+    migrate(
+      db,
+      MIGRATIONS.filter((migration) => migration.version <= 2)
+    );
+    // The accepted proposal points at its promoted memory, so the FK holds.
+    db.prepare(
+      "INSERT INTO memories (id, scope_kind, scope_name, type, text, pinned, origin, origin_ref, created_at, updated_at) " +
+        "VALUES ('m-1', 'global', NULL, 'note', 'promoted truth', 0, 'agent', NULL, ?, ?)"
+    ).run("2026-09-01T00:00:00.000Z", "2026-09-01T00:00:00.000Z");
+    db.exec(
+      "INSERT INTO memory_proposals (id, scope_kind, scope_name, type, text, tags, origin, origin_ref, status, proposed_at, decided_at, decided_by, decided_edit, memory_id) VALUES " +
+        "('legacy-rejected','global',NULL,'note','old reject','[]','agent',NULL,'rejected','2026-09-01T00:00:00.000Z','2026-09-02T00:00:00.000Z','owner',0,NULL)," +
+        "('legacy-accepted','global',NULL,'note','kept','[]','agent',NULL,'accepted','2026-09-01T00:00:00.000Z','2026-09-02T00:00:00.000Z','owner',0,'m-1')," +
+        "('live','global',NULL,'note','pending','[]','agent',NULL,'proposed','2026-09-01T00:00:00.000Z',NULL,NULL,0,NULL)"
+    );
+    expect(readUserVersion(db)).toBe(2);
+
+    migrate(db);
+
+    expect(readUserVersion(db)).toBe(3);
+    const rows = db.prepare("SELECT id, status FROM memory_proposals ORDER BY id").all();
+    expect(rows).toEqual([
+      { id: "legacy-accepted", status: "accepted" },
+      { id: "live", status: "proposed" }
+    ]);
+    // Idempotence: the second run has nothing pending and deletes nothing more.
+    migrate(db);
+    expect(readUserVersion(db)).toBe(3);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM memory_proposals").get()).toEqual({ n: 2 });
+    db.close();
   });
 
   it("refuses a proposal whose status disagrees with decided_at", async () => {
@@ -108,9 +145,11 @@ describe("openMemoryDatabase", () => {
 
   it("refuses a target-version database with a foreign schema", async () => {
     const path = join(await tempDir(), "memory.sqlite");
-    // user_version=1 claims the schema, but there is no memories table.
+    // Claims the target version, but there is no memories table. Claiming v1
+    // instead would run v2/v3 first and surface the raw SQLite "no such table"
+    // error from the v3 DELETE, not the MemoryError this gate owns.
     const created = new DatabaseSync(path);
-    created.exec("PRAGMA user_version = 1");
+    created.exec("PRAGMA user_version = " + LATEST_VERSION);
     created.close();
 
     await expect(openMemoryDatabase(path)).rejects.toThrowError(MemoryError);
@@ -121,24 +160,24 @@ describe("openMemoryDatabase", () => {
     const path = join(dir, "memory.sqlite");
     const db = await openMemoryDatabase(path);
     db.close();
-    const v3: Migration = {
-      version: 3,
+    const v4: Migration = {
+      version: 4,
       up: (target) => target.exec("ALTER TABLE memories ADD COLUMN note TEXT")
     };
-    const migrated = await openMemoryDatabase(path, { migrations: [...MIGRATIONS, v3] });
-    expect(readUserVersion(migrated)).toBe(3);
+    const migrated = await openMemoryDatabase(path, { migrations: [...MIGRATIONS, v4] });
+    expect(readUserVersion(migrated)).toBe(4);
     migrated.close();
-    const backup = await stat(path + ".bak-v2");
+    const backup = await stat(path + ".bak-v3");
     expect(backup.isFile()).toBe(true);
   });
 
-  it("rolls back a failing migration and stays at v2", async () => {
+  it("rolls back a failing migration and stays at v3", async () => {
     const dir = await tempDir();
     const path = join(dir, "memory.sqlite");
     const db = await openMemoryDatabase(path);
     db.close();
     const broken: Migration = {
-      version: 3,
+      version: 4,
       up: (target) => {
         target.exec("ALTER TABLE memories ADD COLUMN note TEXT");
         throw new Error("boom");
@@ -146,14 +185,14 @@ describe("openMemoryDatabase", () => {
     };
     await expect(openMemoryDatabase(path, { migrations: [...MIGRATIONS, broken] })).rejects.toThrowError("boom");
     const reopened = new DatabaseSync(path);
-    expect(readUserVersion(reopened)).toBe(2);
+    expect(readUserVersion(reopened)).toBe(3);
     reopened.close();
   });
 
   it("migrate returns the current version when nothing is pending", async () => {
     const path = join(await tempDir(), "memory.sqlite");
     const db = await openMemoryDatabase(path);
-    expect(migrate(db)).toBe(2);
+    expect(migrate(db)).toBe(3);
     db.close();
   });
 
@@ -162,7 +201,7 @@ describe("openMemoryDatabase", () => {
     const path = join(dir, "memory.sqlite");
     // A genuine on-disk v1 database. It cannot be built through
     // openMemoryDatabase({ migrations: [v1] }) any more: that path validates the
-    // migrated database against REQUIRED_SCHEMA_OBJECTS, which is now the v2 list.
+    // migrated database against REQUIRED_SCHEMA_OBJECTS, which is now the v3 list.
     const v1 = new DatabaseSync(path);
     migrate(v1, [MIGRATIONS[0]!]);
     v1.prepare(
@@ -172,7 +211,7 @@ describe("openMemoryDatabase", () => {
     v1.close();
 
     const upgraded = await openMemoryDatabase(path);
-    expect(readUserVersion(upgraded)).toBe(2);
+    expect(readUserVersion(upgraded)).toBe(3);
     const row = upgraded.prepare("SELECT text FROM memories WHERE id = ?").get("m-legacy");
     expect(row?.text).toBe("kept across the upgrade");
     const tables = upgraded
@@ -187,8 +226,9 @@ describe("openMemoryDatabase", () => {
   });
 
   it("creates the same schema fresh as it does by migrating v1", async () => {
-    // Additive-only DDL is the reason a fresh v2 and an upgraded v1→v2 must not
-    // drift; this pins it against future migrations that rewrite v1 objects.
+    // Additive-only DDL (v3 is data-only) is the reason a fresh and an upgraded
+    // v1 database must not drift; this pins it against migrations that rewrite
+    // v1 objects.
     const freshPath = join(await tempDir(), "memory.sqlite");
     const fresh = await openMemoryDatabase(freshPath);
     const freshSchema = readSchemaObjects(fresh);
@@ -204,7 +244,7 @@ describe("openMemoryDatabase", () => {
     upgraded.close();
   });
 
-  it("refuses a v2 database without the proposals table", async () => {
+  it("refuses a target-version database without the proposals table", async () => {
     const path = join(await tempDir(), "memory.sqlite");
     // A genuine v1 schema: memories, memory_tags, memory_fts and the FTS triggers
     // are all present, so memory_proposals is the ONLY required object missing.
@@ -213,9 +253,11 @@ describe("openMemoryDatabase", () => {
     migrate(v1, [MIGRATIONS[0]!]);
     v1.close();
 
-    // Claim the target version without running the v2 migration.
+    // Claim the target version without running the pending migrations. Claiming
+    // v1 would run them and fail earlier, inside the v3 DELETE, with a raw
+    // SQLite error instead of the MemoryError this gate owns.
     const raw = new DatabaseSync(path);
-    raw.exec("PRAGMA user_version = 2");
+    raw.exec("PRAGMA user_version = " + LATEST_VERSION);
     raw.close();
 
     await expect(openMemoryDatabase(path)).rejects.toThrowError(MemoryError);

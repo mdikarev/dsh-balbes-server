@@ -74,6 +74,14 @@ export const DDL_V2 = [
   "CREATE INDEX idx_memory_proposals_scope  ON memory_proposals(scope_kind, scope_name);"
 ].join("\n");
 
+/**
+ * v3 (p10f): rejection no longer leaves a row behind, so rows accumulated by the
+ * legacy behaviour are dropped. This is data, not schema: the DDL and indexes of
+ * `memory_proposals` do not change, and an idempotent re-run on a clean table
+ * finds nothing to delete.
+ */
+export const DDL_V3 = "DELETE FROM memory_proposals WHERE status = 'rejected'";
+
 export interface Migration {
   version: number;
   up: (db: DatabaseSync) => void;
@@ -81,7 +89,8 @@ export interface Migration {
 
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, up: (db) => db.exec(DDL_V1) },
-  { version: 2, up: (db) => db.exec(DDL_V2) }
+  { version: 2, up: (db) => db.exec(DDL_V2) },
+  { version: 3, up: (db) => db.exec(DDL_V3) }
 ];
 
 export function latestVersion(migrations: readonly Migration[]): number {

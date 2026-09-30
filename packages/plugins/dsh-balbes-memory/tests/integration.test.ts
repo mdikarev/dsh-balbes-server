@@ -126,10 +126,11 @@ describe.skipIf(!realEnabled)("REAL composition (balbes-memory)", () => {
     const dbPath = join(home, "storages", "memory.sqlite");
     const info = await stat(dbPath);
     expect(info.isFile()).toBe(true);
-    expect(userVersion(dbPath)).toBe(2);
+    expect(userVersion(dbPath)).toBe(3);
     const { tables, triggers } = schemaObjects(dbPath);
-    // v2 (p10f) adds the staged-proposals table; the truth table, its normalized
-    // tags and its FTS triggers must all survive the migration untouched.
+    // v2 (p10f) adds the staged-proposals table; v3 is data-only and must leave
+    // every object untouched. The truth table, its normalized tags and its FTS
+    // triggers all survive the migration.
     expect(tables).toEqual(
       expect.arrayContaining(["memories", "memory_tags", "memory_fts", "memory_proposals"])
     );
