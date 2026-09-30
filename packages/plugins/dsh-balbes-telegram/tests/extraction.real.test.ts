@@ -677,12 +677,15 @@ describe.skipIf(!realEnabled)("REAL extraction composition (fake Bot API + LLM s
       expect(toolNames(taskCall!.body)).toContain("remember");
       expect(toolNames(taskCall!.body)).not.toContain("propose_memory");
 
-      // (b3) the service turn never touches the stream message. The live window
-      // belongs to the TASK turn, so the p10g turn — same session, same agent —
-      // must neither grow nor rewrite the message the owner already has. The
-      // window opened with `streamBefore` right after the final answer (above)
-      // and is still open here, so it covers the whole service turn; an edit
-      // here would mean the extraction turn leaked into the answer stream.
+      // (b3) integration non-regression: the service turn never touches the
+      // stream message. This is NOT the leak mechanism's proof — by this point
+      // `runTask` has already stopped the answer-stream ticker (its finalize runs
+      // after the runner settles), so no ticker is alive to write anything during
+      // the service turn regardless of the window. What keeps p10g deltas out of
+      // the BUFFER is the `endTurn()` at the extraction handover, and that is
+      // proven by the agentTask unit test "does not let the service extraction
+      // turn write into the buffer". What this leg adds is that the real
+      // composition introduces no late write on top of either guarantee.
       await waitFor(
         () => (llm.calls.filter(isExtractionRequest).length >= 2 ? true : undefined),
         "the extraction turn to close"

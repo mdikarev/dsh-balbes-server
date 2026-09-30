@@ -47,7 +47,7 @@ function markupOf(extra: { reply_markup?: unknown } | undefined): Markup | undef
   return extra?.reply_markup as Markup | undefined;
 }
 
-function makeBot(opts: { failEdits?: number; failEditPlan?: boolean[]; failSends?: number; deferEditAt?: number } = {}): {
+function makeBot(opts: { failEdits?: number; failEditPlan?: boolean[]; failSends?: number; deferEditAt?: number; deferSendAt?: number } = {}): {
   bot: BotClient;
   sent: SentCall[];
   edits: EditCall[];
@@ -58,6 +58,7 @@ function makeBot(opts: { failEdits?: number; failEditPlan?: boolean[]; failSends
   lastEdit: () => EditCall;
   messageText: (messageId: number) => string | undefined;
   releaseDeferredEdit: () => void;
+  releaseDeferredSend: () => void;
   buttons: (markup: Markup | undefined) => MarkupButton[];
   data: (markup: Markup | undefined) => string[];
   buttonByData: (markup: Markup | undefined, data: string) => MarkupButton | undefined;
@@ -87,6 +88,7 @@ function makeBot(opts: { failEdits?: number; failEditPlan?: boolean[]; failSends
   const messages = new Map<number, string>();
   const landed: EditCall[] = [];
   let deferred = 0;
+  let deferredSends = 0;
   let releaseDeferred!: () => void;
   const deferredGate = new Promise<void>((resolve) => {
     releaseDeferred = resolve;
@@ -106,6 +108,12 @@ function makeBot(opts: { failEdits?: number; failEditPlan?: boolean[]; failSends
       const messageId = nextSentId++;
       sent.push({ chatId, messageId, text, markup: markupOf(extra) });
       messages.set(messageId, text);
+      // `deferSendAt` holds the Nth successful send in flight: the only way a
+      // test can land a ticker tick inside the refusal `send()` window.
+      if (opts.deferSendAt === sent.length) {
+        deferredSends += 1;
+        await deferredGate;
+      }
       return messageId;
     },
     async editMessageText(chatId, messageId, text, extra) {
@@ -143,6 +151,9 @@ function makeBot(opts: { failEdits?: number; failEditPlan?: boolean[]; failSends
     messageText: (messageId) => messages.get(messageId),
     releaseDeferredEdit: () => {
       if (deferred > 0) releaseDeferred();
+    },
+    releaseDeferredSend: () => {
+      if (deferredSends > 0) releaseDeferred();
     },
     buttons,
     data: (markup) => buttons(markup).map((button) => button.callback_data ?? ""),
@@ -403,6 +414,12 @@ function makeHarness(
     streamIntervalMs?: number;
     streamAnswers?: boolean;
     /**
+     * A live getter for the switch, for the tests that count how often the
+     * channel reads it or flip it mid-run. Takes precedence over
+     * {@link streamAnswers}.
+     */
+    streamAnswersGetter?: () => boolean;
+    /**
      * The approval gate's pending read. Absent means no approval surface is
      * composed: the card then never shows a waiting line.
      */
@@ -411,6 +428,11 @@ function makeHarness(
     failEditPlan?: boolean[];
     failSends?: number;
     deferEditAt?: number;
+    /**
+     * Hold the Nth successful `sendMessage` in flight (see `makeBot`): lets a
+     * test land a stream tick inside the refusal-send window.
+     */
+    deferSendAt?: number;
     /**
      * A logger whose `warn` THROWS. The chat logs a code on every refused card
      * edit, so this is the one injected dependency that can turn an already
@@ -424,7 +446,8 @@ function makeHarness(
     ...(opts.failEdits === undefined ? {} : { failEdits: opts.failEdits }),
     ...(opts.failEditPlan === undefined ? {} : { failEditPlan: opts.failEditPlan }),
     ...(opts.failSends === undefined ? {} : { failSends: opts.failSends }),
-    ...(opts.deferEditAt === undefined ? {} : { deferEditAt: opts.deferEditAt })
+    ...(opts.deferEditAt === undefined ? {} : { deferEditAt: opts.deferEditAt }),
+    ...(opts.deferSendAt === undefined ? {} : { deferSendAt: opts.deferSendAt })
   });
   const workspaces = makeWorkspaces();
   const runner = makeRunner();
@@ -439,7 +462,7 @@ function makeHarness(
     filePageChars: opts.filePageChars ?? 3000,
     ...(opts.progressIntervalMs === undefined ? {} : { progressIntervalMs: opts.progressIntervalMs }),
     ...(opts.streamIntervalMs === undefined ? {} : { streamIntervalMs: opts.streamIntervalMs }),
-    streamAnswers: () => opts.streamAnswers ?? true,
+    streamAnswers: opts.streamAnswersGetter ?? (() => opts.streamAnswers ?? true),
     ...(opts.approvals === undefined ? {} : { approvals: opts.approvals }),
     ...(opts.models === undefined ? {} : { models: opts.models }),
     ...(opts.sessions === undefined ? {} : { sessions: opts.sessions.service }),
@@ -1115,10 +1138,11 @@ describe("chat machine: tasks", () => {
       const h = makeHarness({ streamIntervalMs: 1000 });
       withActive(h);
       const gate = h.runner.hold();
-      await h.machine.onMessage(message("служебный ход"));
-      // Служебный ход p10g (или ход из одних вызовов инструментов): окно
-      // открыто, текста нет — сообщение потока не создаётся и не правится.
-      h.runner.answer.mockReturnValue({ phase: "running", taskText: "служебный ход", text: "" });
+      await h.machine.onMessage(message("молчаливый ход"));
+      // Ход задачи из одних вызовов инструментов: окно открыто, текст-дельт
+      // нет — сообщение потока не создаётся и не правится. (Служебный ход p10g
+      // сюда не доходит: его окно закрыто, и `answer()` отдаёт `idle`.)
+      h.runner.answer.mockReturnValue({ phase: "running", taskText: "молчаливый ход", text: "" });
       await vi.advanceTimersByTimeAsync(3000);
 
       expect(h.bot.sent).toHaveLength(1);
@@ -1222,6 +1246,154 @@ describe("chat machine: tasks", () => {
         "Агент не смог выполнить задачу: boom"
       ]);
       expect(h.bot.edits.filter((edit) => edit.messageId === streamId)).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never creates a stream message from whitespace-only live text", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness({ streamIntervalMs: 1000 });
+      withActive(h);
+      const gate = h.runner.hold();
+      await h.machine.onMessage(message("пробельная"));
+      // Пробельная витрина — не текст: Bot API отверг бы её 400-й, а три отказа
+      // подряд заглушили бы поток на всю задачу. Сообщение не создаётся.
+      h.runner.answer.mockReturnValue({ phase: "running", taskText: "пробельная", text: "  \n\t " });
+      await vi.advanceTimersByTimeAsync(6000);
+
+      expect(h.bot.sent).toHaveLength(1);
+      expect(h.bot.edits).toHaveLength(0);
+
+      gate.release({ ok: true, text: "готово", sessionId: "s-1" });
+      await drain();
+      expect(h.bot.texts()).toEqual(["⏳ Дом агента · 0:00", "готово"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops the stream before a duplicate task's busy refusal is sent", async () => {
+    vi.useFakeTimers();
+    try {
+      // Второй `sendMessage` (квитанция «busy») висит в сети: тик потока,
+      // попавший в это окно, не должен создать сообщение. `answer()` при этом
+      // отдаёт ЖИВУЮ задачу-оригинал, «свою» по `taskText`, — так что без
+      // остановки потока до квитанции тик создал бы второе растущее сообщение.
+      const h = makeHarness({ streamIntervalMs: 1000, deferSendAt: 2 });
+      withActive(h);
+      const gate = h.runner.hold();
+      await h.machine.onMessage(message("дубль"));
+      h.runner.answer.mockReturnValue({ phase: "running", taskText: "дубль", text: "живой текст" });
+      gate.release({ ok: false, code: "busy", message: "a task for this workspace is already running" });
+      await drain();
+
+      expect(h.bot.sent).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(h.bot.sent).toHaveLength(2);
+
+      h.bot.releaseDeferredSend();
+      await drain();
+      expect(h.bot.texts()).toEqual(["⏳ Дом агента · 0:00", "Задача уже выполняется…"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reads the switch once per run and keeps the growing message on a mid-run flip", async () => {
+    vi.useFakeTimers();
+    try {
+      let on = true;
+      const getter = vi.fn(() => on);
+      const h = makeHarness({ streamIntervalMs: 1000, streamAnswersGetter: getter });
+      withActive(h);
+      const gate = h.runner.hold();
+      await h.machine.onMessage(message("долгая задача"));
+      h.runner.answer.mockReturnValue({ phase: "running", taskText: "долгая задача", text: "первый" });
+      await vi.advanceTimersByTimeAsync(1000);
+      const streamId = h.bot.sent[1]!.messageId;
+
+      // Выключение посреди генерации не отрывает уже растущее сообщение.
+      on = false;
+      h.runner.answer.mockReturnValue({ phase: "running", taskText: "долгая задача", text: "первый второй" });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(h.bot.lastEdit().messageId).toBe(streamId);
+      expect(h.bot.lastEdit().text).toBe("первый второй");
+
+      gate.release({ ok: true, text: "готово", sessionId: "s-1" });
+      await drain();
+      // Значение фиксируется на задачу: ровно одно чтение на завершённый прогон.
+      expect(getter).toHaveBeenCalledTimes(1);
+      // Финальная правка сообщения потока — точный ответ (квитанция карточки
+      // приходит последней и живёт в другом сообщении).
+      const finalized = h.bot.edits.filter((edit) => edit.messageId === streamId).at(-1)!;
+      expect(finalized.text).toBe("готово");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not attach a stream message when the switch is turned on mid-run", async () => {
+    vi.useFakeTimers();
+    try {
+      let on = false;
+      const getter = vi.fn(() => on);
+      const h = makeHarness({ streamIntervalMs: 1000, streamAnswersGetter: getter });
+      withActive(h);
+      const gate = h.runner.hold();
+      await h.machine.onMessage(message("задача"));
+      h.runner.answer.mockReturnValue({ phase: "running", taskText: "задача", text: "текст" });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(h.bot.sent).toHaveLength(1);
+
+      // Позднее включение не оживляет уже начатую задачу.
+      on = true;
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(h.bot.sent).toHaveLength(1);
+
+      gate.release({ ok: true, text: "готово", sessionId: "s-1" });
+      await drain();
+      expect(getter).toHaveBeenCalledTimes(1);
+      expect(h.bot.texts()).toEqual(["⏳ Дом агента · 0:00", "готово"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives up the stream after three failed edits but still delivers the answer", async () => {
+    vi.useFakeTimers();
+    try {
+      // Первые три правки отказаны: ровно столько терпит счётчик
+      // `MAX_CARD_EDIT_FAILURES`, после чего поток замолкает (но задачу не трогает).
+      const h = makeHarness({ streamIntervalMs: 1000, failEdits: 3 });
+      withActive(h);
+      const gate = h.runner.hold();
+      await h.machine.onMessage(message("задача"));
+      h.runner.answer.mockReturnValue({ phase: "running", taskText: "задача", text: "раз" });
+      await vi.advanceTimersByTimeAsync(1000); // успешный send: сообщение создано
+      const streamId = h.bot.sent[1]!.messageId;
+      expect(h.bot.messageText(streamId)).toBe("раз");
+
+      for (const text of ["раз два", "раз два три", "раз два три четыре"]) {
+        h.runner.answer.mockReturnValue({ phase: "running", taskText: "задача", text });
+        await vi.advanceTimersByTimeAsync(1000); // три отказанные правки подряд
+      }
+      const streamEdits = (): EditCall[] => h.bot.edits.filter((edit) => edit.messageId === streamId);
+      expect(streamEdits()).toHaveLength(3);
+
+      // Дальше тик молчит, даже если текст продолжает расти.
+      h.runner.answer.mockReturnValue({ phase: "running", taskText: "задача", text: "раз два три четыре пять" });
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(streamEdits()).toHaveLength(3);
+
+      // Задача завершается, точный ответ доезжает: четвёртая правка проходит.
+      gate.release({ ok: true, text: "точный ответ", sessionId: "s-1" });
+      await drain();
+
+      expect(streamEdits()).toHaveLength(4);
+      expect(h.bot.messageText(streamId)).toBe("точный ответ");
+      expect(h.bot.texts()).toEqual(["⏳ Дом агента · 0:00", "раз"]);
     } finally {
       vi.useRealTimers();
     }

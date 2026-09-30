@@ -1415,7 +1415,10 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
         // Чужая или ещё не начатая задача: это сообщение молчит, как и карточка.
         if (snapshot.phase === "idle" || snapshot.taskText !== taskText) return;
         const view = answerView(snapshot.text ?? "");
-        if (view === "" || view === lastText) return;
+        // Пустая ИЛИ пробельная витрина не создаёт сообщение: Bot API отвергает
+        // пустой/пробельный текст (`400`), а три таких отказа подряд заглушили
+        // бы поток до конца задачи. Идентичный текст не переотправляется.
+        if (view.trim() === "" || view === lastText) return;
         if (messageId === undefined) {
           const created = await deps.bot.sendMessage(chatId, view);
           // 0 — «id неизвестен» (см. bot.ts): править нечего, поток заканчивается,
@@ -1479,6 +1482,9 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
         result = await deps.runner.run(ref, text);
       } catch (error) {
         warn(`task run failed (${codeOf(error)})`);
+        // Поток закрывается ДО отказа: тик, попавший в окно `send()`, не должен
+        // создать сообщение, которое уже некому финализировать.
+        stream?.stop();
         receipt = { kind: "error", steps: 0, detail: INTERNAL_FAILURE };
         await send(chatId, `Агент не смог выполнить задачу: ${INTERNAL_FAILURE}`);
         return;
@@ -1522,6 +1528,12 @@ export function createChatMachine(deps: ChatDeps): ChatMachine {
         for (const chunk of chunks) await send(chatId, chunk);
         return;
       }
+      // Отказ или ошибка: поток останавливается ДО квитанций. Тик опознаёт свою
+      // задачу только по `taskText`, поэтому у дубля (runner ответил `busy`) тик
+      // в окне `send()` — сеть, а не мгновенная операция — создал бы ещё одно
+      // растущее сообщение, которое уже никогда не финализируется. Фрагмент при
+      // этом не трогаем: он остаётся в чате как есть, тексты отказа прежние.
+      stream?.stop();
       if (result.code === "cancelled") {
         // The owner stopped this task themselves: their own stop already
         // answered in the chat, and a deliberate stop must never be reported as
