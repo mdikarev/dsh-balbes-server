@@ -545,3 +545,12 @@ button.ws-tree-row:hover { background: var(--surface); }
 .memory-scope-line { color: var(--text-dim); margin: 0 0 10px; }
 .memory-type-select { width: 100%; margin-bottom: 8px; }
 .memory-form-text { width: 100%; margin-bottom: 8px; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px; font: inherit; resize: vertical; }
+
+/* memory review queue */
+.memory-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.memory-tab { background: transparent; border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+.memory-tab-active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.memory-review-policy { margin: 0 0 12px; opacity: 0.8; font-size: 13px; }
+.memory-review-status { padding: 1px 6px; border-radius: 4px; font-size: 12px; }
+.memory-review-status-accepted { background: rgba(46, 160, 67, 0.18); }
+.memory-review-status-rejected { background: rgba(200, 60, 60, 0.18); }

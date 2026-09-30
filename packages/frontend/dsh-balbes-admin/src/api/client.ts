@@ -47,7 +47,13 @@ import type {
   MemorySaveRequest,
   MemorySaveResponse,
   MemoryDeleteRequest,
-  MemoryDeleteResponse
+  MemoryDeleteResponse,
+  MemoryReviewApproveRequest,
+  MemoryReviewApproveResponse,
+  MemoryReviewListRequest,
+  MemoryReviewListResponse,
+  MemoryReviewRejectRequest,
+  MemoryReviewRejectResponse
 } from "dsh-balbes-contracts";
 import { createSseParser } from "./sse";
 
@@ -91,6 +97,9 @@ export interface AdminApi {
   listMemory(req: MemoryListRequest): Promise<MemoryListResponse>;
   saveMemory(req: MemorySaveRequest): Promise<MemorySaveResponse>;
   deleteMemory(id: string): Promise<MemoryDeleteResponse>;
+  listMemoryReview(req: MemoryReviewListRequest): Promise<MemoryReviewListResponse>;
+  approveMemoryReview(req: MemoryReviewApproveRequest): Promise<MemoryReviewApproveResponse>;
+  rejectMemoryReview(req: MemoryReviewRejectRequest): Promise<MemoryReviewRejectResponse>;
   listModels(): Promise<ModelsListResponse>;
   saveModel(req: ModelsSaveRequest): Promise<ModelsSaveResponse>;
   deleteModel(routeId: string): Promise<ModelsDeleteResponse>;
@@ -222,6 +231,9 @@ export function createApiClient(): AdminApi {
     listMemory: (req) => guard(request<MemoryListResponse>("/api/memory/list", req satisfies MemoryListRequest)),
     saveMemory: (req) => guard(request<MemorySaveResponse>("/api/memory/save", req satisfies MemorySaveRequest)),
     deleteMemory: (id) => guard(request<MemoryDeleteResponse>("/api/memory/delete", { id } satisfies MemoryDeleteRequest)),
+    listMemoryReview: (req) => guard(request<MemoryReviewListResponse>("/api/memory/review/list", req satisfies MemoryReviewListRequest)),
+    approveMemoryReview: (req) => guard(request<MemoryReviewApproveResponse>("/api/memory/review/approve", req satisfies MemoryReviewApproveRequest)),
+    rejectMemoryReview: (req) => guard(request<MemoryReviewRejectResponse>("/api/memory/review/reject", req satisfies MemoryReviewRejectRequest)),
     listModels: () => guard(request<ModelsListResponse>("/api/models/list", {})),
     saveModel: (req) => guard(request<ModelsSaveResponse>("/api/models/save", req satisfies ModelsSaveRequest)),
     deleteModel: (routeId) => guard(request<ModelsDeleteResponse>("/api/models/delete", { routeId } satisfies ModelsDeleteRequest)),
