@@ -126,9 +126,13 @@ describe.skipIf(!realEnabled)("REAL composition (balbes-memory)", () => {
     const dbPath = join(home, "storages", "memory.sqlite");
     const info = await stat(dbPath);
     expect(info.isFile()).toBe(true);
-    expect(userVersion(dbPath)).toBe(1);
+    expect(userVersion(dbPath)).toBe(2);
     const { tables, triggers } = schemaObjects(dbPath);
-    expect(tables).toEqual(expect.arrayContaining(["memories", "memory_tags", "memory_fts"]));
+    // v2 (p10f) adds the staged-proposals table; the truth table, its normalized
+    // tags and its FTS triggers must all survive the migration untouched.
+    expect(tables).toEqual(
+      expect.arrayContaining(["memories", "memory_tags", "memory_fts", "memory_proposals"])
+    );
     expect(triggers).toEqual(expect.arrayContaining(["memories_ai", "memories_ad", "memories_au"]));
   });
 });
