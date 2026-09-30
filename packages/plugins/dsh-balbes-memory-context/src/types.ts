@@ -106,6 +106,9 @@ export interface BalbesMemoryContextService {
 /** Тег уровня записи в метриках: "global" или "project:<name>". */
 export type MemoryMetricsScopeTag = string;
 
+/** Канал, обслуживший ход или запрос: "admin" (POST /api/prompt) или "telegram". */
+export type MemoryMetricsChannel = string;
+
 /** Минимум о записи для топ-выдачи метрик: текста памяти тут нет by design. */
 export interface MemoryRecordRef {
   type: string;
@@ -114,7 +117,7 @@ export interface MemoryRecordRef {
 
 /** Событие доставки одного хода: id по путям, опущенные записи и размеры блоков. */
 export interface MemoryDeliveryEvent {
-  channel: string;
+  channel: MemoryMetricsChannel;
   scope: MemoryMetricsScopeTag;
   core: { delivered: string[]; omitted: number; chars: number };
   map: { delivered: string[]; omitted: number; chars: number };
@@ -124,7 +127,7 @@ export interface MemoryDeliveryEvent {
 
 /** Событие одного вызова `recall`: исход, латентность и выданные записи. */
 export interface MemoryRecallEvent {
-  channel: string;
+  channel: MemoryMetricsChannel;
   scope: MemoryMetricsScopeTag;
   outcome: "ok" | "empty" | "failed";
   latencyMs: number;

@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createMemoryMetricsLedger,
+  DEFAULT_TOP_RECORDS,
   MAX_TOP_RECORDS,
   MAX_TRACKED_RECORDS,
   startMemoryMetrics
 } from "../src/metrics.js";
+import type { MemoryMetricsChannel } from "../src/types.js";
 
 describe("createMemoryMetricsLedger", () => {
   it("counts one record delivered by two paths in both paths", () => {
@@ -76,11 +78,13 @@ describe("createMemoryMetricsLedger", () => {
     });
     const first = ledger.snapshot({ reset: true });
     expect(first.window.turns).toBe(1);
+    expect(first.unqueriedDelivered).toBe(1);
     expect(first.process.totals.turns).toBe(1);
     const second = ledger.snapshot();
     expect(second.window.turns).toBe(0);
     expect(second.window.deliveries).toBe(0);
     expect(second.topRecords).toEqual([]);
+    expect(second.unqueriedDelivered).toBe(0);
     expect(second.process.totals.turns).toBe(1);
   });
 
@@ -95,10 +99,81 @@ describe("createMemoryMetricsLedger", () => {
       push: { delivered: [], omitted: 0, chars: 0 }
     });
     ledger.recordRecall({ channel: "admin", scope: "global", outcome: "ok", latencyMs: 1, delivered: ids });
+    ledger.recordDelivery({
+      channel: "admin",
+      scope: "global",
+      core: { delivered: ["id0"], omitted: 0, chars: 1 },
+      map: { delivered: [], omitted: 0, chars: 0 },
+      push: { delivered: [], omitted: 0, chars: 0 }
+    });
     const snap = ledger.snapshot({ top: 1000 });
     expect(snap.dropped).toBe(3);
     expect(snap.topRecords).toHaveLength(MAX_TOP_RECORDS);
-    expect(snap.window.deliveries).toBe(MAX_TRACKED_RECORDS + 3);
+    expect(snap.window.deliveries).toBe(MAX_TRACKED_RECORDS + 4);
+    const kept = snap.topRecords.find((record) => record.id === "id0");
+    expect(kept?.inCore).toBe(2);
+  });
+
+  it("returns at most the default top when no top is given", () => {
+    const ledger = createMemoryMetricsLedger();
+    const ids = Array.from({ length: DEFAULT_TOP_RECORDS + 5 }, (_value, index) => "r" + index);
+    ledger.recordDelivery({
+      channel: "admin",
+      scope: "global",
+      core: { delivered: ids, omitted: 0, chars: 1 },
+      map: { delivered: [], omitted: 0, chars: 0 },
+      push: { delivered: [], omitted: 0, chars: 0 }
+    });
+    expect(ledger.snapshot().topRecords).toHaveLength(DEFAULT_TOP_RECORDS);
+  });
+
+  it("counts a repeated id once per recall call", () => {
+    const ledger = createMemoryMetricsLedger();
+    ledger.recordRecall({
+      channel: "admin",
+      scope: "global",
+      outcome: "ok",
+      latencyMs: 1,
+      delivered: ["a", "a", "a"]
+    });
+    const snap = ledger.snapshot();
+    expect(snap.recall.calls).toBe(1);
+    expect(snap.topRecords).toEqual([
+      {
+        id: "a",
+        type: "unknown",
+        scope: "unknown",
+        inCore: 0,
+        inMap: 0,
+        inPush: 0,
+        recallDelivered: 1,
+        recallQueries: 1
+      }
+    ]);
+  });
+
+  it("never throws on a malformed event", () => {
+    const ledger = createMemoryMetricsLedger();
+    expect(() => ledger.recordDelivery(undefined as never)).not.toThrow();
+    expect(() => ledger.recordDelivery({ channel: "admin", scope: "global" } as never)).not.toThrow();
+    expect(() => ledger.recordRecall({ channel: "admin", scope: "global", outcome: "ok" } as never)).not.toThrow();
+    expect(() =>
+      ledger.recordRecall({ channel: "admin", scope: "global", outcome: "ok", latencyMs: Number.NaN } as never)
+    ).not.toThrow();
+    expect(ledger.snapshot().window.turns).toBe(2);
+  });
+
+  it("accepts the MemoryMetricsChannel alias for event channels", () => {
+    const ledger = createMemoryMetricsLedger();
+    const channel: MemoryMetricsChannel = "admin";
+    ledger.recordDelivery({
+      channel,
+      scope: "global",
+      core: { delivered: ["a"], omitted: 0, chars: 1 },
+      map: { delivered: [], omitted: 0, chars: 0 },
+      push: { delivered: [], omitted: 0, chars: 0 }
+    });
+    expect(ledger.snapshot().byChannel[channel]).toEqual({ turns: 1, deliveries: 1 });
   });
 
   it("sorts the top by hits and caps it by top", () => {
@@ -134,7 +209,29 @@ describe("createMemoryMetricsLedger", () => {
       push: { delivered: [], omitted: 0, chars: 0 },
       records: { a: { type: "fact", scope: "global" } }
     });
-    const serialized = JSON.stringify(ledger.snapshot());
+    const snap = ledger.snapshot();
+    expect(Object.keys(snap).sort()).toEqual([
+      "byChannel",
+      "byScope",
+      "dropped",
+      "process",
+      "recall",
+      "schema",
+      "topRecords",
+      "unqueriedDelivered",
+      "window"
+    ]);
+    expect(snap.topRecords.map((record) => Object.keys(record).sort())[0]).toEqual([
+      "id",
+      "inCore",
+      "inMap",
+      "inPush",
+      "recallDelivered",
+      "recallQueries",
+      "scope",
+      "type"
+    ]);
+    const serialized = JSON.stringify(snap);
     expect(serialized).not.toContain(marker);
     expect(serialized).not.toContain("originRef");
   });
@@ -166,7 +263,7 @@ describe("startMemoryMetrics", () => {
     }
   });
 
-  it("flushes on the interval without holding the process", () => {
+  it("flushes on the interval", () => {
     vi.useFakeTimers();
     try {
       const infos: string[] = [];
@@ -179,6 +276,30 @@ describe("startMemoryMetrics", () => {
       service.dispose();
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it("unrefs the interval handle and creates no timer for unusable intervals", () => {
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    try {
+      const unref = vi.fn();
+      setIntervalSpy.mockReturnValue({ unref } as never);
+      const service = startMemoryMetrics({
+        intervalMs: 60_000,
+        logger: { info: () => {}, warn: () => {} }
+      });
+      expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+      expect(unref).toHaveBeenCalledTimes(1);
+      service.dispose();
+
+      setIntervalSpy.mockClear();
+      for (const intervalMs of [0, Number.NaN, -1]) {
+        const skipped = startMemoryMetrics({ intervalMs, logger: { info: () => {}, warn: () => {} } });
+        skipped.dispose();
+      }
+      expect(setIntervalSpy).not.toHaveBeenCalled();
+    } finally {
+      setIntervalSpy.mockRestore();
     }
   });
 

@@ -46,8 +46,6 @@ interface WindowState {
   recall: WindowRecall;
   /** id, которые не влезли в cap: множество — один id считается один раз за окно. */
   dropped: Set<string>;
-  /** id, выданные recall в этом окне: отличает попадание от балласта. */
-  recalled: Set<string>;
 }
 
 function iso(timestamp: number): string {
@@ -65,8 +63,19 @@ function freshWindow(now: number): WindowState {
     byScope: new Map(),
     records: new Map(),
     recall: { calls: 0, empty: 0, failed: 0, latencyTotal: 0, latencyMax: 0 },
-    dropped: new Set(),
-    recalled: new Set()
+    dropped: new Set()
+  };
+}
+
+/** Запись без известного ref: тип и scope остаются "unknown". */
+function blankRecord(): TrackedRecord {
+  return {
+    ref: { type: "unknown", scope: "unknown" },
+    inCore: 0,
+    inMap: 0,
+    inPush: 0,
+    recallDelivered: 0,
+    recallQueries: 0
   };
 }
 
@@ -86,6 +95,32 @@ function toRecord(map: Map<string, MemoryMetricsChannelTotals>): Record<string, 
 function clampCount(value: unknown, fallback: number, max: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
   return Math.min(max, Math.max(1, Math.trunc(value)));
+}
+
+type UnknownRecord = Record<string, unknown>;
+
+function asRecord(value: unknown): UnknownRecord | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as UnknownRecord) : undefined;
+}
+
+function asString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function asIdList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : [];
+}
+
+/** Карта ref-ов записи; мусорные элементы отбрасываются — событие остаётся валидным. */
+function asRefMap(value: unknown): Record<string, MemoryRecordRef> | undefined {
+  const source = asRecord(value);
+  if (source === undefined) return undefined;
+  const refs: Record<string, MemoryRecordRef> = {};
+  for (const [id, raw] of Object.entries(source)) {
+    const ref = asRecord(raw);
+    if (ref !== undefined) refs[id] = { type: asString(ref.type), scope: asString(ref.scope) };
+  }
+  return refs;
 }
 
 export function createMemoryMetricsLedger(options: { now?: () => number } = {}): MemoryMetricsService {
@@ -110,36 +145,45 @@ export function createMemoryMetricsLedger(options: { now?: () => number } = {}):
   };
 
   const onDelivered = (id: string, path: "inCore" | "inMap" | "inPush", records: Record<string, MemoryRecordRef> | undefined): void => {
-    const tracked = track(id, records?.[id], { ref: { type: "unknown", scope: "unknown" }, inCore: 0, inMap: 0, inPush: 0, recallDelivered: 0, recallQueries: 0 });
+    const tracked = track(id, records?.[id], blankRecord());
     tracked[path] += 1;
   };
 
   const recordDelivery = (event: MemoryDeliveryEvent): void => {
-    const deliveries = event.core.delivered.length + event.map.delivered.length + event.push.delivered.length;
+    const source = asRecord(event);
+    const core = asIdList(asRecord(source?.core)?.delivered);
+    const map = asIdList(asRecord(source?.map)?.delivered);
+    const push = asIdList(asRecord(source?.push)?.delivered);
+    const records = asRefMap(source?.records);
+    const deliveries = core.length + map.length + push.length;
     state.window.turns += 1;
     state.window.deliveries += deliveries;
     processTotals.turns += 1;
     processTotals.deliveries += deliveries;
-    bump(state.byChannel, event.channel, deliveries);
-    bump(state.byScope, event.scope, deliveries);
-    for (const id of event.core.delivered) onDelivered(id, "inCore", event.records);
-    for (const id of event.map.delivered) onDelivered(id, "inMap", event.records);
-    for (const id of event.push.delivered) onDelivered(id, "inPush", event.records);
+    bump(state.byChannel, asString(source?.channel), deliveries);
+    bump(state.byScope, asString(source?.scope), deliveries);
+    for (const id of core) onDelivered(id, "inCore", records);
+    for (const id of map) onDelivered(id, "inMap", records);
+    for (const id of push) onDelivered(id, "inPush", records);
   };
 
   const recordRecall = (event: MemoryRecallEvent): void => {
+    const source = asRecord(event);
     state.recall.calls += 1;
-    if (event.outcome === "empty") state.recall.empty += 1;
-    if (event.outcome === "failed") state.recall.failed += 1;
-    if (Number.isFinite(event.latencyMs) && event.latencyMs >= 0) {
-      state.recall.latencyTotal += event.latencyMs;
-      if (event.latencyMs > state.recall.latencyMax) state.recall.latencyMax = event.latencyMs;
+    const outcome = asString(source?.outcome);
+    if (outcome === "empty") state.recall.empty += 1;
+    if (outcome === "failed") state.recall.failed += 1;
+    const latencyMs = source?.latencyMs;
+    if (typeof latencyMs === "number" && Number.isFinite(latencyMs) && latencyMs >= 0) {
+      state.recall.latencyTotal += latencyMs;
+      if (latencyMs > state.recall.latencyMax) state.recall.latencyMax = latencyMs;
     }
-    for (const id of event.delivered ?? []) {
-      const tracked = track(id, event.records?.[id], { ref: { type: "unknown", scope: "unknown" }, inCore: 0, inMap: 0, inPush: 0, recallDelivered: 0, recallQueries: 0 });
+    const records = asRefMap(source?.records);
+    // Один вызов recall = один инкремент на уникальный id, порядок не важен.
+    for (const id of new Set(asIdList(source?.delivered))) {
+      const tracked = track(id, records?.[id], blankRecord());
       tracked.recallDelivered += 1;
       tracked.recallQueries += 1;
-      state.recalled.add(id);
     }
   };
 
@@ -166,8 +210,8 @@ export function createMemoryMetricsLedger(options: { now?: () => number } = {}):
       })
       .slice(0, top);
     let unqueriedDelivered = 0;
-    for (const [id, tracked] of closed.records) {
-      if (tracked.inCore + tracked.inMap + tracked.inPush > 0 && !closed.recalled.has(id)) unqueriedDelivered += 1;
+    for (const tracked of closed.records.values()) {
+      if (tracked.inCore + tracked.inMap + tracked.inPush > 0 && tracked.recallQueries === 0) unqueriedDelivered += 1;
     }
     const endedAt = now();
     const value: MemoryMetricsSnapshot = {
