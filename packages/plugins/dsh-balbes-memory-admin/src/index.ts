@@ -15,7 +15,7 @@ export const Config = z.object({});
 
 interface CtxLike {
   get(key: string): unknown;
-  logger: { warn(message: string): void };
+  logger: { warn(message: string): void; info?(message: string): void };
 }
 
 export function apply(ctx: CtxLike, _config: unknown): void {
@@ -24,5 +24,5 @@ export function apply(ctx: CtxLike, _config: unknown): void {
     ctx.logger.warn("balbes-memory-admin: balbesHttp service missing; routes not registered");
     return;
   }
-  registerMemoryRoutes(http, () => ctx.get("balbesMemory") as MemoryServiceLike | undefined);
+  registerMemoryRoutes(http, () => ctx.get("balbesMemory") as MemoryServiceLike | undefined, ctx.logger);
 }

@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { apply, Config, inject, name } from "../src/index.js";
-import type { MemoryDraftLike, MemoryFilterLike, MemoryPatchLike, MemoryServiceLike, ResLike } from "../src/routes.js";
-import type { MemoryRecord } from "dsh-balbes-contracts";
+import type {
+  MemoryDecisionPatchLike,
+  MemoryDraftLike,
+  MemoryFilterLike,
+  MemoryPatchLike,
+  MemoryProposalDraftLike,
+  MemoryProposalFilterLike,
+  MemoryServiceLike,
+  ResLike
+} from "../src/routes.js";
+import type { MemoryAutonomyPolicy, MemoryProposal, MemoryRecord } from "dsh-balbes-contracts";
 
 interface Seat {
   path: string;
@@ -25,6 +34,25 @@ function record(overrides: Partial<MemoryRecord> = {}): MemoryRecord {
   };
 }
 
+function proposal(overrides: Partial<MemoryProposal> = {}): MemoryProposal {
+  return {
+    id: "p-1",
+    scope: { kind: "global" },
+    type: "fact",
+    text: "staged fact",
+    tags: [],
+    origin: "agent",
+    originRef: "pipeline:test",
+    status: "proposed",
+    proposedAt: "2026-09-30T00:00:00.000Z",
+    decidedAt: null,
+    decidedBy: null,
+    decidedEdit: false,
+    memoryId: null,
+    ...overrides
+  };
+}
+
 function makeRes(): { res: ResLike; read(): { status: number; json: unknown; raw: string } } {
   const box = { status: 0, raw: "" };
   return {
@@ -42,6 +70,10 @@ interface FakeService extends MemoryServiceLike {
   deleted: string[];
   searched: Array<{ query: string; filter?: MemoryFilterLike }>;
   listed: MemoryFilterLike[];
+  proposed: MemoryProposalDraftLike[];
+  reviewed: MemoryProposalFilterLike[];
+  approved: Array<{ id: string; patch?: MemoryDecisionPatchLike }>;
+  rejected: string[];
 }
 
 function fakeService(overrides: Partial<MemoryServiceLike> = {}): FakeService {
@@ -50,14 +82,32 @@ function fakeService(overrides: Partial<MemoryServiceLike> = {}): FakeService {
   const deleted: string[] = [];
   const searched: Array<{ query: string; filter?: MemoryFilterLike }> = [];
   const listed: MemoryFilterLike[] = [];
+  const proposed: MemoryProposalDraftLike[] = [];
+  const reviewed: MemoryProposalFilterLike[] = [];
+  const approved: Array<{ id: string; patch?: MemoryDecisionPatchLike }> = [];
+  const rejected: string[] = [];
   const base: MemoryServiceLike = {
     async save(draft) { saved.push(draft); return record({ scope: draft.scope, type: draft.type, text: draft.text, origin: draft.origin }); },
     async update(id, patch) { updated.push({ id, patch }); return record({ id, text: patch.text ?? "updated" }); },
     async delete(id) { deleted.push(id); return true; },
     async list(filter) { if (filter !== undefined) listed.push(filter); return [record()]; },
-    async search(request) { searched.push({ query: request.query, ...(request.filter === undefined ? {} : { filter: request.filter }) }); return [{ record: record({ text: "hit" }), rank: 1 }]; }
+    async search(request) { searched.push({ query: request.query, ...(request.filter === undefined ? {} : { filter: request.filter }) }); return [{ record: record({ text: "hit" }), rank: 1 }]; },
+    async propose(draft) {
+      proposed.push(draft);
+      return proposal({ scope: draft.scope, type: draft.type, text: draft.text, tags: draft.tags ?? [], originRef: draft.originRef ?? null });
+    },
+    async getProposal() { return undefined; },
+    async listProposals(filter) { if (filter !== undefined) reviewed.push(filter); return [proposal()]; },
+    async approve(id, patch) {
+      approved.push({ id, ...(patch === undefined ? {} : { patch }) });
+      return { proposal: proposal({ id, status: "accepted", decidedAt: "2026-09-30T01:00:00.000Z", decidedBy: "owner", memoryId: "m-1" }), record: record({ id: "m-1" }) };
+    },
+    async reject(id) {
+      rejected.push(id);
+      return proposal({ id, status: "rejected", decidedAt: "2026-09-30T01:00:00.000Z", decidedBy: "owner" });
+    }
   };
-  return Object.assign(base, overrides, { saved, updated, deleted, searched, listed });
+  return Object.assign(base, overrides, { saved, updated, deleted, searched, listed, proposed, reviewed, approved, rejected });
 }
 
 interface HarnessOptions { service?: MemoryServiceLike | undefined; omitHttp?: boolean; }
@@ -65,6 +115,7 @@ interface HarnessOptions { service?: MemoryServiceLike | undefined; omitHttp?: b
 function harness(options: HarnessOptions = {}) {
   const seats: Seat[] = [];
   const warnings: string[] = [];
+  const infos: string[] = [];
   let service = options.service;
   const ctx = {
     get(key: string): unknown {
@@ -76,7 +127,10 @@ function harness(options: HarnessOptions = {}) {
       if (key === "balbesMemory") return service;
       return undefined;
     },
-    logger: { warn(message: string) { warnings.push(message); } }
+    logger: {
+      warn(message: string) { warnings.push(message); },
+      info(message: string) { infos.push(message); }
+    }
   };
   apply(ctx as never, {});
   async function call(path: string, body: unknown): Promise<{ status: number; json: unknown; raw: string }> {
@@ -86,7 +140,7 @@ function harness(options: HarnessOptions = {}) {
     await seat.handler({}, response.res, body);
     return response.read();
   }
-  return { seats, warnings, call, setService(value: MemoryServiceLike | undefined) { service = value; } };
+  return { seats, warnings, infos, call, setService(value: MemoryServiceLike | undefined) { service = value; } };
 }
 
 describe("balbes-memory-admin plugin", () => {
@@ -96,12 +150,16 @@ describe("balbes-memory-admin plugin", () => {
     expect(Config({})).toEqual({});
   });
 
-  it("registers the three bearer routes", () => {
+  it("registers the seven bearer routes", () => {
     const h = harness({ service: fakeService() });
     expect(h.seats.map((seat) => seat.path)).toEqual([
       "/api/memory/list",
       "/api/memory/save",
-      "/api/memory/delete"
+      "/api/memory/delete",
+      "/api/memory/propose",
+      "/api/memory/review/list",
+      "/api/memory/review/approve",
+      "/api/memory/review/reject"
     ]);
     expect(h.seats.every((seat) => seat.auth === "bearer")).toBe(true);
   });
@@ -186,5 +244,120 @@ describe("balbes-memory-admin plugin", () => {
     const res3 = await h3.call("/api/memory/list", {});
     expect(res3.status).toBe(500);
     expect(res3.json).toEqual({ error: { code: "internal", message: "boom" } });
+  });
+
+  it("forces agent origin and ignores body status on propose", async () => {
+    const service = fakeService();
+    const h = harness({ service });
+    const res = await h.call("/api/memory/propose", {
+      scope: { kind: "global" },
+      type: "fact",
+      text: "staged",
+      tags: ["Ops"],
+      originRef: "pipeline:test",
+      origin: "owner",
+      status: "accepted",
+      pinned: true
+    });
+    expect(res.status).toBe(200);
+    expect(service.proposed).toEqual([
+      { scope: { kind: "global" }, type: "fact", text: "staged", tags: ["Ops"], originRef: "pipeline:test" }
+    ]);
+    expect((res.json as { proposal: MemoryProposal }).proposal.status).toBe("proposed");
+  });
+
+  it("rejects a propose body without scope or with a bad tags shape", async () => {
+    const service = fakeService();
+    const h = harness({ service });
+    expect((await h.call("/api/memory/propose", { type: "fact", text: "x" })).status).toBe(400);
+    expect((await h.call("/api/memory/propose", { scope: { kind: "global" }, type: "fact", text: "x", tags: "ops" })).status).toBe(400);
+    expect(service.proposed).toEqual([]);
+  });
+
+  it("serves the queue with the autonomy policy", async () => {
+    const service = fakeService();
+    const h = harness({ service });
+    const res = await h.call("/api/memory/review/list", { status: ["proposed", "rejected"], tag: "ops", limit: 5 });
+    expect(res.status).toBe(200);
+    expect(service.reviewed).toEqual([{ status: ["proposed", "rejected"], tag: "ops", limit: 5 }]);
+    const expectedPolicy: MemoryAutonomyPolicy = { immediate: ["owner", "remember"], review: ["pipeline"], autoApprove: "none" };
+    expect(res.json).toEqual({ proposals: [proposal()], policy: expectedPolicy });
+  });
+
+  it("always serves the policy, even with an empty queue", async () => {
+    const service = fakeService({ listProposals: async () => [] });
+    const h = harness({ service });
+    const res = await h.call("/api/memory/review/list", {});
+    expect(res.status).toBe(200);
+    expect(res.json).toEqual({
+      proposals: [],
+      policy: { immediate: ["owner", "remember"], review: ["pipeline"], autoApprove: "none" }
+    });
+    expect(service.reviewed).toEqual([]);
+  });
+
+  it("approves with a patch and rejects by id", async () => {
+    const service = fakeService();
+    const h = harness({ service });
+    const approved = await h.call("/api/memory/review/approve", { id: "p-1", text: "edited", pinned: true });
+    expect(approved.status).toBe(200);
+    expect(service.approved).toEqual([{ id: "p-1", patch: { text: "edited", pinned: true } }]);
+    expect((approved.json as { record: MemoryRecord }).record.id).toBe("m-1");
+
+    const plain = await h.call("/api/memory/review/approve", { id: "p-1" });
+    expect(plain.status).toBe(200);
+    expect(service.approved[1]).toEqual({ id: "p-1" });
+
+    const rejected = await h.call("/api/memory/review/reject", { id: "p-1" });
+    expect(rejected.status).toBe(200);
+    expect(service.rejected).toEqual(["p-1"]);
+    expect((rejected.json as { proposal: MemoryProposal }).proposal.status).toBe("rejected");
+  });
+
+  it("validates decision bodies and maps invalid-status to 400", async () => {
+    const h = harness({ service: fakeService() });
+    expect((await h.call("/api/memory/review/approve", {})).status).toBe(400);
+    expect((await h.call("/api/memory/review/reject", { id: "" })).status).toBe(400);
+    expect((await h.call("/api/memory/review/approve", { id: "p-1", pinned: "yes" })).status).toBe(400);
+    expect((await h.call("/api/memory/review/reject", "not-an-object")).status).toBe(400);
+
+    const decided = fakeService({ approve: async () => { throw { code: "invalid-status", message: "already accepted" }; } });
+    const h2 = harness({ service: decided });
+    const res = await h2.call("/api/memory/review/approve", { id: "p-1" });
+    expect(res.status).toBe(400);
+    expect(res.json).toEqual({ error: { code: "invalid-status", message: "already accepted" } });
+  });
+
+  it("answers 503 memory-unavailable on every review route", async () => {
+    const h = harness({ service: undefined });
+    for (const path of ["/api/memory/propose", "/api/memory/review/list", "/api/memory/review/approve", "/api/memory/review/reject"]) {
+      const res = await h.call(path, { id: "p-1", scope: { kind: "global" }, type: "fact", text: "x" });
+      expect(res.status, path).toBe(503);
+      expect((res.json as { error: { code: string } }).error.code).toBe("memory-unavailable");
+    }
+  });
+
+  it("logs one line per review mutation and never the memory text", async () => {
+    const service = fakeService();
+    const h = harness({ service });
+    await h.call("/api/memory/propose", {
+      scope: { kind: "project", name: "alpha" },
+      type: "fact",
+      text: "TOP-SECRET-PROPOSAL-TEXT"
+    });
+    await h.call("/api/memory/review/approve", { id: "p-1" });
+    await h.call("/api/memory/review/reject", { id: "p-2" });
+    expect(h.infos).toEqual([
+      "balbes-memory-admin: propose id=p-1 scope=project:alpha",
+      "balbes-memory-admin: approve id=p-1 edited=false",
+      "balbes-memory-admin: reject id=p-2"
+    ]);
+    expect(h.infos.join("\n")).not.toContain("TOP-SECRET-PROPOSAL-TEXT");
+
+    const edited = fakeService({ approve: async (id) => ({ proposal: proposal({ id, status: "accepted", decidedEdit: true }), record: record({ id: "m-1" }) }) });
+    const h2 = harness({ service: edited });
+    await h2.call("/api/memory/review/approve", { id: "p-9", text: "left in the body but not logged" });
+    expect(h2.infos).toEqual(["balbes-memory-admin: approve id=p-9 edited=true"]);
+    expect(h2.infos.join("\n")).not.toContain("left in the body");
   });
 });
