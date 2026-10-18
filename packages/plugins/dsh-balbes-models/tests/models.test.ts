@@ -61,8 +61,8 @@ describe("models domain", () => {
   });
 
   it("pins both source catalogs the official fallback unions", () => {
-    // pi-ai builtin deepseek catalog (2 ids since pi-ai 0.87.1 / dsh
-    // 0.2.0-rc.2): order flash, pro; names are space-separated.
+    // pi-ai builtin deepseek catalog (2 ids at pi-ai 1.3.0 / dsh
+    // 0.2.1-rc.2): order flash, pro; names are space-separated.
     expect(PI_AI_DEEPSEEK_MODELS).toEqual([
       { id: "deepseek-flash", name: "DeepSeek V4.1 Flash" },
       { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro" }
@@ -75,7 +75,7 @@ describe("models domain", () => {
     ]);
   });
 
-  it("the pinned official catalog contains the dsh 0.2.0-rc.2 fresh-profile engine default deepseek-flash", () => {
+  it("the pinned official catalog contains the dsh 0.2.1-rc.2 fresh-profile engine default deepseek-flash", () => {
     // Regression guard for the models.list / models.default desync: the engine
     // default must always be resolvable inside its own connection's catalog.
     expect(DEEPSEEK_OFFICIAL_MODELS.map((m) => m.id)).toContain("deepseek-flash");

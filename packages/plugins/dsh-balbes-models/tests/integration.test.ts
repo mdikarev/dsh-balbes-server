@@ -157,7 +157,7 @@ const realEnabled = runReal ? await hasDsh() : false;
 
 describe.skipIf(!realEnabled)("REAL composition (models API)", () => {
   let home: string | undefined;
-  /** Settings land in the active profile patch (dsh 0.2.0), not the legacy settings.yaml. */
+  /** Settings land in the active profile patch (dsh 0.2.1), not the legacy settings.yaml. */
   let profilePatchPath = "";
   let port: number;
   let login: string;
@@ -423,7 +423,7 @@ describe.skipIf(!realEnabled)("REAL composition (models API)", () => {
       const yamlAfterEdit = await readIfPresent(profilePatchPath);
       const openaiAfterEdit = yamlBlockForKey(yamlAfterEdit, "openai");
       expect(openaiAfterEdit).not.toBe("");
-      // dsh 0.2.0 serializes the llm-pi-ai section block-style
+      // dsh 0.2.1 serializes the llm-pi-ai section block-style
       // (`models:\n  - id: gpt-4o-mini`); the id extraction below is
       // style-independent, so the check tracks the stored fact (which models sit
       // under `openai`) rather than the emitter.

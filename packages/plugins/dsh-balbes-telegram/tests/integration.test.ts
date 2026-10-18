@@ -887,16 +887,25 @@ describe.skipIf(!realEnabled)("REAL composition (fake Bot API + LLM stub)", () =
       // session-title-llm base row (Task 1 seam fact 10), so no extra
       // first-prompt request eats a scripted stub entry.
       expect(llm.calls.length - callsBefore).toBe(1);
-      // The persona carries `{{cwd}}` of the selected workspace: the host
-      // bundle's system-prompt row ("Your working directory is {{cwd}}") is
-      // composed AND substituted with the agent home root, which is the
-      // workspace under test.
-      // dsh 0.1.7-rc.1 seam fact: the Messages request carries the system prompt
-      // in a top-level `system` field, not as a role "system" message.
+      // The deployment persona still applies, and since dsh 0.2.1-rc.2 it may
+      // only interpolate `{{provider}}`/`{{model}}`: the `{{cwd}}` variable is
+      // gone, so the working directory moved out of the persona and into the
+      // engine's own runtime context. The persona lives in the top-level
+      // `system` field (dsh 0.1.7-rc.1 seam fact: the Messages request carries
+      // the system prompt there, not as a role "system" message).
       const lastBody = llm.calls.at(-1)?.body;
       const systemText = typeof lastBody?.system === "string" ? lastBody.system : "";
-      expect(systemText, JSON.stringify(lastBody ?? {}).slice(0, 2000)).toContain("Your working directory is");
-      expect(systemText, systemText.slice(0, 2000)).toContain(agentRoot);
+      expect(systemText, JSON.stringify(lastBody ?? {}).slice(0, 2000)).toContain("You are a coding agent powered by the ");
+      // The selected workspace's directory still reaches the model: the engine
+      // `working-directory` plugin contributes "Current working directory: …"
+      // to the turn's runtime-context message, and the path there is the agent
+      // home root — the workspace under test.
+      const messageText = (lastBody?.messages ?? [])
+        .flatMap((message) => (Array.isArray(message.content) ? (message.content as Array<{ text?: unknown }>) : []))
+        .map((part) => (part !== null && typeof part === "object" && typeof part.text === "string" ? part.text : ""))
+        .join("\n");
+      expect(messageText, messageText.slice(0, 3000)).toContain("Current working directory:");
+      expect(messageText, messageText.slice(0, 3000)).toContain(agentRoot);
 
       // (j) the state document: one session, an acknowledged offset, no token
       const state = await waitForState((current) => current.sessions["home"] !== undefined, "the home session persisted");

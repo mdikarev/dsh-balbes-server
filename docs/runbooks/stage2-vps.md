@@ -111,7 +111,7 @@ curl -fsSL https://raw.githubusercontent.com/mdikarev/dsh-balbes-server/main/scr
    работающий сервис не трогается.
 5. **Профиль.** Синхронизирует `profiles/balbes` из репозитория в
    `$DSH_HOME/profiles/balbes` (замена каталога целиком; профиль в репо —
-   источник правды). **Настройки при этом сохраняются:** dsh 0.2.0 пишет
+   источник правды). **Настройки при этом сохраняются:** dsh 0.2.1 пишет
    админские настройки (подключения моделей, Telegram, модель по умолчанию)
    верхнеуровневыми записями `- id: …` в `cordis.patch.yml` профиля, поэтому
    установщик перед заменой извлекает их и дописывает в свежий патч — иначе
@@ -398,7 +398,8 @@ localStorage и при перезагрузке страницы проверя�
 той же, что у Web-агента: файлы (`read`, `read_image`, `write`, `edit`, `glob`,
 `grep`), поиск в интернете (`web_search`, `web_fetch`), оболочка (`bash`; на
 Windows — `pwsh`), навыки (`skill`), делегирование (`subagent`, `subagent_fork`,
-`workflow`, `ralph`), управление заданиями и агентами (`job_list`, `job_output`,
+`workflow`), смена рабочего каталога сессии (`working_directory`), управление
+заданиями и агентами (`job_list`, `job_output`,
 `job_kill`, `send_message`, `interrupt_agent`, `list_agents`) и планирование
 (`todo_write`, цели) — то есть всё, что регистрирует композиция процесса. У
 канала **нет** отдельного per-agent allow-фильтра и read-guard: доступ к сети и
@@ -518,7 +519,7 @@ curl -sS -X POST http://127.0.0.1:8080/api/workspaces/delete \
 
 Модели: список подключений и дефолтная модель — `POST /api/models/list`
 (bearer). Полный smoke — REAL-тест пакета `dsh-balbes-models`; на свежем доме
-движок 0.2.0-rc.2 дефолтит на `deepseek-flash`, и с настроенным ключом DeepSeek
+движок 0.2.1-rc.2 дефолтит на `deepseek-flash`, и с настроенным ключом DeepSeek
 ожидается подключение `deepseek-official`:
 
 ```bash
@@ -526,8 +527,8 @@ curl -sS -X POST http://127.0.0.1:8080/api/workspaces/delete \
 curl -sS -X POST http://127.0.0.1:8080/api/models/list \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{}'
 # ожидается: "default":{"provider":"deepseek-official","model":"deepseek-flash"}
-#             (дефолт свежего профиля движка 0.2.0-rc.2) и подключение
-#             deepseek-official с 2 моделями каталога движка 0.2.0:
+#             (дефолт свежего профиля движка 0.2.1-rc.2) и подключение
+#             deepseek-official с 2 моделями каталога движка 0.2.1:
 #             deepseek-flash, deepseek-v4-pro; дефолт входит в каталог своего
 #             соединения, поэтому models.default его принимает
 ```
@@ -1400,7 +1401,7 @@ sudo systemctl restart dsh-balbes
 токена. Файл без `archived` читается как пустой архив (совместимость).
 Токен — только в `$DSH_HOME/.credentials.yaml`; настройки (включая
 `balbes-telegram`) — записи с `id:` в профильном
-`$DSH_HOME/profiles/balbes/cordis.patch.yml` (dsh 0.2.0; см. «Где лежат
+`$DSH_HOME/profiles/balbes/cordis.patch.yml` (dsh 0.2.1; см. «Где лежат
 данные»). Модель в `telegram-state.json` не хранится: её место — запись
 `agent-default-model` того же профильного патча, и это ровно та настройка,
 которой управляет раздел «Модели» админки. Один и тот же токен не должен
@@ -1662,6 +1663,25 @@ node -e "console.log('dsh-base:', require('@deepseek-ai/dsh-base/package.json').
 Если версию определить не удалось (`dsh --version` не печатает ничего похожего
 на версию), установщик отдельно предупреждает об этом и тоже продолжает
 работу — проверьте `command -v dsh` и `dsh --version` вручную.
+
+### 502 «unknown prompt variable "{{cwd}}"» после обновления движка
+
+Движок 0.2.1-rc.2 убрал переменную `{{cwd}}` из строгого интерполятора
+системного промпта (регистрируются только `provider` и `model`), а рабочий
+каталог сессии теперь сообщает собственный контекст движка `working-directory`
+(«Current working directory: …»). Если после обновления каждый ход падает с
+502 и в теле ошибки `"kind":"error"`, `"code":"UNKNOWN"` и строка
+`unknown prompt variable "{{cwd}}" in section "deployment:persona-prefix"` —
+в профиле остался старый host-бандл (персона с `{{cwd}}`). Перезапустите
+установщик: он пересобирает host и копирует его в профиль.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mdikarev/dsh-balbes-server/main/scripts/install.sh | bash
+```
+
+Проверка: `POST /api/prompt` снова отвечает 200, системный промпт запроса
+содержит `You are a coding agent powered by the … model.`, а ход несёт
+`Current working directory: "<воркспейс>"`.
 
 ### Health не отвечает
 
@@ -1957,7 +1977,7 @@ ls -l "$HOME/.dsh/storages/memory.sqlite"*
   апгрейде уже существовавшей базы (`.bak-v2` у v2, `.bak-v1` у старой v1), а не
   после первой миграции как таковой;
 - `balbes/ui/` — собранный SPA админки, который раздаёт сервер;
-- `profiles/balbes/cordis.patch.yml` — **настройки dsh на 0.2.0**: базовый
+- `profiles/balbes/cordis.patch.yml` — **настройки dsh на 0.2.1**: базовый
   список плагинов профиля плюс верхнеуровневые записи `- id: …` с
   `config:`, которыми управляют админка и Telegram: подключения моделей
   (`llm-pi-ai`), Telegram (`balbes-telegram`: `enabled`, `allowedUserId`) и

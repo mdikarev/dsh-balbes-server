@@ -58,7 +58,10 @@ const CANCEL_HOLD_MS = 3000;
  * `dsh-tool-str-replace-editor` package still ships, but the base composition
  * no longer mounts a row for it (0.1.2-rc.1 did). `ralph` is absent since
  * 0.1.7-rc.1: its `tool-ralph` base row ships `disabled: true` and only an
- * explicit overlay re-enables it.
+ * explicit overlay re-enables it (0.2.1-rc.2 dropped that disabled row
+ * altogether, so the tool stays absent). `working_directory` arrived in
+ * 0.2.1-rc.2 with the base `tool-working-directory` row: the engine now owns
+ * the per-session directory, so the agent can inspect and change it.
  */
 const DEPLOYMENT_TOOLS = [
   "bash",
@@ -84,6 +87,7 @@ const DEPLOYMENT_TOOLS = [
   "web_fetch",
   "web_search",
   "workflow",
+  "working_directory",
   "write"
 ];
 
