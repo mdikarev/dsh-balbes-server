@@ -6,6 +6,7 @@ import type {
   MemoryAutonomyPolicy,
   MemoryListRequest,
   MemoryProposal,
+  MemoryMetricsSnapshot,
   MemoryRecord,
   MemoryReviewApproveRequest,
   MemorySaveRequest,
@@ -20,6 +21,20 @@ const WORKSPACES: WorkspaceListResponse = {
 };
 
 const REVIEW_POLICY: MemoryAutonomyPolicy = { immediate: ["owner", "remember"], review: ["pipeline"], autoApprove: "none" };
+
+const METRICS: MemoryMetricsSnapshot = {
+  schema: 1,
+  process: { startedAt: "2026-10-01T00:00:00.000Z", totals: { turns: 9, deliveries: 3 } },
+  window: { startedAt: "2026-10-01T00:30:00.000Z", durationMs: 600000, turns: 2, deliveries: 1 },
+  byChannel: { admin: { turns: 2, deliveries: 1 } },
+  byScope: { global: { turns: 2, deliveries: 1 } },
+  recall: { calls: 1, empty: 0, failed: 0, latencyMs: { total: 5, max: 5 } },
+  unqueriedDelivered: 1,
+  dropped: 0,
+  topRecords: [
+    { id: "m-1", type: "note", scope: "global", inCore: 1, inMap: 0, inPush: 0, recallDelivered: 0, recallQueries: 0 }
+  ]
+};
 
 function record(overrides: Partial<MemoryRecord> = {}): MemoryRecord {
   return {
@@ -62,6 +77,7 @@ function makeApi(records: MemoryRecord[], overrides: Partial<AdminApi> = {}): Ad
     listWorkspaces: vi.fn(async () => ({ home: { path: "/h/agent" }, projects: [] })),
     listMemory: vi.fn(async () => ({ records: [...store] })),
     listMemoryReview: vi.fn(async () => ({ proposals: [], policy: REVIEW_POLICY })),
+    memoryMetrics: vi.fn(async () => ({ metrics: METRICS })),
     saveMemory: vi.fn(async (req: MemorySaveRequest) => {
       const saved = record({ id: "m-new", text: req.text, type: req.type, tags: req.tags ?? [], pinned: req.pinned ?? false });
       store.push(saved);
@@ -333,5 +349,34 @@ describe("MemoryPage", () => {
     fireEvent.click(screen.getByTestId("memory-review-form-approve"));
     await waitFor(() => expect(api.approveMemoryReview).toHaveBeenCalled());
     await waitFor(() => expect(screen.queryByTestId("memory-tab-review-count")).toBeNull());
+  });
+
+  it("switches to the metrics tab and does not mount it behind the records tab", async () => {
+    const api = makeApi([record()]);
+    render(<MemoryPage api={api} />);
+    expect(await screen.findByTestId("memory-row:m-1")).toBeTruthy();
+    // the snapshot is fetched on mount of the tab, not on page mount
+    expect(api.memoryMetrics).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId("memory-tab-metrics"));
+    expect(await screen.findByTestId("memory-metrics-window-turns")).toBeTruthy();
+    expect(api.memoryMetrics).toHaveBeenCalledWith({});
+
+    fireEvent.click(screen.getByTestId("memory-metrics-refresh"));
+    await waitFor(() => expect(api.memoryMetrics).toHaveBeenCalledTimes(2));
+  });
+
+  it("jumps from a metrics row to the record with a wide view and a highlight", async () => {
+    const api = makeApi([record()]);
+    render(<MemoryPage api={api} />);
+    fireEvent.click(await screen.findByTestId("memory-tab-metrics"));
+    fireEvent.click(await screen.findByTestId("memory-metrics-open:m-1"));
+
+    // the metrics window is not a level filter: the jump must not hide the row
+    const recordsTab = await screen.findByTestId("memory-tab-records");
+    expect(recordsTab.getAttribute("aria-selected")).toBe("true");
+    const row = await screen.findByTestId("memory-row:m-1");
+    expect(row.className).toContain("memory-row-focus");
+    expect(api.listMemory).toHaveBeenLastCalledWith({});
   });
 });

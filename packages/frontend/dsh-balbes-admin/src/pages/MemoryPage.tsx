@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, type AdminApi } from "../api/client";
 import type { MemoryRecord, MemoryType, WorkspaceProject } from "dsh-balbes-contracts";
 import Modal from "../components/Modal";
+import MemoryMetrics from "./MemoryMetrics";
 import MemoryReviewQueue from "./MemoryReviewQueue";
 import {
   MEMORY_TYPES,
@@ -38,7 +39,9 @@ function messageOf(error: unknown): string {
 }
 
 export default function MemoryPage({ api }: { api: AdminApi }) {
-  const [tab, setTab] = useState<"records" | "review">("records");
+  const [tab, setTab] = useState<"records" | "review" | "metrics">("records");
+  const [focusId, setFocusId] = useState<string | null>(null);
+  const rowRefs = useRef(new Map<string, HTMLLIElement>());
   const [pendingCount, setPendingCount] = useState(0);
   const [pendingCountCapped, setPendingCountCapped] = useState(false);
   const [projects, setProjects] = useState<WorkspaceProject[]>([]);
@@ -108,11 +111,28 @@ export default function MemoryPage({ api }: { api: AdminApi }) {
     if (!projects.some((project) => project.name === level.name)) setLevel({ kind: "global" });
   }, [projectsLoaded, projects, level]);
 
+  useEffect(() => {
+    if (focusId === null || tab !== "records") return;
+    rowRefs.current.get(focusId)?.scrollIntoView?.({ block: "center" });
+  }, [focusId, tab, records]);
+
   // reload on level/filter change; debounce only the free-text query
   useEffect(() => {
     const timer = setTimeout(() => { void load(); }, query === "" ? 0 : 300);
     return () => clearTimeout(timer);
   }, [load, query]);
+
+  function openRecord(id: string): void {
+    // Metrics track ids across every level, so widen the view before jumping;
+    // filters would otherwise hide the very row the owner asked for.
+    setLevel({ kind: "all" });
+    setQuery("");
+    setType("all");
+    setTag("");
+    setPinnedOnly(false);
+    setFocusId(id);
+    setTab("records");
+  }
 
   function openCreate(): void {
     setFormType("note");
@@ -222,10 +242,22 @@ export default function MemoryPage({ api }: { api: AdminApi }) {
             <span className="memory-tab-count" data-testid="memory-tab-review-count">{pendingCountCapped ? "500+" : pendingCount}</span>
           )}
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "metrics"}
+          className={tab === "metrics" ? "memory-tab memory-tab-active" : "memory-tab"}
+          data-testid="memory-tab-metrics"
+          onClick={() => setTab("metrics")}
+        >
+          Метрики
+        </button>
       </div>
 
       {tab === "review" ? (
         <MemoryReviewQueue api={api} onDecided={refreshPendingCount} />
+      ) : tab === "metrics" ? (
+        <MemoryMetrics api={api} onOpenRecord={openRecord} />
       ) : (
         <>
       <div className="memory-toolbar">
@@ -316,7 +348,15 @@ export default function MemoryPage({ api }: { api: AdminApi }) {
       ) : (
         <ul className="memory-list" data-testid="memory-list">
           {records.map((record) => (
-            <li className="memory-row" key={record.id} data-testid={"memory-row:" + record.id}>
+            <li
+              className={record.id === focusId ? "memory-row memory-row-focus" : "memory-row"}
+              key={record.id}
+              ref={(node) => {
+                if (node === null) rowRefs.current.delete(record.id);
+                else rowRefs.current.set(record.id, node);
+              }}
+              data-testid={"memory-row:" + record.id}
+            >
               <div className="memory-row-head">
                 <span className="memory-type">{TYPE_LABELS[record.type]}</span>
                 <span className="memory-level-badge" title="Уровень" data-testid="memory-row-level">{levelLabel(record.scope)}</span>

@@ -471,3 +471,50 @@ export interface MemoryReviewRejectRequest {
 export interface MemoryReviewRejectResponse {
   proposal: MemoryProposal;
 }
+
+// Memory metrics surface — read-only delivery hit/miss snapshot (p10h; UI is p10i)
+
+/** Where a turn or `recall` happened: "global" or "project:<name>" — not the record's own scope. */
+export type MemoryMetricsScopeTag = string;
+/** Channel that served the turn: "admin" or "telegram". */
+export type MemoryMetricsChannel = string;
+
+export interface MemoryMetricsTotals {
+  turns: number;
+  deliveries: number;
+}
+
+/** Per-record counters for the window; the snapshot carries no memory text. */
+export interface MemoryMetricsRecordMetrics {
+  id: string;
+  type: string;
+  scope: MemoryMetricsScopeTag;
+  inCore: number;
+  inMap: number;
+  inPush: number;
+  recallDelivered: number;
+  recallQueries: number;
+}
+
+export interface MemoryMetricsSnapshot {
+  schema: 1;
+  process: { startedAt: string; totals: MemoryMetricsTotals };
+  window: { startedAt: string; durationMs: number; turns: number; deliveries: number };
+  byChannel: Record<MemoryMetricsChannel, MemoryMetricsTotals>;
+  byScope: Record<MemoryMetricsScopeTag, MemoryMetricsTotals>;
+  recall: { calls: number; empty: number; failed: number; latencyMs: { total: number; max: number } };
+  unqueriedDelivered: number;
+  dropped: number;
+  topRecords: MemoryMetricsRecordMetrics[];
+}
+
+export interface MemoryMetricsRequest {
+  /** Close the current window and return it; process totals survive. */
+  reset?: boolean;
+  /** Size of topRecords, 1..100 (server default 20). */
+  top?: number;
+}
+
+export interface MemoryMetricsResponse {
+  metrics: MemoryMetricsSnapshot;
+}

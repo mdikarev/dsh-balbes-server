@@ -647,7 +647,9 @@ smoke — REAL-тест пакета `dsh-balbes-memory-admin`
 Без доступного хранилища все семь ручек отвечают `503
 {"error":{"code":"memory-unavailable",...}}`, а не 400/500: это ожидаемая
 деградация, а не поломка (причина — сервис `balbesMemory` не предоставлен;
-см. «Память не открылась / миграция не применилась»).
+см. «Память не открылась / миграция не применилась»). Метрики — отдельный сервис
+`balbesMemoryMetrics`: без него `memory.metrics` отвечает `503
+{"error":{"code":"metrics-unavailable",...}}`, а остальные ручки памяти работают.
 
 ```bash
 TOKEN=... # POST /api/auth/login
@@ -759,6 +761,42 @@ curl -fsS -X POST http://127.0.0.1:8080/api/memory/delete \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{"id":"<record-id>"}'
 # ожидается: {"deleted":true}
 ```
+
+Метрики попаданий (p10h) и вкладка «Метрики» (p10i) — снимок только читается:
+в хранилище он не пишет и текста памяти не содержит. Ручка —
+`POST /api/memory/metrics` (bearer, JSON; `{reset?:boolean, top?:integer 1..100}`
+→ `{metrics:{schema, process, window, byChannel, byScope, recall,
+unqueriedDelivered, dropped, topRecords}}`).
+
+```bash
+TOKEN=... # POST /api/auth/login
+curl -fsS -X POST http://127.0.0.1:8080/api/memory/metrics \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{}'
+# ожидается: {"metrics":{"schema":1,"process":{"startedAt":...,"totals":{...}},
+#   "window":{...},"byChannel":{},"byScope":{},"recall":{"calls":0,...},
+#   "unqueriedDelivered":0,"dropped":0,"topRecords":[]}} — без текста памяти
+
+# 2) сделайте ход, который доставляет память (Telegram-задача или POST /api/prompt
+#    при подходящем уровне), затем повторите запрос
+# ожидается: window.turns > 0; при доставке — window.deliveries > 0 и записи
+#   в topRecords. turns=1, deliveries=0 — согласованный снимок (ход ничего
+#   не доставил), а не сбой
+
+# 3) сброс окна: закрытое окно возвращается, тоталы процесса сохраняются
+curl -fsS -X POST http://127.0.0.1:8080/api/memory/metrics \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{"reset":true,"top":5}'
+# ожидается: window.durationMs > 0 и те же process.totals; следующий вызов с {}
+#   показывает новое окно (window.turns=0)
+```
+
+UI-проверка: админка → «Память» → вкладка «Метрики». Ожидается сводка окна и
+процесса, `recall`, промахи, таблицы по каналам и уровням, топ записей и
+объяснение сигнала рядом с числами. «Обновить» перечитывает снимок (живого
+опроса нет), «Сбросить окно» спрашивает подтверждение и оставляет
+`process.totals` прежними. Клик по id записи переключает на «Записи» в режим
+«Все» и подсвечивает строку; если запись уже удалена, подсветки нет. При
+несобранном сервисе метрик вкладка объясняет `503 metrics-unavailable`, а
+«Записи» и «Очередь ревью» продолжают работать.
 
 Автоизвлечение из Telegram-задачи (p10g):
 

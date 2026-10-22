@@ -53,7 +53,9 @@ import type {
   MemoryReviewListRequest,
   MemoryReviewListResponse,
   MemoryReviewRejectRequest,
-  MemoryReviewRejectResponse
+  MemoryReviewRejectResponse,
+  MemoryMetricsRequest,
+  MemoryMetricsResponse
 } from "dsh-balbes-contracts";
 import { createSseParser } from "./sse";
 
@@ -100,6 +102,8 @@ export interface AdminApi {
   listMemoryReview(req: MemoryReviewListRequest): Promise<MemoryReviewListResponse>;
   approveMemoryReview(req: MemoryReviewApproveRequest): Promise<MemoryReviewApproveResponse>;
   rejectMemoryReview(req: MemoryReviewRejectRequest): Promise<MemoryReviewRejectResponse>;
+  /** Read-only delivery metrics snapshot (window + process totals). */
+  memoryMetrics(req?: MemoryMetricsRequest): Promise<MemoryMetricsResponse>;
   listModels(): Promise<ModelsListResponse>;
   saveModel(req: ModelsSaveRequest): Promise<ModelsSaveResponse>;
   deleteModel(routeId: string): Promise<ModelsDeleteResponse>;
@@ -234,6 +238,7 @@ export function createApiClient(): AdminApi {
     listMemoryReview: (req) => guard(request<MemoryReviewListResponse>("/api/memory/review/list", req satisfies MemoryReviewListRequest)),
     approveMemoryReview: (req) => guard(request<MemoryReviewApproveResponse>("/api/memory/review/approve", req satisfies MemoryReviewApproveRequest)),
     rejectMemoryReview: (req) => guard(request<MemoryReviewRejectResponse>("/api/memory/review/reject", req satisfies MemoryReviewRejectRequest)),
+    memoryMetrics: (req = {}) => guard(request<MemoryMetricsResponse>("/api/memory/metrics", req satisfies MemoryMetricsRequest)),
     listModels: () => guard(request<ModelsListResponse>("/api/models/list", {})),
     saveModel: (req) => guard(request<ModelsSaveResponse>("/api/models/save", req satisfies ModelsSaveRequest)),
     deleteModel: (routeId) => guard(request<ModelsDeleteResponse>("/api/models/delete", { routeId } satisfies ModelsDeleteRequest)),

@@ -560,3 +560,24 @@ button.ws-tree-row:hover { background: var(--surface); }
 .memory-review-status { padding: 1px 6px; border-radius: 4px; font-size: 12px; }
 .memory-review-status-accepted { background: rgba(46, 160, 67, 0.18); }
 .memory-review-status-rejected { background: rgba(200, 60, 60, 0.18); }
+
+/* ── memory metrics (p10i) ─────────────────────────────────── */
+.memory-row-focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.memory-metrics { display: flex; flex-direction: column; gap: 14px; max-width: 1120px; }
+.memory-metrics-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.memory-metrics-hint { margin: 0; flex: 1 1 320px; color: var(--text-dim); font-size: 13px; }
+.memory-metrics-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.memory-metrics-card { border: 1px solid var(--border); background: var(--surface); border-radius: var(--radius); padding: 12px; }
+.memory-metrics-card h3 { margin: 0 0 8px; font-size: 13px; color: var(--text-dim); font-weight: 500; }
+.memory-metrics-heading { margin: 0 0 8px; font-size: 13px; color: var(--text-dim); font-weight: 500; }
+.memory-metrics-facts { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; font-size: 13px; }
+.memory-metrics-facts dt { color: var(--text-dim); }
+.memory-metrics-facts dd { margin: 0; text-align: right; font-family: var(--mono); }
+.memory-metrics-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.memory-metrics-table th, .memory-metrics-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.memory-metrics-table th { color: var(--text-dim); font-weight: 500; }
+.memory-metrics-table td { font-family: var(--mono); }
+.memory-metrics-id { background: none; border: 0; padding: 0; color: var(--accent-hi); font-family: var(--mono); cursor: pointer; }
+.memory-metrics-id:hover { text-decoration: underline; }
+.memory-metrics-id-text { font-family: var(--mono); }
+.memory-metrics-note { margin: 0; color: var(--text-dim); font-size: 13px; }
