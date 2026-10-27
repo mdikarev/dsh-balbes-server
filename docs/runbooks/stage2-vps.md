@@ -519,7 +519,7 @@ curl -sS -X POST http://127.0.0.1:8080/api/workspaces/delete \
 
 Модели: список подключений и дефолтная модель — `POST /api/models/list`
 (bearer). Полный smoke — REAL-тест пакета `dsh-balbes-models`; на свежем доме
-движок 0.2.1-rc.2 дефолтит на `deepseek-flash`, и с настроенным ключом DeepSeek
+движок 0.2.1-rc.4 дефолтит на `deepseek-flash`, и с настроенным ключом DeepSeek
 ожидается подключение `deepseek-official`:
 
 ```bash
@@ -527,7 +527,7 @@ curl -sS -X POST http://127.0.0.1:8080/api/workspaces/delete \
 curl -sS -X POST http://127.0.0.1:8080/api/models/list \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{}'
 # ожидается: "default":{"provider":"deepseek-official","model":"deepseek-flash"}
-#             (дефолт свежего профиля движка 0.2.1-rc.2) и подключение
+#             (дефолт свежего профиля движка 0.2.1-rc.4) и подключение
 #             deepseek-official с 2 моделями каталога движка 0.2.1:
 #             deepseek-flash, deepseek-v4-pro; дефолт входит в каталог своего
 #             соединения, поэтому models.default его принимает
@@ -543,6 +543,29 @@ curl -sS -X POST http://127.0.0.1:8080/api/models/catalog \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"provider":"openai"}'
 # ожидается: непустой список models
+```
+
+С движка 0.2.1-rc.3 официальный роут `deepseek-official` следует
+официальному листингу моделей DeepSeek: с настроенным ключом движок при
+первом обращении читает `GET https://api.deepseek.com/models` (ключ в
+`x-api-key`, ожидание до 5 с), дальше держит листинг в памяти и обновляет его
+в фоне после 10 минут; без ключа, при ошибке сети или неофициальном
+`baseURL` запросов нет и остаётся builtin-каталог. Админка
+(`/api/models/list` и `/api/models/catalog`) по-прежнему отдаёт builtin-каталог
+движка — те же `deepseek-flash` и `deepseek-v4-pro`, — поэтому модель, которую
+предлагает только листинг, в админке не появится, а запрос к модели из
+листинга, требующей более нового клиента, движок отклонит до сети
+(`CLIENT_UPGRADE_REQUIRED` / `MODEL_UNSUPPORTED`). Диагностика листинга
+пишется в журнал сервиса (stderr) с тегом `[llm-deepseek-api-key]`:
+
+```bash
+journalctl -u dsh-balbes -n 50 | grep llm-deepseek-api-key
+# ожидается (после первого хода с настроенным ключом):
+#   [llm-deepseek-api-key] model listing from https://api.deepseek.com/models
+#   loaded 2 model(s), skipped 0 row(s)
+# пусто — листинг не запрашивался (нет ключа, неофициальный baseURL или ещё
+# не было обращений к модели); «failed» — листинг не загрузился, движок
+# остался на builtin-каталоге и работает дальше
 ```
 
 Дерево и события (в сводку установщика не входят — их полный smoke — в
