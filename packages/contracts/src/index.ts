@@ -164,7 +164,7 @@ export type WorkspaceEvent = WorkspaceFsEvent | WorkspaceListEvent;
 export type ModelKind = "deepseek" | "preset" | "custom";
 
 /**
- * Display data mirroring the engine pi-ai catalog provider ids (dsh 0.2.1-rc.4);
+ * Display data mirroring the engine pi-ai catalog provider ids (dsh 0.2.1-rc.5);
  * server keeps its own copy for validation (packages/plugins/dsh-balbes-models);
  * re-sync on engine upgrades.
  */
