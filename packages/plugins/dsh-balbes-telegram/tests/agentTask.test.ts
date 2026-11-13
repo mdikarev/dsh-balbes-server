@@ -66,6 +66,11 @@ interface FakeHandle {
     followup: ReturnType<typeof vi.fn>;
     cancel: ReturnType<typeof vi.fn>;
     status: string;
+    /** dsh 0.2.2 agent-owned model choice: resolved fallback + recorded selection. */
+    model: {
+      current: ReturnType<typeof vi.fn>;
+      select: ReturnType<typeof vi.fn>;
+    };
   };
   dispose: ReturnType<typeof vi.fn>;
   releaseParked(): void;
@@ -73,8 +78,20 @@ interface FakeHandle {
 }
 
 /** One fake dsh AgentHandle whose session events emulate a completed turn. */
-function makeHandle(cfg: FakeHandleConfig = {}): FakeHandle {
+function makeHandle(
+  cfg: FakeHandleConfig = {},
+  agentOptions: { provider: string; model: string } = SELECTION
+): FakeHandle {
   const events: EventLike[] = [];
+  // dsh 0.2.2 resolves the Agent's fallback from `agentOptions` until a turn
+  // records a selection, so the fake starts from the pair create/resume got.
+  let selection: { provider: string; model: string } | undefined = agentOptions;
+  const model = {
+    current: vi.fn(() => selection),
+    select: vi.fn((next: { provider: string; model: string }) => {
+      selection = next;
+    })
+  };
   let parked: Array<() => void> = [];
   let answerAt = 0;
   let loopDead = false;
@@ -138,6 +155,7 @@ function makeHandle(cfg: FakeHandleConfig = {}): FakeHandle {
   const agent = {
     session,
     status: "idle",
+    model,
     whenIdle: vi.fn(async () => {
       if (cfg.throwOnIdle) throw new Error(cfg.idleError ?? "idle loop exploded");
       if (cfg.disposeStopsLoop === true && loopDead) throw new Error("agent loop disposed");
@@ -241,14 +259,14 @@ function makeAgents(): {
     },
     async create(opts: unknown): Promise<FakeHandle> {
       createOpts.push(opts as FakeCreateOptions);
-      const handle = makeHandle(cfgQueue.shift());
+      const handle = makeHandle(cfgQueue.shift(), (opts as FakeCreateOptions).agentOptions);
       created.push(handle);
       return handle;
     },
     async resume(opts: unknown): Promise<FakeHandle> {
       resumeOpts.push(opts as FakeResumeOptions);
       if (resumeError !== undefined) throw resumeError;
-      const handle = makeHandle(cfgQueue.shift());
+      const handle = makeHandle(cfgQueue.shift(), (opts as FakeResumeOptions).agentOptions);
       created.push(handle);
       return handle;
     }
@@ -1136,149 +1154,33 @@ function makeAgentCtx(tools: unknown): { on(): () => void; get(key: string): unk
   };
 }
 
-/**
- * The agent-scope context a real `setup` callback receives, recording the two
- * waterfall listeners `installModelSelection` installs so a test can drive one
- * prompt-assembly + request round by hand.
- */
-function makeRecordingAgentCtx(): {
-  ctx: { on(event: string, listener: never): () => void; get(key: string): unknown };
-  appliedModel(): Promise<string | undefined>;
-} {
-  const listeners = new Map<string, unknown>();
-  const tools = makeTools([]);
-  return {
-    ctx: {
-      on(event: string, listener: never): () => void {
-        listeners.set(event, listener);
-        return () => listeners.delete(event);
-      },
-      get: (key: string) => (key === "tools" ? tools : undefined)
-    },
-    async appliedModel(): Promise<string | undefined> {
-      const assemble = listeners.get("system-prompt/assemble") as unknown as (
-        assembly: unknown,
-        context: unknown,
-        next: () => Promise<unknown>
-      ) => Promise<unknown>;
-      const request = listeners.get("agent/request") as unknown as (
-        payload: unknown,
-        next: () => Promise<unknown>
-      ) => Promise<unknown>;
-      await assemble({}, {}, async () => ({ variables: {} }));
-      const resolved = (await request({}, async () => ({ provider: "p", model: "m" }))) as { model?: string };
-      return resolved.model;
-    }
-  };
-}
-
-describe("composeAgentSetup tool surface", () => {
-  it("applies no restriction and no path guard: the agent keeps the whole deployment surface", () => {
-    const registered = ["read", "write", "bash", "web_fetch", "skill", "some_future_shell"];
-    const tools = makeTools(registered);
-    composeAgentSetup(makeAgentCtx(tools), { selection: { current: SELECTION } });
-    expect(tools.restrictions).toEqual([]);
-    expect(tools.guards).toEqual([]);
-  });
-
-  it("installs neither restriction nor guard through the create and resume callbacks", async () => {
-    const registered = ["read", "write", "bash", "web_fetch", "skill"];
-    const created = await makeRunner();
-    await created.runner.run(PROJECT_ALPHA, "first task");
-    const createTools = makeTools(registered);
-    created.agents.createOpts[0]!.setup(makeAgentCtx(createTools));
-    expect(createTools.restrictions).toEqual([]);
-    expect(createTools.guards).toEqual([]);
-
-    const resumed = await makeRunner();
-    await resumed.runner.run(PROJECT_BRAVO, "resume me", { sessionId: "session-known" });
-    const resumeTools = makeTools(registered);
-    resumed.agents.resumeOpts[0]!.setup(makeAgentCtx(resumeTools));
-    expect(resumeTools.restrictions).toEqual([]);
-    expect(resumeTools.guards).toEqual([]);
-  });
-});
-
-/**
- * The runner's setup seam composes the approval answerer next to the model
- * selection, for BOTH create and resume. The fake agents service does not call
- * setup itself, so the test drives the recorded callback by hand — the same
- * seam the composeAgentSetup suite above exercises.
- */
-describe("approval attachment", () => {
-  it("attaches the approval listener through setup for every created agent", async () => {
-    const base = await mkdtemp(join(tmpdir(), "agenttask-approval-"));
-    const agents = makeAgents();
-    const attached: Array<{ ctx: unknown; ref: WorkspaceRef }> = [];
-    const runner = createAgentTaskRunner({
-      agents: agents as unknown as AgentTaskDeps["agents"],
-      sessions: { flush: vi.fn(async () => {}) },
-      defaultModel: { currentSelection: () => SELECTION },
-      workspaces: makeWorkspaces(base) as unknown as AgentTaskDeps["workspaces"],
-      approvals: { attach: (ctx, ref) => { attached.push({ ctx, ref }); } },
-      logger: { warn: vi.fn() }
-    });
-    const result = runner.run({ scope: "home" }, "task");
-    await waitFor(() => agents.createOpts.length === 1);
-    const agentCtx = { on: vi.fn(), get: vi.fn() };
-    agents.createOpts[0]!.setup(agentCtx);
-    expect(attached).toEqual([{ ctx: agentCtx, ref: { scope: "home" } }]);
-    await runToCompletion(agents.created[0]!, 1);
-    await result;
-  });
-});
-
 describe("live model selection", () => {
-  it("resolves every request through the current global default", async () => {
-    let selection = { provider: "deepseek-official", model: "deepseek-v4-flash" };
-    const recorder = makeRecordingAgentCtx();
-
-    composeAgentSetup(recorder.ctx, {
-      selection: {
-        get current() {
-          return selection;
-        },
-        assembled: undefined
-      }
-    });
-
-    expect(await recorder.appliedModel()).toBe("deepseek-v4-flash");
-
-    selection = { provider: "deepseek-official", model: "deepseek-v4-pro" };
-
-    expect(await recorder.appliedModel()).toBe("deepseek-v4-pro");
-  });
-
-  /**
-   * The task's actual deliverable is the RUNNER's own re-read of the global
-   * default, not `composeAgentSetup`'s pass-through. The test above builds its
-   * own ref and calls `composeAgentSetup` directly, so it stays green if
-   * `liveSelection` hands dsh a frozen snapshot instead of a getter. This test
-   * closes that hole: it drives the `setup` closure the runner really installed
-   * on `agents.create` (`agents.createOpts[0].setup`, the seam dsh calls with
-   * the agent scope) and flips the spied global default between two
-   * assembly+request rounds against that one installed ref, so the model
-   * resolved per request must follow the CURRENT default.
-   */
-  it("re-reads the current global default through the runner's installed setup", async () => {
+  it("records the current global default before a turn when it changed", async () => {
     const { agents, deps, runner } = await makeRunner();
-    await runner.run(PROJECT_ALPHA, "первая");
-
-    expect(agents.createOpts).toHaveLength(1);
-    const recorder = makeRecordingAgentCtx();
-    agents.createOpts[0]!.setup(recorder.ctx);
-
-    vi.spyOn(deps.defaultModel!, "currentSelection").mockReturnValue({
-      provider: "deepseek-official",
-      model: "deepseek-v4-flash"
-    });
-    expect(await recorder.appliedModel()).toBe("deepseek-v4-flash");
+    expectOk(await runner.run(PROJECT_ALPHA, "первая"));
+    const handle = agents.created[0]!;
+    // dsh 0.2.2 resolves the Agent's fallback from `agentOptions`, which equals
+    // the default here, so an unchanged default records nothing.
+    expect(handle.agent.model.select).not.toHaveBeenCalled();
 
     vi.spyOn(deps.defaultModel!, "currentSelection").mockReturnValue({
       provider: "deepseek-official",
       model: "deepseek-v4-pro"
     });
-    expect(await recorder.appliedModel()).toBe("deepseek-v4-pro");
+
+    expectOk(await runner.run(PROJECT_ALPHA, "вторая"));
+    expect(handle.agent.model.select).toHaveBeenCalledTimes(1);
+    expect(handle.agent.model.select).toHaveBeenCalledWith({
+      provider: "deepseek-official",
+      model: "deepseek-v4-pro"
+    });
+  });
+
+  it("records nothing when the default did not change", async () => {
+    const { agents, runner } = await makeRunner();
+    expectOk(await runner.run(PROJECT_ALPHA, "первая"));
+    expectOk(await runner.run(PROJECT_ALPHA, "вторая"));
+    expect(agents.created[0]!.agent.model.select).not.toHaveBeenCalled();
   });
 
   it("keeps the session id when the default changes between turns", async () => {

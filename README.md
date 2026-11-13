@@ -155,7 +155,7 @@ curl -sS -X POST http://127.0.0.1:8080/api/memory/delete \
 | `DSH_HOME` | `~/.dsh` | каталог данных dsh |
 | `BALBES_PORT` | `8080` | порт HTTP-сервера |
 | `BALBES_UI_DIST` | `$DSH_HOME/balbes/ui` | каталог собранной админки |
-| `DSH_TOOLS_MODE` | (не задана) | режим инструментов (native/ptc) |
+| `DSH_TOOLS_MODE` | (не задана) | исполнитель инструментов: `native` (по умолчанию) или `ptc`; с dsh 0.2.2 выбирает строку `tool-executor-native` / `tool-executor-ptc` |
 | `DEEPSEEK_API_KEY` | — | необязательный ключ модели для неинтерактивной установки (пишется в `.credentials.yaml`); иначе — в админке, раздел «Модели» |
 
 > Граница текущего этапа: доступ по `http://IP:8080` (HTTP, без TLS — защита паролем/токеном,

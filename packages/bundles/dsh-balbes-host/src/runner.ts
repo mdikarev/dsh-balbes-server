@@ -115,7 +115,7 @@ export async function runPrompt(ctx: { get(key: string): unknown }, prompt: stri
       meta: { cwd: process.cwd() },
       agentOptions: { provider: selection.provider, model: selection.model },
       setup: (agentCtx) => {
-        installModelSelection(agentCtx as never, { current: selection, assembled: undefined });
+        installModelSelection(agentCtx as never);
         memoryAttachment = memory?.attach(agentCtx, { kind: "global" }, {
           channel: "admin",
           sessionId,

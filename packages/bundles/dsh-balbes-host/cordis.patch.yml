@@ -20,9 +20,15 @@
     personaPrefix: >-
       You are a coding agent powered by the {{model}} model.
 
-- id: tools
-  config:
-    mode: !!js process.env.DSH_TOOLS_MODE
+# dsh 0.2.2 removed the tools `mode` config (native | ptc): the tool executor
+# is now its own row (`tool-executor-native` / `tool-executor-ptc`), and the
+# base bundle mounts native with PTC disabled. Keep the deployment knob
+# working: native by default, PTC when DSH_TOOLS_MODE=ptc.
+- id: tool-executor-native
+  disabled: !!js process.env.DSH_TOOLS_MODE === 'ptc'
+
+- id: tool-executor-ptc
+  disabled: !!js process.env.DSH_TOOLS_MODE !== 'ptc'
 
 # Global agent home context: the shared, cross-project agent home
 # ($DSH_HOME/agent) feeds both instruction discovery and the skills catalog.

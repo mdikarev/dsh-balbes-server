@@ -276,6 +276,15 @@ interface AgentLike {
   whenIdle(): Promise<void>;
   followup(message: unknown): void;
   /**
+   * Agent-owned model choice (dsh 0.2.2): `current()` resolves the durable
+   * selection for the next step, `select()` records a new one. Optional because
+   * test doubles and older hosts may not expose it.
+   */
+  model?: {
+    current(): { provider: string; model: string } | undefined;
+    select(selection: { provider: string; model: string }): void;
+  };
+  /**
    * The stock dsh seam for stopping work: it aborts the ACTIVE turn (or the
    * between-turn task) and clears queued/steering work unless `keepInbox` is
    * set, and is a no-op when the agent has no activity. It never tears the
@@ -531,43 +540,24 @@ export function summarizeProgress(
   return out;
 }
 
-export interface AgentSetupOptions {
-  selection: ModelSelectionRefLike;
-}
-
-/** The mutable selection dsh's installModelSelection reads per step. */
-export interface ModelSelectionRefLike {
-  current?: { provider: string; model: string } | undefined;
-  assembled?: { provider: string; model: string } | undefined;
-}
-
 /**
- * The live selection of one keyed session: `agentOptions` needs a concrete pair
- * at create/resume time, but every later request must read the CURRENT global
- * default, so a change made from the admin page or the chat reaches a session
- * that is already alive. The `assembled` slot stays owned by dsh.
+ * The current global default model. `agentOptions` needs a concrete pair at
+ * create/resume time, and every later turn records the pair that is current
+ * THEN, so a change made from the admin page or the chat reaches a session
+ * that is already alive.
  */
-function liveSelection(defaultModel: AgentTaskDeps["defaultModel"]): {
-  ref: ModelSelectionRefLike;
-  initial: { provider: string; model: string };
-} {
-  const initial = defaultModel?.currentSelection() ?? { provider: "", model: "" };
-  const ref: ModelSelectionRefLike = {
-    get current(): { provider: string; model: string } {
-      return defaultModel?.currentSelection() ?? initial;
-    },
-    assembled: undefined
-  };
-  return { ref, initial };
+function currentSelection(defaultModel: AgentTaskDeps["defaultModel"]): { provider: string; model: string } {
+  return defaultModel?.currentSelection() ?? { provider: "", model: "" };
 }
 
 /**
  * Compose the agent-scoped setup every task session receives (create and
- * resume): it installs ONLY the live model selection, leaving the deployment's
- * own tool surface intact.
+ * resume). dsh 0.2.2 owns the model choice inside the Agent (`agent.model`), so
+ * this installs only dsh's model-switch notice and leaves the deployment's own
+ * tool surface intact; the live default is recorded per turn in `executeTurn`.
  */
-export function composeAgentSetup(agentCtx: unknown, options: AgentSetupOptions): void {
-  installModelSelection(agentCtx as never, options.selection as never);
+export function composeAgentSetup(agentCtx: unknown): void {
+  installModelSelection(agentCtx as never);
 }
 
 export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
@@ -583,7 +573,7 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
     memory: MemoryContextAttachmentLike | undefined;
     liveAnswer: LiveAnswer;
   }> {
-    const selection = liveSelection(deps.defaultModel);
+    const initial = currentSelection(deps.defaultModel);
     const freshSessionId = brandString(`session-${randomUUID()}`);
     // The id the write context must carry is the session the task actually runs
     // in: the resumed one while a resume is in play, the fresh one once a failed
@@ -605,7 +595,7 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
       ).on("agent/assistant-stream", ({ frame }) => liveAnswer.accept(frame));
     };
     const setup = (agentCtx: unknown): void => {
-      composeAgentSetup(agentCtx, { selection: selection.ref });
+      composeAgentSetup(agentCtx);
       deps.approvals?.attach(agentCtx, ref);
       listenForAnswer(agentCtx);
       memory = deps.memory?.attach(
@@ -614,7 +604,7 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
         {
           channel: "telegram",
           sessionId: resumedSessionId ?? freshSessionId,
-          selection: { provider: selection.initial.provider, model: selection.initial.model }
+          selection: initial
         }
       );
     };
@@ -622,7 +612,7 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
       try {
         const handle = await deps.agents.resume({
           resumeSessionId: opts.sessionId,
-          agentOptions: selection.initial,
+          agentOptions: initial,
           setup
         });
         return { handle, sessionId: opts.sessionId, memory, liveAnswer };
@@ -639,7 +629,7 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
     const handle = await deps.agents.create({
       sessionId,
       meta: { cwd: root },
-      agentOptions: selection.initial,
+      agentOptions: initial,
       setup
     });
     return { handle, sessionId, memory, liveAnswer };
@@ -723,6 +713,17 @@ export function createAgentTaskRunner(deps: AgentTaskDeps): AgentTaskRunner {
         return { ok: false, code: "cancelled", message: CANCELLED_MESSAGE };
       }
       await entry.memory?.prepare(text);
+      // Live default (dsh 0.2.2 owns the choice in the Agent): record the
+      // CURRENT global default for this turn, before the first turn event.
+      // `agent.model.current()` already resolves the Agent's own fallback, so an
+      // unchanged default is a no-op and records nothing.
+      const live = currentSelection(deps.defaultModel);
+      if (live.provider !== "" && live.model !== "" && agent.model !== undefined) {
+        const now = agent.model.current();
+        if (now === undefined || now.provider !== live.provider || now.model !== live.model) {
+          agent.model.select(live);
+        }
+      }
       const firstSeq = agent.session.seq;
       // The progress read of THIS turn starts here (progress() reads the pair
       // back); `agent.followup` below is what puts its first event into the log.
